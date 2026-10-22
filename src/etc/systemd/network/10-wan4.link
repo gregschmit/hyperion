@@ -1,0 +1,9 @@
+# Name the IPv4 uplink "wan4" so the other configs can refer to it. Set the NIC's real MAC address
+# (see `ip -br link`); renames apply at the next boot.
+[Match]
+MACAddress=00:00:5e:00:53:01
+# Only the NIC itself; VLANs on it share its MAC address.
+Type=ether
+
+[Link]
+Name=wan4

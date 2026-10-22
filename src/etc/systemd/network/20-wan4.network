@@ -1,0 +1,17 @@
+# IPv4 uplink (Metronet): a static address in 209.173.223.176/29. The LAN shares it through NAT
+# (see /etc/nftables.conf).
+#
+# To carry IPv6 on this uplink too (no wan6), set DHCP=ipv6 and IPv6AcceptRA=yes below, copy the
+# [IPv6AcceptRA] and [DHCPv6] sections from 20-wan6.network, and change the LAN prefix in
+# 20-lan.network to the one this ISP delegates. The wan6 files can stay.
+[Match]
+Name=wan4
+
+[Network]
+Address=209.173.223.178/29
+Gateway=209.173.223.177
+IPv6AcceptRA=no
+
+[Link]
+# Don't hold up boot when the ISP is down; dnsmasq waits for network-online.target.
+RequiredForOnline=no

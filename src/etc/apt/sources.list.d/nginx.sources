@@ -1,0 +1,7 @@
+# nginx from nginx.org, for its ACME module (nginx-module-acme), which gets the sites' certificates.
+# Debian doesn't package that module.
+Types: deb
+URIs: https://nginx.org/packages/debian
+Suites: trixie
+Components: nginx
+Signed-By: /etc/apt/keyrings/nginx.asc

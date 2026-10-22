@@ -1,0 +1,5 @@
+# Take nginx from nginx.org (see sources.list.d/nginx.sources), never from Debian: the ACME
+# module only works with nginx.org's build.
+Package: *
+Pin: origin nginx.org
+Pin-Priority: 900

@@ -1,0 +1,4 @@
+# The router's packages from ../pkglist. test/run puts this list in place of that one, since the
+# container has no network to install the others (nginx, postgres) with.
+nftables
+dnsmasq

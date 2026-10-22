@@ -1,0 +1,219 @@
+#!/bin/sh
+
+# Symlink each file under `src/` to the same path under `/`, e.g. `src/etc/nftables.conf` ->
+# `/etc/nftables.conf`. Directories are created as needed, so files that packages install next to
+# ours are left alone, and links to files that are gone from `src/` are removed. Also installs the
+# packages in `pkglist` and UniFi OS Server, and sets the postgres and redis passwords. Run as root
+# after each pull; it is safe to re-run.
+
+set -eu
+
+# Directories (relative to src/) to symlink whole instead of file by file, e.g. "etc/foo.d". Only
+# list a directory if this repo owns everything in it.
+LINK_DIRS=""
+
+# Check whether $1 exactly matches an entry in LINK_DIRS.
+is_link_dir() {
+  for d in $LINK_DIRS; do
+    if [ "$1" = "$d" ]; then return 0; fi
+  done
+  return 1
+}
+
+# Replace any file or symlink at $2 with a symlink to $1.
+install_symlink() {
+  if [ "$(readlink "$2")" = "$1" ]; then return; fi
+
+  if [ -d "$2" ] && [ ! -L "$2" ]; then
+    echo "ERROR: $2 is a directory; move it aside and re-run this script." >&2
+    exit 1
+  fi
+
+  echo "Symlinking:  $2 -> $1"
+  ln -sfn "$1" "$2"
+}
+
+# Install the packages in pkglist (one per line) that aren't installed yet.
+install_packages() {
+  local missing
+
+  missing=$(grep -v '^ *\(#\|$\)' pkglist | while read -r pkg; do
+    if ! dpkg-query -W -f '${Status}\n' "$pkg" 2>/dev/null | grep -q ' installed$'; then
+      echo "$pkg"
+    fi
+  done)
+  if [ -z "$missing" ]; then return; fi
+
+  echo "Installing:  $(echo "$missing" | paste -sd' ')"
+  apt-get update
+  # Keep our linked configs when a package ships the same file, without asking.
+  # shellcheck disable=SC2086 # One word per package.
+  apt-get install -o Dpkg::Options::=--force-confold $missing
+}
+
+# Install UniFi OS Server (the UniFi controller) if it isn't installed yet: the latest release for
+# this architecture, from Ubiquiti's firmware API. It updates itself afterwards. Its installer asks
+# to confirm.
+install_unifi() {
+  local api info url sum file
+
+  # It runs on podman (see pkglist); without podman, skip it (e.g. in test/run).
+  if command -v uosserver >/dev/null || ! command -v podman >/dev/null; then return; fi
+
+  api="https://fw-update.ui.com/api/firmware-latest?filter=eq~~product~~unifi-os-server"
+  api="$api&filter=eq~~channel~~release&filter=eq~~platform~~linux-"
+  case "$(dpkg --print-architecture)" in
+    amd64) api="${api}x64" ;;
+    arm64) api="${api}arm64" ;;
+    *) echo "ERROR: UniFi OS Server has no installer for this architecture." >&2; exit 1 ;;
+  esac
+  info=$(curl -fsS "$api")
+  url=$(echo "$info" | jq -r '._embedded.firmware[0]._links.data.href')
+  sum=$(echo "$info" | jq -r '._embedded.firmware[0].sha256_checksum')
+
+  # The installer is about 800 MB, too big for /tmp (a RAM disk on Debian).
+  echo "Installing:  UniFi OS Server ($url)"
+  file=$(mktemp -p /var/tmp unifi-os-server.XXXXXX)
+  if curl -fL --progress-bar -o "$file" "$url" && echo "$sum  $file" | sha256sum -c --quiet &&
+    chmod +x "$file" && "$file"; then
+    rm "$file"
+    return
+  fi
+  rm "$file"
+  echo "ERROR: UniFi OS Server didn't install; see the output above. Before re-running this" \
+    "script, remove what the installer left with \`uosserver-purge\` (if it exists)." >&2
+  exit 1
+}
+
+# Apply postgres's config (restart it if a setting needs that), and give the postgres role a long
+# random password, kept in /root/postgres_pw.txt. A password that still works is left alone, so to
+# rotate it, delete the file and run this script.
+install_postgres() {
+  local pw_file=/root/postgres_pw.txt
+  local pw
+
+  if ! systemctl cat postgresql.service >/dev/null 2>&1; then return; fi
+
+  systemctl start postgresql
+  for _ in $(seq 30); do pg_isready -q && break; sleep 1; done
+  runuser -u postgres -- psql -qAtc 'SELECT pg_reload_conf()' >/dev/null
+  if [ "$(runuser -u postgres -- psql -qAtc \
+    'SELECT count(*) FROM pg_settings WHERE pending_restart')" != 0 ]; then
+    echo "Restarting:  postgresql (for new settings)"
+    systemctl restart postgresql
+    for _ in $(seq 30); do pg_isready -q && break; sleep 1; done
+  fi
+
+  if [ -s "$pw_file" ] && PGPASSWORD=$(cat "$pw_file") \
+    psql -h 127.0.0.1 -U postgres -d postgres -qAtc 'SELECT 1' >/dev/null 2>&1; then
+    return
+  fi
+  pw=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 40)
+  # On stdin, so the password doesn't show up in the process list.
+  printf "ALTER ROLE postgres PASSWORD '%s';\n" "$pw" | runuser -u postgres -- psql -q
+  (umask 077 && echo "$pw" >"$pw_file")
+  echo "Postgres:    new password for postgres in $pw_file"
+}
+
+# Give redis a long random password, kept in /root/redis_pw.txt and in /etc/redis/password.conf
+# (where redis reads it). A password that still works is left alone, so to rotate it, delete the
+# file and run this script.
+install_redis() {
+  local pw_file=/root/redis_pw.txt
+  local pw
+
+  if ! systemctl cat redis-server.service >/dev/null 2>&1; then return; fi
+
+  # redis reads Debian's self-signed TLS key (see redis.conf) as a member of ssl-cert.
+  usermod -aG ssl-cert redis
+  # It doesn't start until the password file exists; then the check below needs it running.
+  systemctl start redis-server 2>/dev/null || true
+
+  if [ -s "$pw_file" ] && [ "$(REDISCLI_AUTH=$(cat "$pw_file") \
+    redis-cli -s /run/redis/redis-server.sock ping 2>/dev/null)" = PONG ]; then
+    return
+  fi
+  pw=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 40)
+  (umask 027 && echo "requirepass $pw" >/etc/redis/password.conf)
+  chgrp redis /etc/redis/password.conf
+  (umask 077 && echo "$pw" >"$pw_file")
+  systemctl restart redis-server
+  echo "Redis:       new password in $pw_file"
+}
+
+# Walk src/$1 and install its entries into /$1. Pass "" to process the src root.
+install_dir() {
+  local rel="$1"
+  local src_dir="$REPO/src${rel:+/$rel}"
+  local dst_dir="/$rel"
+  local entry_path entry child_rel
+
+  # If a previous install symlinked this directory whole, new links would land inside the repo.
+  if [ -L "$dst_dir" ]; then
+    case "$(readlink -f "$dst_dir")" in
+      "$REPO/src/"*)
+        echo "Found existing symlink!"
+        echo "Removing:    $dst_dir symlink"
+        rm "$dst_dir"
+        echo "WARNING: Move any untracked files out of src/$rel and re-run this script."
+        exit 1
+        ;;
+    esac
+  fi
+
+  mkdir -p "$dst_dir"
+
+  for entry_path in "$src_dir"/.* "$src_dir"/*; do
+    [ -e "$entry_path" ] || continue
+    entry=$(basename "$entry_path")
+    if [ "$entry" = "." ] || [ "$entry" = ".." ]; then continue; fi
+
+    child_rel="${rel:+$rel/}$entry"
+    if [ -d "$entry_path" ] && ! is_link_dir "$child_rel"; then
+      install_dir "$child_rel"
+    else
+      install_symlink "$entry_path" "/$child_rel"
+    fi
+  done
+}
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "ERROR: Run this script as root." >&2
+  exit 1
+fi
+
+# Run from the repo, even through a symlink to this script, so link targets are always spelled the
+# same way.
+cd "$(dirname "$(readlink -f "$0")")"
+REPO=$(pwd)
+
+# nftables and networkd can't see /home or /root, so links into a clone there break at boot.
+case "$REPO" in
+  /home/* | /root/*)
+    echo "ERROR: Clone this repo outside /home and /root, e.g. to /srv/hyperion." >&2
+    exit 1
+    ;;
+esac
+
+# Remove links to files that are gone from src/: a broken link in a config directory stops
+# services like dnsmasq and nginx from starting.
+for top in src/*; do
+  # A top-level path that isn't in / yet holds no links, and find would fail on it.
+  [ -d "/${top#src/}" ] || continue
+  find "/${top#src/}" -xtype l -lname "$REPO/src/*" -printf 'Removing:    %p -> %l\n' -delete
+done
+
+# The apt sources first, so apt can install from them. Then the packages, before the rest of the
+# configs, so they set themselves up first: e.g. Debian won't create the postgres cluster when its
+# config directory already exists.
+install_dir etc/apt
+install_packages
+install_unifi
+install_dir ""
+
+# nginx.org's package enables nginx but doesn't start it. Once it runs, nginx gets the sites'
+# certificates itself.
+if systemctl cat nginx.service >/dev/null 2>&1; then systemctl start nginx; fi
+
+install_postgres
+install_redis

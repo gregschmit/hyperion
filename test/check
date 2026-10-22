@@ -1,0 +1,514 @@
+#!/bin/sh
+# shellcheck disable=SC2319 # Each check is a condition, then check $? on the next line.
+
+# Plug fake ISPs and LAN clients into the router, and check DHCP, SLAAC, DNS, NAT, and the
+# firewall. test/run runs this in the test container, whose own network namespace is the router.
+# The rest of the network is made of namespaces (veth ends in parentheses):
+#
+#   isp4 (up4)---(wan4)                          (c1)---(eth0) c1
+#                      router (lan)---(rtr) switch
+#   isp6 (up6)---(wan6)                          (c2)---(eth0) c2
+#
+# Prints a PASS or FAIL line per check, and exits non-zero if any check fails. The fake hosts'
+# configs and logs are in /run/check.
+
+set -u
+
+LOG=/run/check
+# What the rXg must get; see lan.conf.
+RXG_MAC=bc:24:11:f3:b9:07
+RXG_IP=172.31.0.23
+RXG_TFTP=https://raw.githubusercontent.com/gregschmit/rxg-tools/master/config_templates
+RXG_FILE=rxgrunner144.yml.erb
+
+checks=0
+fails=0
+mkdir -p $LOG
+
+# Print PASS or FAIL and the description in $2, as the exit status in $1 is 0 or not.
+check() {
+  checks=$((checks + 1))
+  if [ "$1" = 0 ]; then
+    echo "PASS  $2"
+  else
+    echo "FAIL  $2"
+    fails=$((fails + 1))
+    return 1
+  fi
+}
+
+# Print the addresses (no prefix length) that `ip $1 addr show` lists for the other arguments.
+addrs() {
+  family=$1
+  shift
+  ip "$family" -o addr show "$@" | awk '{ sub("/.*", "", $4); print $4 }'
+}
+
+# Connect from namespace $1 to $2 (host:port), from the address $3 if given, and print what the
+# server says. Prints nothing if no connection is made within 2 seconds.
+tcp() {
+  ip netns exec "$1" socat -T2 - "TCP:$2,connect-timeout=2${3:+,bind=$3}" </dev/null 2>/dev/null
+}
+
+# Answer TCP connections to port $2 in namespace $1 (IPv4 and IPv6) with the word $3.
+listen() {
+  ip netns exec "$1" socat "TCP6-LISTEN:$2,ipv6only=0,fork,reuseaddr" "SYSTEM:echo $3" \
+    </dev/null >/dev/null 2>&1 &
+}
+
+# Print the MAC address that the .link file for NIC $1 matches.
+mac() {
+  sed -n 's/^MACAddress=//p' "/etc/systemd/network/10-$1.link"
+}
+
+## Plug in the NICs, as they would be at boot.
+
+# The router's NICs get their MAC addresses and names from the .link files (the names are
+# checked below). Its namespace is PID 1's; name it.
+ip netns attach router 1
+
+# The IPv4 ISP: the gateway of wan4's static /29 (see 20-wan4.network). Its dnsmasq answers DNS
+# on the upstream addresses that lan.conf names (added to lo below).
+ip netns add isp4
+ip -n isp4 link set lo up
+ip -n isp4 link add up4 type veth peer name wan4 address "$(mac wan4)"
+ip -n isp4 addr add 209.173.223.177/29 dev up4
+ip -n isp4 link set up4 up
+ip netns exec isp4 dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --user=root \
+  --log-facility=- --log-queries --no-resolv --no-hosts --host-record=example.com,192.0.2.80 \
+  </dev/null >$LOG/isp4-dnsmasq.log 2>&1 &
+# Tell clients the address they connect from.
+ip netns exec isp4 socat TCP-LISTEN:7,fork,reuseaddr "SYSTEM:echo \$SOCAT_PEERADDR" \
+  </dev/null >/dev/null 2>&1 &
+ip -n isp4 link set wan4 netns router
+
+# The IPv6 ISP: router advertisements without the managed flag (radvd), so the router asks for a
+# prefix only because of DHCPv6Client=always; DHCPv6 with prefix delegation and renewals every 10
+# seconds (Kea); and DNS like the IPv4 ISP. Kea needs a link-local address to start, so skip DAD
+# and keep both veth ends here until it runs. radvd warns if the ISP doesn't route.
+ip netns add isp6
+ip netns exec isp6 sh -c 'echo 1 >/proc/sys/net/ipv6/conf/all/forwarding'
+ip netns exec isp6 sh -c 'echo 0 >/proc/sys/net/ipv6/conf/default/accept_dad'
+ip -n isp6 link set lo up
+ip -n isp6 link add up6 type veth peer name wan6 address "$(mac wan6)"
+ip -n isp6 addr add 2001:db8::1/64 dev up6
+ip -n isp6 link set up6 up
+ip -n isp6 link set wan6 up
+for _ in $(seq 50); do
+  ip -n isp6 -6 addr show dev up6 scope link | grep -q inet6 && break
+  sleep 0.1
+done
+cat >$LOG/radvd.conf <<EOF
+interface up6 {
+  AdvSendAdvert on;
+  AdvManagedFlag off;
+  MinRtrAdvInterval 3;
+  MaxRtrAdvInterval 10;
+  prefix 2001:db8::/64 {};
+};
+EOF
+ip netns exec isp6 radvd -n -C $LOG/radvd.conf -p $LOG/radvd.pid -m stderr \
+  </dev/null >$LOG/isp6-radvd.log 2>&1 &
+cat >$LOG/kea-dhcp6.conf <<EOF
+{
+  "Dhcp6": {
+    "interfaces-config": { "interfaces": [ "up6" ] },
+    "server-id": { "type": "LL", "persist": false },
+    "lease-database": { "type": "memfile", "persist": false },
+    "renew-timer": 10,
+    "rebind-timer": 20,
+    "preferred-lifetime": 300,
+    "valid-lifetime": 600,
+    "subnet6": [ {
+      "id": 1,
+      "subnet": "2001:db8::/64",
+      "interface": "up6",
+      "pools": [ { "pool": "2001:db8::1000-2001:db8::1fff" } ],
+      "pd-pools": [ { "prefix": "2603:300a:2161:ca00::", "prefix-len": 55, "delegated-len": 56 } ]
+    } ],
+    "loggers": [ {
+      "name": "kea-dhcp6",
+      "output-options": [ { "output": "stdout" } ],
+      "severity": "INFO"
+    } ]
+  }
+}
+EOF
+ip netns exec isp6 env KEA_PIDFILE_DIR=$LOG KEA_LOCKFILE_DIR=none kea-dhcp6 -c $LOG/kea-dhcp6.conf \
+  </dev/null >$LOG/isp6-kea.log 2>&1 &
+ip netns exec isp6 dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --user=root \
+  --log-facility=- --log-queries --no-resolv --no-hosts --host-record=example.com,192.0.2.80 \
+  </dev/null >$LOG/isp6-dnsmasq.log 2>&1 &
+ip netns exec isp6 socat TCP6-LISTEN:7,fork,reuseaddr "SYSTEM:echo \$SOCAT_PEERADDR" \
+  </dev/null >/dev/null 2>&1 &
+for _ in $(seq 50); do
+  grep -q DHCP6_STARTED $LOG/isp6-kea.log && break
+  sleep 0.1
+done
+ip -n isp6 link set wan6 netns router
+
+# The upstream DNS servers that lan.conf names live on the ISPs' loopbacks.
+sed -n 's/^server=//p' /etc/dnsmasq.d/lan.conf | while read -r server; do
+  case $server in
+    *:*) ip -n isp6 addr add "$server/128" dev lo ;;
+    *) ip -n isp4 addr add "$server/32" dev lo ;;
+  esac
+done
+
+# The LAN: a plain switch (no multicast snooping) with the router and two clients. c2 has the
+# rXg's MAC address. The switch's end of lan stays down until boot is done, since boot must not
+# wait for a LAN link.
+ip netns add switch
+ip -n switch link add br0 type bridge mcast_snooping 0
+ip -n switch link set br0 up
+ip -n switch link add rtr type veth peer name lan address "$(mac lan)"
+ip -n switch link set rtr master br0
+ip -n switch link set lan netns router
+for c in c1 c2; do
+  ip netns add $c
+  ip -n $c link set lo up
+  ip -n $c link add eth0 type veth peer name $c netns switch
+  ip -n switch link set $c master br0 up
+done
+ip -n c2 link set eth0 address $RXG_MAC
+
+## Boot
+
+# systemd finishes booting once the LAN is configured (network-online.target), so wait for it
+# only now that the NICs are in. systemctl says "offline" until systemd runs.
+for _ in $(seq 30); do
+  state=$(systemctl is-system-running --wait 2>/dev/null)
+  [ "$state" != offline ] && break
+  sleep 1
+done
+failed=$(systemctl list-units --failed --plain --no-legend | cut -d' ' -f1 | tr '\n' ' ')
+[ "$state" = running ]
+check $? "systemd booted: $state" || echo "      failed units: $failed"
+networkctl list --no-legend lan | grep -q "no-carrier *configured"
+check $? "lan is configured with no link"
+ip -n switch link set rtr up
+
+## Install
+
+repo=/srv/hyperion
+files=$(cd $repo/src && find . ! -type d | sed 's|^\./||' | sort)
+unlinked=$(for f in $files; do [ "$(readlink "/$f")" = "$repo/src/$f" ] || echo "/$f"; done)
+[ -z "$unlinked" ]
+check $? "install linked all $(echo "$files" | wc -l) files in src/ into /" ||
+  echo "      not linked: $unlinked"
+links=$(for f in $files; do ls -id "/$f"; done)
+out=$($repo/install 2>&1)
+[ -z "$out" ] && [ "$(for f in $files; do ls -id "/$f"; done)" = "$links" ]
+check $? "install changes nothing on a second run" || echo "$out"
+# A link to a file that is gone from src/ goes; a broken link that isn't ours stays.
+mkdir -p /etc/prune
+ln -s $repo/src/etc/prune/gone /etc/prune/gone
+ln -s /nonexistent /etc/prune/other
+out=$($repo/install 2>&1)
+[ ! -L /etc/prune/gone ] && [ -L /etc/prune/other ]
+check $? "install removes links to files that are gone from src/, and only those" || echo "$out"
+rm -r /etc/prune
+
+## Services
+
+for unit in systemd-networkd nftables dnsmasq; do
+  systemctl -q is-active $unit
+  check $? "$unit is active"
+done
+# Warnings name the file and line, e.g. "/etc/systemd/network/20-lan.network:16: Unknown key".
+warning='/etc/systemd/network/[^ ]*:[0-9]*:'
+warnings=$(journalctl -b -q -u systemd-networkd -p warning | grep "$warning")
+[ -z "$warnings" ]
+check $? "systemd-networkd logs no warnings about our .network files" || echo "$warnings"
+# udevd isn't running (see the Dockerfile), so ask udev what it would name a new NIC with each
+# MAC address. It keeps the current name if no .link file sets one, so the test NIC is "new", in
+# a namespace of its own.
+ip netns add probe
+for nic in wan4 wan6 lan; do
+  ip -n probe link add new address "$(mac $nic)" type veth peer name peer
+  out=$(ip netns exec probe udevadm test-builtin net_setup_link /sys/class/net/new 2>&1)
+  ip -n probe link del new
+  echo "$out" | grep -qx "ID_NET_NAME=$nic"
+  check $? "udev names a new NIC with MAC $(mac $nic) $nic"
+done
+ip netns del probe
+warnings=$(echo "$out" | grep "$warning")
+[ -z "$warnings" ]
+check $? "udev logs no warnings about our .link files" || echo "$warnings"
+[ "$(cat /proc/sys/net/ipv4/ip_forward)" = 1 ]
+check $? "IPv4 forwarding is on"
+[ "$(cat /proc/sys/net/ipv6/conf/all/forwarding)" = 1 ]
+check $? "IPv6 forwarding is on"
+
+## Uplinks
+
+# The uplinks aren't required for network-online.target, so wan6 may still be waiting for its
+# prefix.
+for _ in $(seq 30); do
+  [ -n "$(ip -6 route show type unreachable proto dhcp)" ] && break
+  sleep 1
+done
+wan4_ip=$(addrs -4 dev wan4)
+wan4_gw=$(ip -4 route show default dev wan4 | sed -n 's/.* via \([^ ]*\).*/\1/p')
+wan6_ip=$(addrs -6 dev wan6 scope global | head -n1)
+wan6_ll=$(addrs -6 dev wan6 scope link)
+wan6_gw=$(ip -6 route show default dev wan6 | sed -n 's/.* via \([^ ]*\).*/\1/p')
+# networkd adds an unreachable route for the delegated prefix.
+pd=$(ip -6 route show type unreachable proto dhcp | awk '{ print $2 }')
+lan_ip6=$(addrs -6 dev lan scope global)
+lan_ll=$(addrs -6 dev lan scope link)
+lan_net=$(ip -6 route show dev lan proto kernel | awk '$1 !~ /^fe80/ { print $1 }')
+
+[ "$wan4_ip" = 209.173.223.178 ] && [ "$wan4_gw" = 209.173.223.177 ]
+check $? "wan4 has the static $wan4_ip, with a default route via $wan4_gw"
+[ -n "$wan6_gw" ] && [ -n "$wan6_ip" ]
+check $? "wan6 got a default route via $wan6_gw by RA, and the address $wan6_ip"
+[ "$pd" = 2603:300a:2161:ca00::/56 ]
+check $? "wan6 got the delegated prefix $pd"
+ip -4 -o addr show dev lan | grep -q " 172.31.0.1/24 "
+check $? "lan has 172.31.0.1/24"
+[ "$lan_ip6" = 2603:300a:2161:ca00::1 ] && [ "$lan_net" = 2603:300a:2161:ca00::/64 ]
+check $? "lan has $lan_ip6 in $lan_net, and only that"
+
+# The ISP routes the delegated prefixes to the router.
+ip -n isp6 route add 2603:300a:2161:ca00::/55 via "$wan6_ll" dev up6
+
+## LAN clients
+
+# udhcpc runs this with the event in $1 and the lease in the environment.
+cat >$LOG/udhcpc.sh <<'EOF'
+#!/bin/sh
+[ "$1" = bound ] || exit 0
+env >"/run/check/$(ip netns identify).lease"
+ip addr add "$ip/$mask" dev "$interface"
+ip route add default via "$router"
+EOF
+chmod +x $LOG/udhcpc.sh
+
+# Print the value of $2 in the lease that client $1 got.
+lease() {
+  sed -n "s/^$2=//p" "$LOG/$1.lease" 2>/dev/null
+}
+
+# Get a lease for client $1 with busybox udhcpc (the other arguments go to it), and record its DHCP
+# packets in $LOG/$1.pcap: busybox mangles option 66 (it wants a hostname, not a URL).
+dhcp() {
+  client=$1
+  shift
+  ip netns exec "$client" tcpdump -i eth0 --immediate-mode -U -w "$LOG/$client.pcap" \
+    udp port 67 or udp port 68 </dev/null 2>"$LOG/$client-tcpdump.log" &
+  tcpdump=$!
+  for _ in $(seq 50); do
+    grep -q listening "$LOG/$client-tcpdump.log" && break
+    sleep 0.1
+  done
+  ip netns exec "$client" busybox udhcpc -i eth0 -f -q -n -t 5 -s $LOG/udhcpc.sh "$@" \
+    >"$LOG/$client-udhcpc.log" 2>&1
+  kill $tcpdump
+  wait $tcpdump
+}
+
+# Print the DHCP packets that client $1 sent, or got, as tcpdump decodes them.
+sent() {
+  tcpdump -r "$LOG/$1.pcap" -nvv udp src port 68 2>/dev/null
+}
+got() {
+  tcpdump -r "$LOG/$1.pcap" -nvv udp src port 67 2>/dev/null
+}
+
+ip -n c1 link set eth0 up
+ip -n c2 link set eth0 up
+dhcp c1 -x hostname:client1 -O 66 -O 67
+c1_ip=$(lease c1 ip)
+c1_opts="$(lease c1 router) $(lease c1 dns) $(lease c1 domain)"
+[ "${c1_ip%.*}" = 172.31.0 ] && [ "${c1_ip##*.}" -ge 100 ]
+check $? "c1 got $c1_ip, from the pool (.100-.254)"
+[ "$c1_opts" = "172.31.0.1 172.31.0.1 home.arpa" ]
+check $? "c1 got router, DNS, and domain: $c1_opts"
+# tcpdump shows the BOOTP header's sname and file fields only when they aren't empty.
+sent c1 | grep -q "TFTP (66)" && ! got c1 | grep -qE 'TFTP \(66\)|BF \(67\)|sname "|file "'
+check $? "c1 asked for options 66 and 67, and got no boot options"
+
+dhcp c2
+c2_ip=$(lease c2 ip)
+opt66=$(got c2 | sed -n 's/.* TFTP (66), length [0-9]*: "\(.*\)"$/\1/p' | sort -u)
+opt67=$(got c2 | sed -n 's/.* BF (67), length [0-9]*: "\(.*\)"$/\1/p' | sort -u)
+[ "$c2_ip" = $RXG_IP ]
+check $? "c2 got $c2_ip"
+sent c2 | grep -q Parameter-Request && ! sent c2 | grep -q "(6[67])"
+check $? "c2 didn't ask for options 66 and 67"
+# tcpdump shows NUL as ^@. dnsmasq ends 66 and 67 with one (for old PXE clients); RFC 2132 says
+# clients must drop it.
+[ "${opt66%^@}" = $RXG_TFTP ]
+check $? "c2 got option 66: $opt66"
+[ "${opt67%^@}" = $RXG_FILE ]
+check $? "c2 got option 67: $opt67"
+
+for _ in $(seq 10); do
+  ip -n c1 -6 addr show dev eth0 scope global -tentative | grep -q inet6 && break
+  sleep 1
+done
+# c1's global address, written out in full, as socat prints addresses.
+c1_ip6=$(ip netns exec c1 cat /proc/net/if_inet6 | awk '$6 == "eth0" && $4 == "00" { print $1 }' |
+  sed 's/..../&:/g; s/:$//')
+[ -n "$c1_ip6" ] && ip -6 route show match "$c1_ip6" dev lan | grep -q "^$lan_net "
+check $? "c1 configured $c1_ip6 by SLAAC, in $lan_net"
+ra=$(ip netns exec c1 rdisc6 -1 eth0 2>&1)
+ra_prefix=$(echo "$ra" | sed -n 's/^ *Prefix *: //p')
+ra_dns=$(echo "$ra" | sed -n 's/^ *Recursive DNS server *: //p')
+[ "$ra_prefix" = "$lan_net" ]
+check $? "the router advertises the prefix $ra_prefix"
+[ "$ra_dns" = "$lan_ll" ]
+check $? "the router advertises its lan link-local address as DNS: $ra_dns"
+
+## DNS
+
+# Look up $1 (type $3, default A) from c1, at the server $2.
+dig_c1() {
+  ip netns exec c1 dig +short +time=2 +tries=1 "@$2" "$1" "${3:-A}" 2>&1
+}
+
+answer=$(dig_c1 example.com 172.31.0.1)
+[ "$answer" = 192.0.2.80 ]
+check $? "c1 looks up example.com at 172.31.0.1: $answer"
+answer=$(dig_c1 example.com "$lan_ll%eth0")
+[ "$answer" = 192.0.2.80 ]
+check $? "c1 looks up example.com at $lan_ll: $answer"
+answer=$(dig_c1 client1.home.arpa 172.31.0.1)
+[ "$answer" = "$c1_ip" ]
+check $? "c1 looks up client1.home.arpa: $answer"
+answer=$(dig_c1 hyperion.home.arpa 172.31.0.1)
+[ "$answer" = 172.31.0.1 ]
+check $? "c1 looks up hyperion.home.arpa: $answer"
+answer=$(dig_c1 hyperion.home.arpa 172.31.0.1 AAAA)
+[ "$answer" = "$lan_ip6" ]
+check $? "c1 looks up hyperion.home.arpa (AAAA): $answer"
+# The UniFi controller: devices look for "unifi", and LAN clients reach its web UI over IPv4.
+for name in unifi unifi.home.arpa unifi.schmit.net; do
+  answer=$(dig_c1 $name 172.31.0.1)
+  [ "$answer" = 172.31.0.1 ] && [ -z "$(dig_c1 $name 172.31.0.1 AAAA)" ]
+  check $? "c1 looks up $name: $answer, and no IPv6 address"
+done
+# The README points the router's own /etc/resolv.conf here.
+answer=$(dig +short +time=2 +tries=1 @127.0.0.1 example.com 2>&1)
+[ "$answer" = 192.0.2.80 ]
+check $? "the router looks up example.com at 127.0.0.1: $answer"
+
+## NAT
+
+peer=$(tcp c1 209.173.223.177:7)
+[ "$peer" = "$wan4_ip" ]
+check $? "c1 reaches the IPv4 ISP from wan4's address: $peer"
+peer=$(tcp c1 '[2001:db8::1]:7')
+[ "$peer" = "[$c1_ip6]" ]
+check $? "c1 reaches the IPv6 ISP from its own address: $peer"
+
+## Firewall
+
+# 5432 and 6379 stand for Postgres and Redis, and 8080 and 11443 for UniFi OS Server (device
+# inform and web UI).
+for port in 22 80 443 5432 6379 8080 11443; do
+  listen router $port router
+done
+for port in 22 80; do
+  listen c1 $port c1
+done
+sleep 1
+
+for port in 22 80 443; do
+  [ "$(tcp isp4 "$wan4_ip:$port")" = router ]
+  check $? "isp4 reaches the router on TCP $port"
+  [ "$(tcp isp6 "[$wan6_ip]:$port")" = router ]
+  check $? "isp6 reaches the router on TCP $port"
+done
+for port in 8080 11443; do
+  [ -z "$(tcp isp4 "$wan4_ip:$port")" ]
+  check $? "isp4 can't reach the router on TCP $port"
+  [ -z "$(tcp isp6 "[$wan6_ip]:$port")" ]
+  check $? "isp6 can't reach the router on TCP $port"
+  [ "$(tcp c1 "172.31.0.1:$port")" = router ]
+  check $? "c1 reaches the router on TCP $port"
+done
+# Postgres and Redis are open to the internet only for trusted clients (see nftables.conf): isp4's
+# gateway address is in the IPv4 /29, and isp6 borrows an address in the IPv6 /55.
+ip -n isp4 addr add 198.51.100.10/32 dev lo
+ip -n isp6 addr add 2603:300a:2161:cb00::5/128 dev lo
+for port in 5432 6379; do
+  [ "$(tcp isp4 "$wan4_ip:$port")" = router ]
+  check $? "isp4 reaches the router on TCP $port from 209.173.223.177, a trusted client"
+  [ -z "$(tcp isp4 "$wan4_ip:$port" 198.51.100.10)" ]
+  check $? "isp4 can't reach the router on TCP $port from 198.51.100.10"
+  [ "$(tcp isp6 "[$wan6_ip]:$port" "[2603:300a:2161:cb00::5]")" = router ]
+  check $? "isp6 reaches the router on TCP $port from 2603:300a:2161:cb00::5, a trusted client"
+  [ -z "$(tcp isp6 "[$wan6_ip]:$port")" ]
+  check $? "isp6 can't reach the router on TCP $port from 2001:db8::1"
+  [ "$(tcp c1 "172.31.0.1:$port")" = router ]
+  check $? "c1 reaches the router on TCP $port"
+done
+! ip netns exec isp4 dig +time=2 +tries=1 "@$wan4_ip" example.com >/dev/null
+check $? "isp4 gets no DNS answer from the router"
+! ip netns exec isp6 dig +time=2 +tries=1 "@$wan6_ip" example.com >/dev/null
+check $? "isp6 gets no DNS answer from the router"
+
+ip -n isp4 route add 172.31.0.0/24 via "$wan4_ip"
+[ -z "$(tcp isp4 "$c1_ip:80")" ]
+check $? "isp4 can't reach c1 on TCP 80"
+[ -z "$(tcp isp6 "[$c1_ip6]:80")" ]
+check $? "isp6 can't reach c1 on TCP 80"
+
+# Uncomment the example rules in nftables.conf: the IPv6 server rule and the port forward, both
+# for c1.
+sed -e "s|# \(iifname .*ip6 daddr\) 2603:300a:2161:ca00::2 |\1 $c1_ip6 |" \
+  -e "s|# \(iifname .*dnat to\) 172\.31\.0\.10:|\1 $c1_ip:|" /etc/nftables.conf >$LOG/nftables.conf
+nft list ruleset >$LOG/ruleset
+[ "$(diff /etc/nftables.conf $LOG/nftables.conf | grep -c "^>")" = 2 ] && nft -f $LOG/nftables.conf
+check $? "the example rules in nftables.conf load when uncommented"
+[ "$(tcp isp6 "[$c1_ip6]:80")" = c1 ]
+check $? "with them, isp6 reaches c1 on TCP 80"
+[ -z "$(tcp isp6 "[$c1_ip6]:22")" ]
+check $? "with them, isp6 still can't reach c1 on TCP 22"
+[ "$(tcp isp4 "$wan4_ip:2222")" = c1 ]
+check $? "with them, isp4 reaches c1 on TCP 22 through wan4 port 2222"
+systemctl reload-or-restart nftables
+nft list ruleset | cmp -s - $LOG/ruleset
+check $? "systemctl reload-or-restart nftables restores the ruleset"
+
+# If nftables.conf fails to load, the router keeps the old rules and stops routing (see the
+# nftables drop-in). The repo is read-only here, so link a broken copy instead.
+echo "this is not nft syntax" | cat /etc/nftables.conf - >$LOG/broken.conf
+ln -sfn $LOG/broken.conf /etc/nftables.conf
+systemctl restart nftables 2>/dev/null
+nft list ruleset | cmp -s - $LOG/ruleset && [ -z "$(tcp c1 209.173.223.177:7)" ] &&
+  [ -z "$(tcp c1 '[2001:db8::1]:7')" ]
+check $? "a restart with a broken nftables.conf keeps the rules and stops routing"
+# LAN hosts drop their IPv6 default route if the router stops calling itself one.
+[ "$(cat /proc/sys/net/ipv6/conf/lan/forwarding)" = 1 ]
+check $? "while it doesn't route, the router still answers LAN hosts as a router"
+ln -sfn $repo/src/etc/nftables.conf /etc/nftables.conf
+systemctl reload-or-restart nftables && [ "$(tcp c1 209.173.223.177:7)" = "$wan4_ip" ]
+check $? "reload-or-restart with the good file again brings routing back"
+
+## Renewals
+
+# The IPv6 ISP asks for renewals every 10 seconds. Wait for a few, then check that the router got
+# the replies through the firewall: its DHCPv6 address (renewed with the prefix) would have run
+# down otherwise.
+for _ in $(seq 60); do
+  [ "$(grep -c DHCP6_PD_LEASE_RENEW $LOG/isp6-kea.log)" -ge 2 ] && break
+  sleep 1
+done
+left6=$(ip -6 -o addr show dev wan6 scope global |
+  sed -n 's|.*/128 .* valid_lft \([0-9]*\)sec.*|\1|p')
+[ "${left6:-0}" -gt 580 ]
+check $? "wan6 renewed its lease: ${left6}s of 600s left"
+log=$(journalctl -b -q -u systemd-networkd)
+[ "$(echo "$log" | grep -c "wan6: DHCP: received delegated prefix")" = 1 ] &&
+  ! echo "$log" | grep -q "lease lost"
+check $? "networkd got the prefix once and lost no lease"
+
+echo
+if [ $fails -gt 0 ]; then
+  echo "$fails of $checks checks failed. The fake hosts' logs are in $LOG (see KEEP in test/run)."
+  exit 1
+fi
+echo "All $checks checks passed."

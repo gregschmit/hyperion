@@ -1,0 +1,24 @@
+# IPv6 uplink (Comcast): take the default route from the ISP's router advertisements, and ask for
+# the delegated prefix (DHCPv6-PD), so the ISP routes it here: 2603:300a:2161:ca00::/56 and
+# 2603:300a:2161:cb00::/56. The LAN uses a fixed /64 of it (see 20-lan.network). IPv6 isn't NATed.
+[Match]
+Name=wan6
+
+[Network]
+DHCP=ipv6
+IPv6AcceptRA=yes
+
+[IPv6AcceptRA]
+# Ask for a prefix even if the RA doesn't set the "managed" flag.
+DHCPv6Client=always
+
+[DHCPv6]
+# Only a hint; the ISP decides the size.
+PrefixDelegationHint=::/56
+# Keep the prefix across reboots (RFC 9096), and keep our own hostname.
+SendRelease=no
+UseHostname=no
+
+[Link]
+# Don't hold up boot when the ISP is down; dnsmasq waits for network-online.target.
+RequiredForOnline=no

@@ -1,0 +1,36 @@
+# LAN: 172.31.0.1/24 for IPv4, and one fixed /64 of the delegated IPv6 prefix (see 20-wan6.network).
+# dnsmasq serves DHCPv4 and DNS, and sends the router advertisements that clients configure IPv6
+# from (SLAAC). There is no DHCPv6 on the LAN: hosts use SLAAC or a static address.
+#
+# The router is 2603:300a:2161:ca00::1. Give hosts that need a fixed public address (e.g. for DNS
+# records) one of these by hand, with gateway 2603:300a:2161:ca00::1:
+#   2603:300a:2161:ca00::2  2603:300a:2161:ca00::3  2603:300a:2161:ca00::4  2603:300a:2161:ca00::5
+#   2603:300a:2161:ca00::6  2603:300a:2161:ca00::7  2603:300a:2161:ca00::8  2603:300a:2161:ca00::9
+# SLAAC never picks these: its interface IDs are random or come from the MAC address.
+[Match]
+Name=lan
+
+[Network]
+Address=172.31.0.1/24
+# Have wan6 ask the ISP for the prefix, so it routes it here, but don't number lan from it (see
+# Assign= below): lan uses the fixed /64 in [Address].
+DHCPPrefixDelegation=yes
+# dnsmasq advertises this router here; never take an address or a route from another one.
+IPv6AcceptRA=no
+# Configure lan even with no link, so boot doesn't wait for one (see RequiredForOnline= below).
+# dnsmasq sends quick router advertisements only for a minute after it starts; if lan gets its
+# link later, restart dnsmasq, or clients may wait up to 10 minutes for IPv6.
+ConfigureWithoutCarrier=yes
+
+[Address]
+Address=2603:300a:2161:ca00::1/64
+# DAD needs a link; without one, the address would stay tentative and hold up boot.
+DuplicateAddressDetection=none
+
+[DHCPPrefixDelegation]
+SubnetId=0
+Assign=no
+
+[Link]
+# Don't hold up boot without a LAN link; dnsmasq and nginx wait for network-online.target.
+RequiredForOnline=no-carrier

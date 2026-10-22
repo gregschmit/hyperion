@@ -1,5 +1,16 @@
 nginx
-certbot
-python3-certbot-nginx
+nginx-module-acme
 
 postgresql
+redis
+ssl-cert
+
+nftables
+dnsmasq
+
+curl
+jq
+podman
+uidmap
+slirp4netns
+passt

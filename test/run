@@ -1,0 +1,47 @@
+#!/bin/sh
+
+# Boot the router config in a container, plug in fake ISPs and LAN clients, and check that it all
+# works (see check). Needs Docker.
+#
+#   test/run                build the image, run the checks, and remove the container
+#   KEEP=1 test/run         leave the container running afterwards, to look around
+#   REPO=<path> test/run    check another copy of the repo (default: the one this script is in)
+
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "${REPO:-$here/..}" && pwd)
+name=hyperion-test-$$
+
+echo "Building the hyperion-test image..."
+docker build -q -t hyperion-test "$here" >/dev/null
+
+if [ "${KEEP:-}" != 1 ]; then
+  trap 'docker rm -f "$name" >/dev/null 2>&1' EXIT
+  trap 'exit 130' INT TERM
+fi
+
+# --network none: keep Docker's interface and default route out of the router.
+# --sysctl: containers inherit IPv4 forwarding from Docker's host; start without it, like a new
+#   router, so nftables.service must turn it on.
+# --tmpfs /run:exec: like systemd's own /run (check runs a script from there).
+# pkglist: ./install would try to install the whole list, and the container has no network.
+docker run -d --name "$name" --hostname hyperion --privileged --network none \
+  --sysctl net.ipv4.ip_forward=0 --tmpfs /run:exec \
+  -v "$repo:/srv/hyperion:ro" -v "$here/pkglist:/srv/hyperion/pkglist:ro" -v "$here:/test:ro" \
+  hyperion-test >/dev/null
+
+status=0
+docker exec "$name" /test/check || status=$?
+
+# The container stops early if ./install fails.
+if [ "$(docker inspect -f '{{.State.Running}}' "$name")" != true ]; then
+  echo "The container stopped. Its log:"
+  docker logs "$name"
+fi
+if [ "${KEEP:-}" = 1 ]; then
+  echo "Kept $name. Get a shell with: docker exec -it $name bash"
+  echo "The fake hosts are network namespaces (ip netns), with logs in /run/check."
+  echo "Remove it with: docker rm -f $name"
+fi
+exit $status
