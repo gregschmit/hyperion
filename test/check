@@ -389,10 +389,10 @@ for name in unifi unifi.home.arpa unifi.schmit.net; do
   [ "$answer" = 172.31.0.1 ] && [ -z "$(dig_c1 $name 172.31.0.1 AAAA)" ]
   check $? "c1 looks up $name: $answer, and no IPv6 address"
 done
-# The README points the router's own /etc/resolv.conf here.
-answer=$(dig +short +time=2 +tries=1 @127.0.0.1 example.com 2>&1)
+# The router's own lookups go through /etc/resolv.conf, which install links to dnsmasq.
+answer=$(getent hosts example.com | awk '{ print $1 }')
 [ "$answer" = 192.0.2.80 ]
-check $? "the router looks up example.com at 127.0.0.1: $answer"
+check $? "the router looks up example.com through /etc/resolv.conf: $answer"
 
 ## NAT
 

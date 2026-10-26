@@ -1,7 +1,7 @@
-# Name the LAN interface "lan" so the other configs can refer to it. Set the NIC's real MAC address
-# (see `ip -br link`); renames apply at the next boot.
+# Name the LAN interface "lan" by its MAC address, so the other configs can refer to it.
+# Renames apply at the next boot.
 [Match]
-MACAddress=00:00:5e:00:53:03
+MACAddress=bc:24:11:f0:63:f1
 # Only the NIC itself; VLANs on it share its MAC address.
 Type=ether
 

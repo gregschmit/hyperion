@@ -19,16 +19,18 @@ Clone to `/srv/hyperion`, since nginx serves `webroot/` from there. Keep the clo
 filesystem and out of `/home` and `/root`: services read their configs through the links early in
 boot, and nftables and networkd can't see `/home` or `/root`.
 
-After linking, `./install` installs the packages in `pkglist` that are missing, and UniFi OS
-Server (the latest release, from Ubiquiti, checked against its SHA-256; it updates itself after
-that). nginx comes from nginx.org (see `src/etc/apt`), for its ACME module: nginx gets and renews
-a Let's Encrypt certificate for each HTTPS site by itself, using the site's `server_name`. The
-names must point at this server, and port 80 must reach it. Until a site has its certificate, its
-HTTPS connections fail and `/var/log/nginx/error.log` says why; the other sites work. The
-certificates live in `/var/cache/nginx/acme-letsencrypt`.
+Besides linking the files in `src/`, `./install` installs the packages in `pkglist` that are
+missing, and UniFi OS Server (the latest release, from Ubiquiti, checked against its SHA-256; it
+updates itself after that). nginx comes from nginx.org (see `src/etc/apt`), for its ACME module:
+nginx gets and renews a Let's Encrypt certificate for each HTTPS site by itself, using the site's
+`server_name`. The names must point at this server, and port 80 must reach it. Until a site has
+its certificate, its HTTPS connections fail and `/var/log/nginx/error.log` says why; the other
+sites work. The certificates live in `/var/cache/nginx/acme-letsencrypt`.
 
-`./install` also puts the router configs in place, and they take effect at the next boot. On a
-box that isn't the router yet, follow the first-time setup below instead.
+On its first run, `./install` hands networking from ifupdown (Debian's default) to
+systemd-networkd and turns on the firewall. That, like new NIC names in the `.link` files, takes
+effect at the next boot, so the script asks to reboot. For a new server, see the first-time setup
+below.
 
 Re-run `./install` (as root) after each pull. It links files one by one, so files that packages
 put in the same directories stay out of the repo, and it removes links to files that are gone from
@@ -46,7 +48,7 @@ Then apply the changes:
 | `dnsmasq.d/lan.conf` | `dnsmasq --test --conf-dir=/etc/dnsmasq.d && systemctl restart dnsmasq` |
 | `systemd/system/*`   | `systemctl daemon-reload`                                               |
 | `nginx/*`            | `nginx -t && systemctl reload nginx`                                    |
-| `postgresql/*`       | `./install` (reloads postgres, and restarts it if a setting needs that) |
+| `postgresql/*`       | `systemctl reload postgresql` (restart it for `listen_addresses`)       |
 | `redis/*`            | `systemctl restart redis-server`                                        |
 
 ## Router
@@ -72,8 +74,9 @@ Comcast (IPv6) ---- wan6 --+
   `2603:300a:2161:ca00::/55`). Nothing reaches the LAN unless it answers a connection from the
   LAN. The router only routes while the firewall is loaded.
 - Postgres and Redis listen on all addresses and leave the choice of clients to the firewall.
-  Network clients need a password and TLS with Debian's self-signed certificate: `sslmode=require`
-  for Postgres, and `rediss://` without verification (`redis-cli --tls --insecure`) for Redis.
+  Network clients need TLS with Debian's self-signed certificate: `sslmode=require` for Postgres,
+  and `rediss://` without verification (`redis-cli --tls --insecure`) for Redis. Postgres also
+  needs a password; Redis has none.
 - UniFi OS Server (the UniFi controller) runs in rootless podman as the `uosserver` user; manage it
   with the `uosserver` command. Its ports are open to the LAN only. LAN clients reach its web UI at
   `https://unifi.schmit.net` through nginx (or at `https://172.31.0.1:11443`), and UniFi devices
@@ -86,39 +89,20 @@ The configs live in `src/etc`: `systemd/network/` (interface names and addresses
 
 ### First-Time Setup
 
-1. Put each NIC's MAC address (see `ip -br link` on the server) in
-   `src/etc/systemd/network/10-*.link`, and commit and push it.
-2. At the server's console (the network drops when it switches over), pull and run `./install`
-   (move an old clone from `/srv/schmit.net` to `/srv/hyperion` first). apt replaces Debian's nginx
-   with nginx.org's. Then check the names the NICs will get. Expect `wan4`, `wan6`, and `lan`:
+On a fresh Debian install:
 
-   ```sh
-   for nic in /sys/class/net/*; do
-     udevadm test-builtin net_setup_link "$nic" 2>/dev/null | grep ID_NET_NAME=
-   done
-   ```
-
-3. Unplug `lan` if it's on the old router's LAN. Then move networking from ifupdown to
-   systemd-networkd, turn on the firewall, and reboot (if NetworkManager is installed,
-   `apt purge network-manager` first):
-
-   ```sh
-   mv /etc/network/interfaces /etc/network/interfaces.save
-   systemctl disable networking
-   systemctl enable systemd-networkd nftables
-   reboot
-   ```
-
-4. Point the router's own DNS at dnsmasq, with Cloudflare as a fallback. (Before the reboot,
-   ifupdown's DHCP client would have overwritten this.)
-
-   ```sh
-   printf 'nameserver %s\n' 127.0.0.1 1.1.1.1 2606:4700:4700::1111 > /etc/resolv.conf
-   ```
-
-5. Take the old router off the LAN, or turn off its DHCP server and router advertisements if it
-   stays as a switch or access point. Move the ISP cables to `wan4` and `wan6`, plug in `lan`, and
-   restart the LAN switch, so clients get new addresses now instead of in a few hours.
+1. Connect each NIC to its network by the MAC address in its `.link` file in
+   `src/etc/systemd/network/` (on Proxmox, put each network device on the right bridge): `wan4` to
+   Metronet, `wan6` to Comcast, and `lan` to the LAN switch.
+2. Clone the repo and run `./install` (see above). If it warns that no NIC has a MAC address from
+   a `.link` file, fix the file and re-run it.
+3. Take the old router off the LAN, or turn off its DHCP server and router advertisements if it
+   stays as a switch or access point.
+4. In public DNS, point `schmit.net` at `209.173.223.178`, and `www`, `hyperion`, `files`, and
+   `unifi` at `schmit.net` (e.g. with CNAMEs). nginx needs these names for its certificates.
+5. Reboot (`./install` offers to, or run `reboot`). The server comes back at `209.173.223.178`
+   and, from the LAN, `172.31.0.1`. Then restart the LAN switch, so clients get new addresses now
+   instead of in a few hours.
 6. Check that:
    - `networkctl` shows all three links configured. If an uplink gets no address or no route,
      power-cycle its modem.
@@ -128,22 +112,8 @@ The configs live in `src/etc`: `systemd/network/` (interface names and addresses
      `nftables.conf`), or give `wan6` the old router's DUID (`DUIDRawData=` in `[DHCPv6]`).
    - `nft list ruleset` and `journalctl -u dnsmasq` look right, and leases show up in
      `/var/lib/misc/dnsmasq.leases`.
-   - schmit.net points at `209.173.223.178` (`dig +short schmit.net`), and each site has a
-     certificate in `/var/cache/nginx/acme-letsencrypt`.
-7. Once it all works, remove the old tools:
-   `apt purge ifupdown dhcpcd-base isc-dhcp-client certbot python3-certbot-nginx`.
-
-To go back, run this at the console (after step 7, first `apt install ifupdown` while the network
-still works). Until you try again, don't run `./install`: it puts the `.link` files back, and the
-next boot renames the NICs.
-
-```sh
-systemctl disable systemd-networkd nftables
-systemctl enable networking
-rm /etc/systemd/network/10-*.link
-mv /etc/network/interfaces.save /etc/network/interfaces
-reboot
-```
+   - `dig +short schmit.net` shows `209.173.223.178`, and each site has a certificate in
+     `/var/cache/nginx/acme-letsencrypt`.
 
 ### Common Changes
 
@@ -168,9 +138,10 @@ Always check the following after fresh install or dist upgrade:
 - Ensure `PasswordAuthentication no` is set in `/etc/ssh/sshd_config`.
 - Ensure `/etc/nftables.conf` links to `src/etc/nftables.conf`, and `nftables.service` is enabled
   and active.
-- The postgres and redis passwords are in `/root/postgres_pw.txt` and `/root/redis_pw.txt`.
-  `./install` sets each one when its file is missing or no longer works, so to rotate one, delete
-  its file and run `./install`.
+- The postgres password is in `/root/postgres_pw.txt`. `./install` sets it when the file is
+  missing or the password no longer works, so to rotate it, delete the file and run `./install`.
+- Redis has no password, so only the LAN and the `trusted_clients` sets in `nftables.conf` may
+  reach it.
 
 ## OpenRGB Config on Physical Servers:
 

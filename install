@@ -3,14 +3,17 @@
 # Symlink each file under `src/` to the same path under `/`, e.g. `src/etc/nftables.conf` ->
 # `/etc/nftables.conf`. Directories are created as needed, so files that packages install next to
 # ours are left alone, and links to files that are gone from `src/` are removed. Also installs the
-# packages in `pkglist` and UniFi OS Server, and sets the postgres and redis passwords. Run as root
-# after each pull; it is safe to re-run.
+# packages in `pkglist` and UniFi OS Server, hands networking to systemd-networkd, and sets the
+# postgres password. Run as root after each pull; it is safe to re-run.
 
 set -eu
 
 # Directories (relative to src/) to symlink whole instead of file by file, e.g. "etc/foo.d". Only
 # list a directory if this repo owns everything in it.
 LINK_DIRS=""
+
+# Set when the network changes need a reboot.
+REBOOT=""
 
 # Check whether $1 exactly matches an entry in LINK_DIRS.
 is_link_dir() {
@@ -51,6 +54,36 @@ install_packages() {
   apt-get install -o Dpkg::Options::=--force-confold $missing
 }
 
+# Hand networking from ifupdown (Debian's default) to systemd-networkd, and turn on the firewall.
+# The new network, and the NIC names from the .link files, take effect at the next boot.
+install_network() {
+  local link mac name nic
+
+  # Each .link file names the NIC with its MAC address; one that has another name yet gets it at
+  # the next boot.
+  for link in "$REPO"/src/etc/systemd/network/*.link; do
+    mac=$(sed -n 's/^MACAddress=//p' "$link")
+    name=$(sed -n 's/^Name=//p' "$link")
+    nic=$(ip -br link |
+      awk -v mac="$mac" 'tolower($3) == tolower(mac) { sub("@.*", "", $1); print $1 }')
+    if [ -z "$nic" ]; then
+      echo "WARNING: No NIC has the MAC address in ${link#"$REPO"/} ($mac)." >&2
+    elif [ "$nic" != "$name" ]; then
+      REBOOT=1
+    fi
+  done
+
+  systemctl enable -q nftables
+  if systemctl -q is-enabled systemd-networkd; then return; fi
+  echo "Switching:   networking from ifupdown to systemd-networkd, at the next boot"
+  if [ -f /etc/network/interfaces ]; then
+    mv /etc/network/interfaces /etc/network/interfaces.save
+  fi
+  systemctl disable -q networking 2>/dev/null || true
+  systemctl enable -q systemd-networkd
+  REBOOT=1
+}
+
 # Install UniFi OS Server (the UniFi controller) if it isn't installed yet: the latest release for
 # this architecture, from Ubiquiti's firmware API. It updates itself afterwards. Its installer asks
 # to confirm.
@@ -85,9 +118,8 @@ install_unifi() {
   exit 1
 }
 
-# Apply postgres's config (restart it if a setting needs that), and give the postgres role a long
-# random password, kept in /root/postgres_pw.txt. A password that still works is left alone, so to
-# rotate it, delete the file and run this script.
+# Give the postgres role a long random password, kept in /root/postgres_pw.txt. A password that
+# still works is left alone, so to rotate it, delete the file and run this script.
 install_postgres() {
   local pw_file=/root/postgres_pw.txt
   local pw
@@ -96,13 +128,6 @@ install_postgres() {
 
   systemctl start postgresql
   for _ in $(seq 30); do pg_isready -q && break; sleep 1; done
-  runuser -u postgres -- psql -qAtc 'SELECT pg_reload_conf()' >/dev/null
-  if [ "$(runuser -u postgres -- psql -qAtc \
-    'SELECT count(*) FROM pg_settings WHERE pending_restart')" != 0 ]; then
-    echo "Restarting:  postgresql (for new settings)"
-    systemctl restart postgresql
-    for _ in $(seq 30); do pg_isready -q && break; sleep 1; done
-  fi
 
   if [ -s "$pw_file" ] && PGPASSWORD=$(cat "$pw_file") \
     psql -h 127.0.0.1 -U postgres -d postgres -qAtc 'SELECT 1' >/dev/null 2>&1; then
@@ -113,32 +138,6 @@ install_postgres() {
   printf "ALTER ROLE postgres PASSWORD '%s';\n" "$pw" | runuser -u postgres -- psql -q
   (umask 077 && echo "$pw" >"$pw_file")
   echo "Postgres:    new password for postgres in $pw_file"
-}
-
-# Give redis a long random password, kept in /root/redis_pw.txt and in /etc/redis/password.conf
-# (where redis reads it). A password that still works is left alone, so to rotate it, delete the
-# file and run this script.
-install_redis() {
-  local pw_file=/root/redis_pw.txt
-  local pw
-
-  if ! systemctl cat redis-server.service >/dev/null 2>&1; then return; fi
-
-  # redis reads Debian's self-signed TLS key (see redis.conf) as a member of ssl-cert.
-  usermod -aG ssl-cert redis
-  # It doesn't start until the password file exists; then the check below needs it running.
-  systemctl start redis-server 2>/dev/null || true
-
-  if [ -s "$pw_file" ] && [ "$(REDISCLI_AUTH=$(cat "$pw_file") \
-    redis-cli -s /run/redis/redis-server.sock ping 2>/dev/null)" = PONG ]; then
-    return
-  fi
-  pw=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 40)
-  (umask 027 && echo "requirepass $pw" >/etc/redis/password.conf)
-  chgrp redis /etc/redis/password.conf
-  (umask 077 && echo "$pw" >"$pw_file")
-  systemctl restart redis-server
-  echo "Redis:       new password in $pw_file"
 }
 
 # Walk src/$1 and install its entries into /$1. Pass "" to process the src root.
@@ -210,10 +209,18 @@ install_dir etc/apt
 install_packages
 install_unifi
 install_dir ""
+install_network
 
-# nginx.org's package enables nginx but doesn't start it. Once it runs, nginx gets the sites'
-# certificates itself.
-if systemctl cat nginx.service >/dev/null 2>&1; then systemctl start nginx; fi
+# The password needs a running postgres, which a container that links the configs before it
+# boots (see test/Dockerfile) doesn't have yet.
+if [ -d /run/systemd/system ]; then
+  install_postgres
+fi
 
-install_postgres
-install_redis
+if [ -n "$REBOOT" ]; then
+  printf "The network changes take effect at the next boot. Reboot now? [y/N] "
+  read -r answer || echo
+  case "${answer:-}" in
+    [yY]*) systemctl reboot ;;
+  esac
+fi

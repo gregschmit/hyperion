@@ -29,7 +29,7 @@ RUN mkdir -p /etc/systemd/journald.conf.d \
 
 # Link the configs before systemd starts, like ./install on the real router. Make /sys read-only
 # first, as systemd expects in a container: that keeps udev off, which would otherwise act on the
-# host's devices.
+# host's devices. And unmount Docker's /etc/resolv.conf, which install links to the repo's.
 ENTRYPOINT ["/bin/sh", "-c", \
-  "mount -o remount,ro /sys && /srv/hyperion/install && exec /sbin/init"]
+  "mount -o remount,ro /sys && umount /etc/resolv.conf && /srv/hyperion/install && exec /sbin/init"]
 STOPSIGNAL SIGRTMIN+3
