@@ -54,18 +54,19 @@ install_packages() {
   apt-get install -o Dpkg::Options::=--force-confold $missing
 }
 
-# Hand networking from ifupdown (Debian's default) to systemd-networkd, and turn on the firewall.
-# The new network, and the NIC names from the .link files, take effect at the next boot.
+# Hand networking from ifupdown (Debian's default) to systemd-networkd, and turn on the firewall
+# and the guest networks' bandwidth limits. The new network, and the NIC names from the .link
+# files, take effect at the next boot.
 install_network() {
   local link mac name nic
 
   # Each .link file names the NIC with its MAC address; one that has another name yet gets it at
-  # the next boot.
+  # the next boot. VLANs on a NIC share its MAC address, but come after it.
   for link in "$REPO"/src/etc/systemd/network/*.link; do
     mac=$(sed -n 's/^MACAddress=//p' "$link")
     name=$(sed -n 's/^Name=//p' "$link")
     nic=$(ip -br link |
-      awk -v mac="$mac" 'tolower($3) == tolower(mac) { sub("@.*", "", $1); print $1 }')
+      awk -v mac="$mac" 'tolower($3) == tolower(mac) { sub("@.*", "", $1); print $1; exit }')
     if [ -z "$nic" ]; then
       echo "WARNING: No NIC has the MAC address in ${link#"$REPO"/} ($mac)." >&2
     elif [ "$nic" != "$name" ]; then
@@ -73,7 +74,7 @@ install_network() {
     fi
   done
 
-  systemctl enable -q nftables
+  systemctl enable -q nftables guest-shaper
   if systemctl -q is-enabled systemd-networkd; then return; fi
   echo "Switching:   networking from ifupdown to systemd-networkd, at the next boot"
   if [ -f /etc/network/interfaces ]; then

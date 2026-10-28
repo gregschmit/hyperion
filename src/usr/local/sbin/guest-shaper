@@ -1,0 +1,127 @@
+#!/bin/sh
+
+# Limit the guest networks' bandwidth with tc: each guest device gets up to 20 Mbit/s each way, and
+# each guest network up to 200 Mbit/s each way.
+#
+# Each guest network gets two HTB trees: one on its interface, for traffic to its devices
+# (download), and one on an IFB device, for traffic from them (upload). Linux only shapes what an
+# interface sends, so the interface hands what it receives to the IFB device first. Each device has
+# a class numbered after its DHCP address (.150 has class 1:196, 0x100 + 150), and filters that
+# match its MAC address, so its IPv4 and IPv6 traffic share the class. Devices without a lease
+# share class 1:100, which has the same limit.
+#
+#   guest-shaper start                 set up the trees (guest-shaper.service runs this)
+#   guest-shaper stop                  remove them
+#   guest-shaper add|old|del MAC IP    add or remove a device's filters (dnsmasq runs this on each
+#                                      lease change; see dnsmasq.d/guest.conf)
+#
+# To see each device's class and traffic: `tc -s class show dev guest6` (download), and
+# `dev ifb-guest6` (upload).
+
+set -eu
+
+# Each guest network's interface, and the first three bytes of its IPv4 /24 (see
+# 20-guest*.network).
+NETWORKS="guest4:172.31.20 guest6:172.31.21"
+
+# The limits, in kbit/s. For different limits each way, set the UP ones apart, e.g. 20 Mbit/s down
+# and 10 Mbit/s up for each device: DEVICE_UP=10000.
+DEVICE_DOWN=20000
+DEVICE_UP=20000
+NETWORK_DOWN=200000
+NETWORK_UP=200000
+
+LEASES=/var/lib/misc/dnsmasq.leases
+
+# Print the options that let an HTB class send 5 ms' worth of its limit $1 (kbit/s) at once.
+# HTB's default, about one packet, falls short of the limit whenever the router runs it late.
+burst() {
+  echo "burst $(($1 * 5 / 8)) cburst $(($1 * 5 / 8))"
+}
+
+# Build an HTB tree on interface $1, for a network limit of $2 and a device limit of $3. A class
+# for each address (.2-.254) and the shared class are each promised an equal share of the
+# network's limit, and may borrow up to the device limit while the network has room. (Promising
+# them more than the network's limit in total would let them take more than it.)
+tree() {
+  share=$(($2 / 254))
+  {
+    echo "qdisc add dev $1 root handle 1: htb default 100"
+    # The quantum (bytes per turn, when classes share) matters only for the device classes. Set
+    # this one's, or HTB warns that the one it derives from the rate is too big.
+    echo "class add dev $1 parent 1: classid 1:1 htb rate ${2}kbit $(burst "$2") quantum 1514"
+    for n in 0 $(seq 2 254); do
+      class=1:$(printf %x $((0x100 + n)))
+      echo "class add dev $1 parent 1:1 classid $class htb rate ${share}kbit ceil ${3}kbit" \
+        "$(burst "$3")"
+      # fq_codel keeps one download from slowing the device's other traffic. 128 flows (not the
+      # default 1024) keep the ~1000 queues small.
+      echo "qdisc add dev $1 parent $class fq_codel flows 128"
+    done
+  } | tc -batch -
+}
+
+# Point the filters for the device with MAC address $2 and DHCP address $3 at its classes (with
+# $1 add), or remove them (with $1 del). Skip addresses outside the guest networks.
+device() {
+  for net in $NETWORKS; do
+    case $3 in "${net#*:}".*) ;; *) continue ;; esac
+    dev=${net%%:*}
+    n=${3##*.}
+    if [ "$1" = del ]; then
+      tc filter del dev "$dev" parent 1: protocol all prio 1 handle "$n" flower
+      tc filter del dev "ifb-$dev" parent 1: protocol all prio 1 handle "$n" flower
+    else
+      class=1:$(printf %x $((0x100 + n)))
+      tc filter replace dev "$dev" parent 1: protocol all prio 1 handle "$n" flower \
+        dst_mac "$2" classid "$class"
+      tc filter replace dev "ifb-$dev" parent 1: protocol all prio 1 handle "$n" flower \
+        src_mac "$2" classid "$class"
+    fi
+  done
+}
+
+# Build everything anew: HTB can't replace a tree in place.
+start() {
+  stop
+  for net in $NETWORKS; do
+    dev=${net%%:*}
+    # systemd-networkd creates the interface at boot.
+    for _ in $(seq 30); do
+      if ip link show "$dev" >/dev/null 2>&1; then break; fi
+      sleep 1
+    done
+    ip link add "ifb-$dev" type ifb
+    ip link set "ifb-$dev" up
+    tree "$dev" $NETWORK_DOWN $DEVICE_DOWN
+    tree "ifb-$dev" $NETWORK_UP $DEVICE_UP
+    tc qdisc add dev "$dev" handle ffff: ingress
+    tc filter add dev "$dev" parent ffff: protocol all prio 1 matchall \
+      action mirred egress redirect dev "ifb-$dev"
+  done
+
+  # The new trees have no filters yet: add those of the devices that have a lease.
+  if [ -f $LEASES ]; then
+    while read -r _ mac ip _; do
+      device add "$mac" "$ip"
+    done <$LEASES
+  fi
+}
+
+stop() {
+  for net in $NETWORKS; do
+    dev=${net%%:*}
+    tc qdisc del dev "$dev" root 2>/dev/null || true
+    tc qdisc del dev "$dev" ingress 2>/dev/null || true
+    ip link del "ifb-$dev" 2>/dev/null || true
+  done
+}
+
+case "${1:-}" in
+  start) start ;;
+  stop) stop ;;
+  # From dnsmasq, which also runs this for other events (e.g. tftp), which need nothing.
+  add | old) device add "$2" "$3" ;;
+  # The filters are gone already if the trees were rebuilt since.
+  del) device del "$2" "$3" 2>/dev/null || true ;;
+esac

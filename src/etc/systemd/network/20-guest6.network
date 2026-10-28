@@ -1,0 +1,22 @@
+# Guest network with IPv6 and IPv4: VLAN 21 on lan, with 172.31.21.1/24 and the /64 with subnet ID
+# 21 of the delegated prefix (see 20-wan6.network). dnsmasq serves DHCPv4 and the router
+# advertisements that guests configure IPv6 from (SLAAC; see dnsmasq.d/guest.conf), nftables.conf
+# lets guests reach the internet but nothing local, and /usr/local/sbin/guest-shaper limits their
+# bandwidth.
+[Match]
+Name=guest6
+
+[Network]
+Address=172.31.21.1/24
+# dnsmasq advertises this router here; never take an address or a route from another one.
+IPv6AcceptRA=no
+# Like lan (see 20-lan.network): configure it even with no link.
+ConfigureWithoutCarrier=yes
+
+[Address]
+Address=2603:300a:2161:ca21::1/64
+# DAD needs a link; without one, the address would stay tentative and hold up boot.
+DuplicateAddressDetection=none
+
+[Link]
+RequiredForOnline=no-carrier

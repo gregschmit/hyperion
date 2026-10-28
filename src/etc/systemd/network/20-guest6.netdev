@@ -1,0 +1,7 @@
+# The guest network with IPv6: VLAN 21, tagged on lan (see 20-lan.network), named "guest6".
+[NetDev]
+Name=guest6
+Kind=vlan
+
+[VLAN]
+Id=21

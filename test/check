@@ -1,13 +1,16 @@
 #!/bin/sh
 # shellcheck disable=SC2319 # Each check is a condition, then check $? on the next line.
 
-# Plug fake ISPs and LAN clients into the router, and check DHCP, SLAAC, DNS, NAT, and the
-# firewall. test/run runs this in the test container, whose own network namespace is the router.
-# The rest of the network is made of namespaces (veth ends in parentheses):
+# Plug fake ISPs, LAN clients, and guests into the router, and check DHCP, SLAAC, DNS, NAT, the
+# firewall, and the guest networks and their bandwidth limits. test/run runs this in the test
+# container, whose own network namespace is the router. The rest of the network is made of
+# namespaces (veth ends in parentheses):
 #
-#   isp4 (up4)---(wan4)                          (c1)---(eth0) c1
-#                      router (lan)---(rtr) switch
-#   isp6 (up6)---(wan6)                          (c2)---(eth0) c2
+#                                                  (c1)---(eth0) c1
+#   isp4 (up4)---(wan4)                            (c2)---(eth0) c2
+#                      router (lan)---(rtr) switch (c3)---(eth0) c3, a guest on guest4
+#   isp6 (up6)---(wan6)                            (c4)---(eth0) c4, a guest on guest6
+#                                                  (c5)---(eth0) c5, a guest on guest6
 #
 # Prints a PASS or FAIL line per check, and exits non-zero if any check fails. The fake hosts'
 # configs and logs are in /run/check.
@@ -24,6 +27,13 @@ RXG_FILE=rxgrunner144.yml.erb
 checks=0
 fails=0
 mkdir -p $LOG
+
+# The container runs install, then systemd (see the Dockerfile). Wait for the configs, so the NICs
+# get their names and MAC addresses from them.
+for _ in $(seq 100); do
+  [ "$(cat /proc/1/comm)" = systemd ] && break
+  sleep 0.1
+done
 
 # Print PASS or FAIL and the description in $2, as the exit status in $1 is 0 or not.
 check() {
@@ -155,22 +165,29 @@ sed -n 's/^server=//p' /etc/dnsmasq.d/lan.conf | while read -r server; do
   esac
 done
 
-# The LAN: a plain switch (no multicast snooping) with the router and two clients. c2 has the
-# rXg's MAC address. The switch's end of lan stays down until boot is done, since boot must not
-# wait for a LAN link.
+# The LAN: a switch (no multicast snooping) with the router and five clients. c2 has the rXg's MAC
+# address. c3 is a guest on guest4, and c4 and c5 on guest6: their ports are in VLANs 20 and 21,
+# which go to the router tagged, beside the untagged LAN. The switch's end of lan stays down until
+# boot is done, since boot must not wait for a LAN link.
 ip netns add switch
-ip -n switch link add br0 type bridge mcast_snooping 0
+ip -n switch link add br0 type bridge mcast_snooping 0 vlan_filtering 1
 ip -n switch link set br0 up
 ip -n switch link add rtr type veth peer name lan address "$(mac lan)"
 ip -n switch link set rtr master br0
+bridge -n switch vlan add dev rtr vid 20
+bridge -n switch vlan add dev rtr vid 21
 ip -n switch link set lan netns router
-for c in c1 c2; do
+for c in c1 c2 c3 c4 c5; do
   ip netns add $c
   ip -n $c link set lo up
   ip -n $c link add eth0 type veth peer name $c netns switch
   ip -n switch link set $c master br0 up
 done
 ip -n c2 link set eth0 address $RXG_MAC
+for port in c3:20 c4:21 c5:21; do
+  bridge -n switch vlan del dev "${port%:*}" vid 1
+  bridge -n switch vlan add dev "${port%:*}" vid "${port#*:}" pvid untagged
+done
 
 ## Boot
 
@@ -181,11 +198,23 @@ for _ in $(seq 30); do
   [ "$state" != offline ] && break
   sleep 1
 done
+# guest-shaper needs IFB devices, fq_codel, and flower filters. Debian's kernel has them, but
+# Docker Desktop's doesn't: there, forgive guest-shaper for failing, and skip its checks.
+if ip link add ifb-probe type ifb 2>/dev/null; then
+  ip link del ifb-probe
+  shaper=1
+else
+  shaper=""
+  systemctl reset-failed guest-shaper
+  state=$(systemctl is-system-running)
+fi
 failed=$(systemctl list-units --failed --plain --no-legend | cut -d' ' -f1 | tr '\n' ' ')
 [ "$state" = running ]
 check $? "systemd booted: $state" || echo "      failed units: $failed"
-networkctl list --no-legend lan | grep -q "no-carrier *configured"
-check $? "lan is configured with no link"
+for nic in lan guest4 guest6; do
+  networkctl list --no-legend $nic | grep -q "no-carrier *configured"
+  check $? "$nic is configured with no link"
+done
 ip -n switch link set rtr up
 
 ## Install
@@ -267,6 +296,12 @@ check $? "wan6 got a default route via $wan6_gw by RA, and the address $wan6_ip"
 check $? "wan6 got the delegated prefix $pd"
 ip -4 -o addr show dev lan | grep -q " 172.31.0.1/24 "
 check $? "lan has 172.31.0.1/24"
+ip -4 -o addr show dev guest4 | grep -q " 172.31.20.1/24 " && [ -z "$(ip -6 addr show dev guest4)" ]
+check $? "guest4 has 172.31.20.1/24, and no IPv6 address"
+guest6_ip6=$(addrs -6 dev guest6 scope global)
+ip -4 -o addr show dev guest6 | grep -q " 172.31.21.1/24 " &&
+  [ "$guest6_ip6" = 2603:300a:2161:ca21::1 ]
+check $? "guest6 has 172.31.21.1/24 and $guest6_ip6"
 [ "$lan_ip6" = 2603:300a:2161:ca00::1 ] && [ "$lan_net" = 2603:300a:2161:ca00::/64 ]
 check $? "lan has $lan_ip6 in $lan_net, and only that"
 
@@ -487,6 +522,265 @@ check $? "while it doesn't route, the router still answers LAN hosts as a router
 ln -sfn $repo/src/etc/nftables.conf /etc/nftables.conf
 systemctl reload-or-restart nftables && [ "$(tcp c1 209.173.223.177:7)" = "$wan4_ip" ]
 check $? "reload-or-restart with the good file again brings routing back"
+
+## Guest networks
+
+# Get a lease for guest $1 on the guest network whose IPv4 /24 starts with $2, and check it: an
+# address from the pool, with the router and Cloudflare's DNS servers, and no name in DNS.
+guest_lease() {
+  dhcp "$1" -x "hostname:$1-guest"
+  ip=$(lease "$1" ip)
+  opts="$(lease "$1" router) $(lease "$1" dns)"
+  [ "${ip%.*}" = "$2" ] && [ "${ip##*.}" -ge 100 ] && [ "$opts" = "$2.1 1.1.1.1 1.0.0.1" ]
+  check $? "$1 got $ip, from the pool (.100-.254), with the router and Cloudflare's DNS: $opts"
+  [ -z "$(dig_c1 "$1-guest.home.arpa" 172.31.0.1)" ]
+  check $? "$1's name stays out of DNS"
+}
+
+# Print client $1's MAC address.
+mac_of() {
+  ip -n "$1" -br link show eth0 | awk '{ print $3 }'
+}
+
+# Send a UDP packet from client $1 to port 9 of $2, from each of the other addresses, and print the
+# ones that arrive at the ISP $3 (isp4 or isp6).
+arrives() {
+  client=$1 dest=$2 isp=$3
+  shift 3
+  ip netns exec "$isp" tcpdump -i "up${isp#isp}" --immediate-mode -U -w "$LOG/$client-spoof.pcap" \
+    udp port 9 </dev/null 2>"$LOG/$client-spoof.log" &
+  tcpdump=$!
+  for _ in $(seq 50); do
+    grep -q listening "$LOG/$client-spoof.log" && break
+    sleep 0.1
+  done
+  for src; do
+    case $src in
+      *:*) to="[$dest]" bind="[$src]" ;;
+      *) to=$dest bind=$src ;;
+    esac
+    echo "from $src" | ip netns exec "$client" socat -u - "UDP:$to:9,bind=$bind"
+  done
+  sleep 1
+  kill $tcpdump
+  wait $tcpdump
+  tcpdump -r "$LOG/$client-spoof.pcap" -A 2>/dev/null | sed -n 's/.*from \([0-9a-f:.]*\).*/\1/p' |
+    paste -sd' '
+}
+
+# c3 is on guest4, and c4 and c5 on guest6. c5 gets its lease later (see Bandwidth limits).
+for c in c3 c4 c5; do
+  ip -n $c link set eth0 up
+done
+guest_lease c3 172.31.20
+c3_ip=$(lease c3 ip)
+! ip netns exec c3 rdisc6 -1 -r 1 -w 2000 eth0 >/dev/null 2>&1 &&
+  [ -z "$(ip -n c3 -6 addr show dev eth0 scope global)" ]
+check $? "c3 gets no router advertisement, and no IPv6 address"
+guest_lease c4 172.31.21
+c4_ip=$(lease c4 ip)
+
+guest6_net=2603:300a:2161:ca21::/64
+for c in c4 c5; do
+  for _ in $(seq 10); do
+    ip -n $c -6 addr show dev eth0 scope global -tentative | grep -q inet6 && break
+    sleep 1
+  done
+done
+# c4's global address, written out in full, as socat prints addresses.
+c4_ip6=$(ip netns exec c4 cat /proc/net/if_inet6 | awk '$6 == "eth0" && $4 == "00" { print $1 }' |
+  sed 's/..../&:/g; s/:$//')
+[ -n "$c4_ip6" ] && ip -6 route show match "$c4_ip6" dev guest6 | grep -q "^$guest6_net "
+check $? "c4 configured $c4_ip6 by SLAAC, in $guest6_net"
+ra=$(ip netns exec c4 rdisc6 -1 eth0 2>&1)
+ra_prefix=$(echo "$ra" | sed -n 's/^ *Prefix *: //p')
+ra_dns=$(echo "$ra" | sed -n 's/^ *Recursive DNS server *: //p' | paste -sd' ')
+[ "$ra_prefix" = $guest6_net ]
+check $? "the router advertises the prefix $ra_prefix on guest6"
+[ "$ra_dns" = "2606:4700:4700::1111 2606:4700:4700::1001" ]
+check $? "the router advertises Cloudflare's DNS on guest6: $ra_dns"
+
+peer=$(tcp c3 209.173.223.177:7)
+[ "$peer" = "$wan4_ip" ]
+check $? "c3 reaches the IPv4 ISP from wan4's address: $peer"
+peer=$(tcp c4 209.173.223.177:7)
+[ "$peer" = "$wan4_ip" ]
+check $? "c4 reaches the IPv4 ISP from wan4's address: $peer"
+peer=$(tcp c4 '[2001:db8::1]:7')
+[ "$peer" = "[$c4_ip6]" ]
+check $? "c4 reaches the IPv6 ISP from its own address: $peer"
+
+answer=$(ip netns exec c3 dig +short +time=2 +tries=1 @1.1.1.1 example.com 2>&1)
+[ "$answer" = 192.0.2.80 ]
+check $? "c3 looks up example.com at 1.1.1.1: $answer"
+answer=$(ip netns exec c4 dig +short +time=2 +tries=1 @2606:4700:4700::1111 example.com 2>&1)
+[ "$answer" = 192.0.2.80 ]
+check $? "c4 looks up example.com at 2606:4700:4700::1111: $answer"
+for server in c3:172.31.20.1 c4:172.31.21.1 c4:2603:300a:2161:ca21::1; do
+  ! ip netns exec "${server%%:*}" dig +time=2 +tries=1 "@${server#*:}" example.com >/dev/null
+  check $? "${server%%:*} gets no DNS answer from the router at ${server#*:}"
+done
+
+# Guests reach on the router only what the internet does, at any of its addresses. That includes
+# Postgres and Redis over IPv6, though guest6's prefix is in trusted_clients_v6 (see nftables.conf).
+for server in c3:172.31.20.1 c3:172.31.0.1 "c4:[2603:300a:2161:ca21::1]" "c4:[$lan_ip6]"; do
+  c=${server%%:*}
+  addr=${server#*:}
+  for port in 22 80 443; do
+    [ "$(tcp "$c" "$addr:$port")" = router ]
+    check $? "$c reaches the router at $addr on TCP $port"
+  done
+  for port in 5432 6379 8080 11443; do
+    [ -z "$(tcp "$c" "$addr:$port")" ]
+    check $? "$c can't reach the router at $addr on TCP $port"
+  done
+done
+
+# The guest networks reach neither the LAN nor each other, and the LAN doesn't reach them.
+# Check that client $1 can't reach client $2 at address $3.
+unreachable() {
+  [ -z "$(tcp "$1" "$3:80")" ]
+  check $? "$1 can't reach $2 at $3 on TCP 80"
+}
+listen c3 80 c3
+listen c4 80 c4
+sleep 1
+unreachable c3 c1 "$c1_ip"
+unreachable c4 c1 "$c1_ip"
+unreachable c4 c1 "[$c1_ip6]"
+unreachable c3 c4 "$c4_ip"
+unreachable c4 c3 "$c3_ip"
+unreachable c1 c3 "$c3_ip"
+unreachable c1 c4 "$c4_ip"
+unreachable c1 c4 "[$c4_ip6]"
+
+# A guest that sends from a LAN address gets nothing through: the replies would go to the LAN.
+ip -n c3 addr add 172.31.0.99/32 dev eth0
+seen=$(arrives c3 209.173.223.177 isp4 "$c3_ip" 172.31.0.99)
+ip -n c3 addr del 172.31.0.99/32 dev eth0
+[ "$seen" = "$c3_ip" ]
+check $? "the router forwards what c3 sends from its own address, not from a LAN one: $seen"
+ip -n c4 addr add 2603:300a:2161:ca00::99/128 dev eth0 nodad
+seen=$(arrives c4 2001:db8::1 isp6 "$c4_ip6" 2603:300a:2161:ca00::99)
+ip -n c4 addr del 2603:300a:2161:ca00::99/128 dev eth0
+[ "$seen" = "$c4_ip6" ]
+check $? "the router forwards what c4 sends from its own address, not from a LAN one: $seen"
+
+## Bandwidth limits
+
+# iperf3 servers on the ISPs, two each, for two downloads at once.
+for isp in isp4 isp6; do
+  for port in 5201 5202; do
+    ip netns exec $isp iperf3 -s -p $port </dev/null >/dev/null 2>&1 &
+  done
+done
+sleep 1
+
+# Print the Mbit/s that client $1 downloads from (or uploads to) the iperf3 server at $2, port $3,
+# over 3 seconds, after 1 second of warm-up.
+down() {
+  ip netns exec "$1" iperf3 -c "$2" -p "$3" -t 3 -O 1 -f m -R 2>/dev/null |
+    awk '/receiver/ { print $(NF - 2) }'
+}
+up() {
+  ip netns exec "$1" iperf3 -c "$2" -p "$3" -t 3 -O 1 -f m 2>/dev/null |
+    awk '/receiver/ { print $(NF - 2) }'
+}
+
+# Run two downloads at once: client $1 from $2 port $3, and client $4 from $5 port $6. Set rate1,
+# rate2, and their total.
+two_downs() {
+  down "$1" "$2" "$3" >$LOG/rate1 &
+  pid=$!
+  rate2=$(down "$4" "$5" "$6")
+  wait $pid
+  rate1=$(cat $LOG/rate1)
+  total=$(echo "$rate1 $rate2" | awk '{ print $1 + $2 }')
+}
+
+# Check whether rate $1 (Mbit/s) is close to $2: from 15% under to 5% over.
+about() {
+  awk -v rate="$1" -v want="$2" 'BEGIN { exit !(rate >= want * 0.85 && rate <= want * 1.05) }'
+}
+# Check whether rate $1 is well under $2: more than 15% under.
+under() {
+  awk -v rate="$1" -v max="$2" 'BEGIN { exit !(rate < max * 0.85) }'
+}
+
+bandwidth_checks() {
+  rate=$(down c3 209.173.223.177 5201)
+  about "$rate" 20
+  check $? "c3 downloads at 20 Mbit/s: $rate"
+  rate=$(up c3 209.173.223.177 5201)
+  about "$rate" 20
+  check $? "c3 uploads at 20 Mbit/s: $rate"
+  rate=$(down c4 2001:db8::1 5201)
+  about "$rate" 20
+  check $? "c4 downloads over IPv6 at 20 Mbit/s: $rate"
+  rate=$(up c4 2001:db8::1 5201)
+  about "$rate" 20
+  check $? "c4 uploads over IPv6 at 20 Mbit/s: $rate"
+  # A device's IPv4 and IPv6 traffic share its limit.
+  two_downs c4 209.173.223.177 5201 c4 2001:db8::1 5201
+  about "$total" 20
+  check $? "c4 downloads over IPv4 and IPv6 at once at 20 Mbit/s in all: $rate1 + $rate2"
+  # Devices without a lease have the same limit.
+  rate=$(down c5 2001:db8::1 5201)
+  about "$rate" 20
+  check $? "c5, with no lease, downloads at 20 Mbit/s: $rate"
+
+  # With a lease, c5 gets a limit of its own.
+  guest_lease c5 172.31.21
+  two_downs c4 2001:db8::1 5201 c5 2001:db8::1 5202
+  about "$rate1" 20 && about "$rate2" 20
+  check $? "c4 and c5 download at once at 20 Mbit/s each: $rate1 and $rate2"
+
+  # The network's limit: lower guest6's to 30 Mbit/s, and c4 and c5 share it.
+  sed 's/^NETWORK_DOWN=.*/NETWORK_DOWN=30000/' /usr/local/sbin/guest-shaper >$LOG/guest-shaper
+  chmod +x $LOG/guest-shaper
+  $LOG/guest-shaper start
+  two_downs c4 2001:db8::1 5201 c5 2001:db8::1 5202
+  about "$total" 30 && under "$rate1" 20 && under "$rate2" 20
+  check $? "with guest6 limited to 30 Mbit/s, c4 and c5 share it: $rate1 + $rate2 Mbit/s"
+
+  # A restart builds new trees, and finds the devices' filters in dnsmasq's leases.
+  c4_mac=$(mac_of c4)
+  systemctl restart guest-shaper && tc filter show dev guest6 | grep -q "dst_mac $c4_mac" &&
+    tc filter show dev ifb-guest6 | grep -q "src_mac $c4_mac"
+  check $? "systemctl restart guest-shaper finds c4's filters again"
+  rate=$(down c4 2001:db8::1 5201)
+  about "$rate" 20
+  check $? "after the restart, c4 downloads at 20 Mbit/s again: $rate"
+  networkctl reconfigure guest4 guest6 && sleep 2 &&
+    tc qdisc show dev guest4 | grep -q "htb 1: root" &&
+    tc qdisc show dev guest6 | grep -q "htb 1: root"
+  check $? "networkctl reconfigure leaves the guest networks' limits in place"
+
+  # When c5 gives up its lease, dnsmasq has guest-shaper remove its filters. udhcpc gives it up
+  # when it stops (-R), but only if it stops while it holds it (not with -q).
+  c5_mac=$(mac_of c5)
+  ip netns exec c5 busybox udhcpc -i eth0 -f -R -t 5 -s $LOG/udhcpc.sh >$LOG/c5-release.log 2>&1 &
+  pid=$!
+  for _ in $(seq 50); do
+    grep -q "lease of" $LOG/c5-release.log && break
+    sleep 0.1
+  done
+  kill $pid
+  wait $pid
+  for _ in $(seq 20); do
+    tc filter show dev guest6 | grep -q "dst_mac $c5_mac" || break
+    sleep 0.5
+  done
+  ! tc filter show dev guest6 | grep -q "dst_mac $c5_mac" &&
+    ! tc filter show dev ifb-guest6 | grep -q "src_mac $c5_mac"
+  check $? "when c5 releases its lease, its filters go"
+}
+
+if [ -n "$shaper" ]; then
+  bandwidth_checks
+else
+  echo "SKIP  bandwidth limits: this kernel has no IFB devices for guest-shaper (Debian's has)"
+fi
 
 ## Renewals
 

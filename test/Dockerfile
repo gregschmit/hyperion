@@ -6,9 +6,9 @@ FROM debian:trixie
 # that the nftables drop-in runs), then the fake ISPs' servers and the tools that test/check uses.
 COPY pkglist /tmp/pkglist
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     $(grep -v '^#' /tmp/pkglist) systemd systemd-sysv dbus udev procps \
-    kea-dhcp6-server radvd busybox ndisc6 socat tcpdump bind9-dnsutils iproute2 \
+    kea-dhcp6-server radvd busybox ndisc6 socat tcpdump bind9-dnsutils iproute2 iperf3 \
   && rm -rf /var/lib/apt/lists/*
 
 # Start the router's services at boot. Kea and radvd only play the IPv6 ISP, in a namespace.

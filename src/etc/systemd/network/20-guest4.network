@@ -1,0 +1,17 @@
+# Guest network for IPv4 only: VLAN 20 on lan, with 172.31.20.1/24. dnsmasq serves DHCP (see
+# dnsmasq.d/guest.conf), nftables.conf lets guests reach the internet but nothing local, and
+# /usr/local/sbin/guest-shaper limits their bandwidth.
+[Match]
+Name=guest4
+
+[Network]
+Address=172.31.20.1/24
+# IPv4 only: no IPv6 address, not even a link-local one, so guests can't reach the router over
+# IPv6.
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+# Like lan (see 20-lan.network): configure it even with no link.
+ConfigureWithoutCarrier=yes
+
+[Link]
+RequiredForOnline=no-carrier

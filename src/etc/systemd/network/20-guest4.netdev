@@ -1,0 +1,7 @@
+# The IPv4-only guest network: VLAN 20, tagged on lan (see 20-lan.network), named "guest4".
+[NetDev]
+Name=guest4
+Kind=vlan
+
+[VLAN]
+Id=20
