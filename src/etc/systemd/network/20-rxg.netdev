@@ -1,0 +1,7 @@
+# The old rXg's network: VLAN 10, tagged on lan (see 20-lan.network), named "rxg".
+[NetDev]
+Name=rxg
+Kind=vlan
+
+[VLAN]
+Id=10

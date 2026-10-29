@@ -7,8 +7,8 @@ firewall) and runs the UniFi controller.
 
 On a fresh Debian 13 install with a `gns` user, connect each NIC to its network by the MAC address
 in its `.link` file: `wan4` to Metronet, `wan6` to Comcast, and `lan` to the LAN switch, which must
-carry the guest networks as tagged VLANs 20 and 21. (On Proxmox, put each network device on the
-right bridge, and give `lan`'s no VLAN tag.)
+carry the guest networks (VLANs 20 and 21) and the old rXg's network (VLAN 10), tagged. (On
+Proxmox, put each network device on the right bridge, and give `lan`'s no VLAN tag.)
 
 `gns` needs sudo. The Debian installer sets that up if you leave the root password empty; if you
 set one, run `su -c 'apt-get install -y sudo && usermod -aG sudo gns'`, and log in again. Then run
@@ -35,11 +35,14 @@ on. Then check that:
 
 - `networkctl` shows every link configured. Power-cycle the modem of an uplink that gets no
   address.
-- `journalctl -u systemd-networkd | grep "delegated prefix"` shows `2603:300a:2161:ca00::/56`.
-  Comcast may tie the prefix to the old router's DHCP identity (its DUID) and delegate another. If
-  it does, replace the prefix everywhere (`grep -r 2603:300a:2161 src`), or give `wan6` the old
-  router's DUID (`DUIDRawData=` in `[DHCPv6]`).
-- LAN clients and guests get addresses, and guests reach the internet but not the LAN.
+- `ip -6 route show type unreachable proto dhcp` shows the delegated prefix,
+  `2603:300a:2161:ca00::/56`. A smaller one (e.g. a /59) means the Comcast gateway routes IPv6
+  itself instead of bridging it. Comcast may also tie the prefix to the old router's DHCP identity
+  (its DUID) and delegate another. Then replace the prefix everywhere
+  (`grep -r 2603:300a:2161 src`), or give `wan6` the old router's DUID (`DUIDRawData=` in
+  `[DHCPv6]`).
+- LAN clients and guests get addresses, and reach the internet over IPv6 (e.g.
+  `curl -6 -I https://ipv6.google.com`). Guests don't reach the LAN.
 - nginx got its certificates (see `/var/log/nginx/error.log`).
 
 ## Updating

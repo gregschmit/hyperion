@@ -17,9 +17,11 @@ Address=172.31.0.1/24
 DHCPPrefixDelegation=yes
 # dnsmasq advertises this router here; never take an address or a route from another one.
 IPv6AcceptRA=no
-# The guest networks ride on lan as VLANs 20 and 21 (see 20-guest4.netdev and 20-guest6.netdev).
+# VLANs on lan: the guest networks (20 and 21), and the old rXg's network (10). See the .netdev
+# files.
 VLAN=guest4
 VLAN=guest6
+VLAN=rxg
 # Configure lan even with no link, so boot doesn't wait for one (see RequiredForOnline= below).
 # dnsmasq sends quick router advertisements only for a minute after it starts; if lan gets its
 # link later, restart dnsmasq, or clients may wait up to 10 minutes for IPv6.

@@ -1,17 +1,14 @@
 # Limit the guest networks' bandwidth; see /usr/local/sbin/guest-shaper.
 [Unit]
 Description=Guest network bandwidth limits
-# systemd-networkd creates the guest networks' interfaces. dnsmasq adds each device as it gets a
-# lease, so it starts after the trees are up.
+# systemd-networkd creates the guest networks' interfaces.
 Wants=systemd-networkd.service
 After=systemd-networkd.service
-Before=dnsmasq.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/sbin/guest-shaper start
-ExecStop=/usr/local/sbin/guest-shaper stop
+ExecStart=/usr/local/sbin/guest-shaper run
+ExecStopPost=/usr/local/sbin/guest-shaper stop
+Restart=always
 
 [Install]
 WantedBy=multi-user.target

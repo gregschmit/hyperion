@@ -1,0 +1,18 @@
+# The rXg's network: VLAN 10 on lan, where the rXg (10.255.0.1) is the gateway and DHCP server. The
+# router joins it at 10.255.0.2, so the LAN reaches it directly, with no NAT (see nftables.conf).
+# For replies to come back this way too, devices there need a route to the LAN (172.31.0.0/24) via
+# 10.255.0.2: from the rXg's DHCP (option 121, along with their default route), or else from a
+# static route on the rXg.
+[Match]
+Name=rxg
+
+[Network]
+Address=10.255.0.2/24
+# IPv4 only, and no routes from the rXg's router advertisements.
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+# Like lan (see 20-lan.network): configure it even with no link.
+ConfigureWithoutCarrier=yes
+
+[Link]
+RequiredForOnline=no-carrier

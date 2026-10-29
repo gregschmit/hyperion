@@ -5,24 +5,21 @@
 #
 # Each guest network gets two HTB trees: one on its interface, for traffic to its devices
 # (download), and one on an IFB device, for traffic from them (upload). Linux only shapes what an
-# interface sends, so the interface hands what it receives to the IFB device first. Each device has
-# a class numbered after its DHCP address (.150 has class 1:196, 0x100 + 150), and filters that
-# match its MAC address, so its IPv4 and IPv6 traffic share the class. Devices without a lease
-# share class 1:100, which has the same limit.
+# interface sends, so the interface hands what it receives to the IFB device first. Each device in
+# the router's neighbour table for the network gets a class of its own (1:102 to 1:1fe), and
+# filters that match its MAC address, so all of its addresses share the class. Devices without one
+# (not seen yet, or past the 253rd) share class 1:100, which has the same limit.
 #
-#   guest-shaper start                 set up the trees (guest-shaper.service runs this)
-#   guest-shaper stop                  remove them
-#   guest-shaper add|old|del MAC IP    add or remove a device's filters (dnsmasq runs this on each
-#                                      lease change; see dnsmasq.d/guest.conf)
+#   guest-shaper run     set up the trees, then follow the devices as they come and go
+#                        (guest-shaper.service runs this)
+#   guest-shaper stop    remove the trees
 #
-# To see each device's class and traffic: `tc -s class show dev guest6` (download), and
-# `dev ifb-guest6` (upload).
+# To see which device has which class, and its traffic: `tc filter show dev guest6`, and
+# `tc -s class show dev guest6` (download) or `dev ifb-guest6` (upload).
 
 set -eu
 
-# Each guest network's interface, and the first three bytes of its IPv4 /24 (see
-# 20-guest*.network).
-NETWORKS="guest4:172.31.20 guest6:172.31.21"
+NETWORKS="guest4 guest6"
 
 # The limits, in kbit/s. For different limits each way, set the UP ones apart, e.g. 20 Mbit/s down
 # and 10 Mbit/s up for each device: DEVICE_UP=10000.
@@ -31,18 +28,16 @@ DEVICE_UP=20000
 NETWORK_DOWN=200000
 NETWORK_UP=200000
 
-LEASES=/var/lib/misc/dnsmasq.leases
-
 # Print the options that let an HTB class send 5 ms' worth of its limit $1 (kbit/s) at once.
 # HTB's default, about one packet, falls short of the limit whenever the router runs it late.
 burst() {
   echo "burst $(($1 * 5 / 8)) cburst $(($1 * 5 / 8))"
 }
 
-# Build an HTB tree on interface $1, for a network limit of $2 and a device limit of $3. A class
-# for each address (.2-.254) and the shared class are each promised an equal share of the
-# network's limit, and may borrow up to the device limit while the network has room. (Promising
-# them more than the network's limit in total would let them take more than it.)
+# Build an HTB tree on interface $1, for a network limit of $2 and a device limit of $3. Each
+# device class and the shared class are promised an equal share of the network's limit, and may
+# borrow up to the device limit while the network has room. (Promising them more than the
+# network's limit in total would let them take more than it.)
 tree() {
   share=$(($2 / 254))
   {
@@ -61,31 +56,56 @@ tree() {
   } | tc -batch -
 }
 
-# Point the filters for the device with MAC address $2 and DHCP address $3 at its classes (with
-# $1 add), or remove them (with $1 del). Skip addresses outside the guest networks.
-device() {
-  for net in $NETWORKS; do
-    case $3 in "${net#*:}".*) ;; *) continue ;; esac
-    dev=${net%%:*}
-    n=${3##*.}
-    if [ "$1" = del ]; then
-      tc filter del dev "$dev" parent 1: protocol all prio 1 handle "$n" flower
-      tc filter del dev "ifb-$dev" parent 1: protocol all prio 1 handle "$n" flower
-    else
-      class=1:$(printf %x $((0x100 + n)))
-      tc filter replace dev "$dev" parent 1: protocol all prio 1 handle "$n" flower \
-        dst_mac "$2" classid "$class"
-      tc filter replace dev "ifb-$dev" parent 1: protocol all prio 1 handle "$n" flower \
-        src_mac "$2" classid "$class"
-    fi
+# Print the MAC address of each device in interface $1's neighbour table.
+neighbours() {
+  ip neigh show dev "$1" |
+    awk '{ for (i = 1; i < NF; i++) if ($i == "lladdr") print $(i + 1) }' | sort -u
+}
+
+# Print the handle and MAC address of each device filter on interface $1.
+filters() {
+  tc filter show dev "$1" parent 1: |
+    awk '/ handle / { for (i = 1; i < NF; i++) if ($i == "handle") handle = $(i + 1) }
+      $1 == "dst_mac" { print handle, $2 }'
+}
+
+# Print the lowest free device class number on interface $1 (2 to 254), or nothing if all are
+# taken.
+free_class() {
+  used=$(filters "$1" | while read -r handle _; do printf '%d\n' "$handle"; done)
+  for n in $(seq 2 254); do
+    if ! echo "$used" | grep -qx "$n"; then echo "$n" && return; fi
   done
 }
 
-# Build everything anew: HTB can't replace a tree in place.
+# Give each device in guest network $1's neighbour table a class, and take back the classes of
+# devices that have left it.
+sync() {
+  macs=$(neighbours "$1")
+  known=$(filters "$1")
+
+  echo "$known" | while read -r handle mac; do
+    if [ -z "$mac" ] || echo "$macs" | grep -qx "$mac"; then continue; fi
+    tc filter del dev "$1" parent 1: protocol all prio 1 handle "$handle" flower
+    tc filter del dev "ifb-$1" parent 1: protocol all prio 1 handle "$handle" flower
+  done
+
+  for mac in $macs; do
+    if echo "$known" | grep -q " $mac\$"; then continue; fi
+    # With no class left, the device stays in the shared one.
+    n=$(free_class "$1")
+    if [ -z "$n" ]; then break; fi
+    class=1:$(printf %x $((0x100 + n)))
+    tc filter add dev "$1" parent 1: protocol all prio 1 handle "$n" flower dst_mac "$mac" \
+      classid "$class"
+    tc filter add dev "ifb-$1" parent 1: protocol all prio 1 handle "$n" flower src_mac "$mac" \
+      classid "$class"
+  done
+}
+
 start() {
   stop
-  for net in $NETWORKS; do
-    dev=${net%%:*}
+  for dev in $NETWORKS; do
     # systemd-networkd creates the interface at boot.
     for _ in $(seq 30); do
       if ip link show "$dev" >/dev/null 2>&1; then break; fi
@@ -99,29 +119,29 @@ start() {
     tc filter add dev "$dev" parent ffff: protocol all prio 1 matchall \
       action mirred egress redirect dev "ifb-$dev"
   done
-
-  # The new trees have no filters yet: add those of the devices that have a lease.
-  if [ -f $LEASES ]; then
-    while read -r _ mac ip _; do
-      device add "$mac" "$ip"
-    done <$LEASES
-  fi
 }
 
 stop() {
-  for net in $NETWORKS; do
-    dev=${net%%:*}
+  for dev in $NETWORKS; do
     tc qdisc del dev "$dev" root 2>/dev/null || true
     tc qdisc del dev "$dev" ingress 2>/dev/null || true
     ip link del "ifb-$dev" 2>/dev/null || true
   done
 }
 
+# Sync each guest network now, and again whenever an entry in its neighbour table changes.
+run() {
+  start
+  for dev in $NETWORKS; do sync "$dev"; done
+  ip monitor neigh | while read -r line; do
+    for dev in $NETWORKS; do
+      case "$line" in *" dev $dev "*) sync "$dev" ;; esac
+    done
+  done
+}
+
 case "${1:-}" in
-  start) start ;;
+  run) run ;;
   stop) stop ;;
-  # From dnsmasq, which also runs this for other events (e.g. tftp), which need nothing.
-  add | old) device add "$2" "$3" ;;
-  # The filters are gone already if the trees were rebuilt since.
-  del) device del "$2" "$3" 2>/dev/null || true ;;
+  *) echo "usage: guest-shaper run|stop" >&2; exit 2 ;;
 esac
