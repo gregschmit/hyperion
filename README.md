@@ -36,9 +36,9 @@ on. Then check that:
 - `networkctl` shows every link configured. Power-cycle the modem of an uplink that gets no
   address.
 - `ip -6 route show type unreachable proto dhcp` shows the delegated prefix,
-  `2603:300a:2161:ca00::/56`. A smaller one (e.g. a /59) means the Comcast gateway routes IPv6
-  itself instead of bridging it. Comcast may also tie the prefix to the old router's DHCP identity
-  (its DUID) and delegate another. Then replace the prefix everywhere
+  `2603:300a:2161:cb00::/56`. A /59 from `ca00::/56` instead means the Comcast gateway ignored the
+  request for it (see `20-wan6.network`). Comcast may also tie the prefix to the old router's DHCP
+  identity (its DUID) and delegate another. Then replace the prefix everywhere
   (`grep -r 2603:300a:2161 src`), or give `wan6` the old router's DUID (`DUIDRawData=` in
   `[DHCPv6]`).
 - LAN clients and guests get addresses, and reach the internet over IPv6 (e.g.

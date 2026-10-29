@@ -12,7 +12,7 @@ IPv6AcceptRA=no
 ConfigureWithoutCarrier=yes
 
 [Address]
-Address=2603:300a:2161:ca01::1/64
+Address=2603:300a:2161:cb01::1/64
 # DAD needs a link; without one, the address would stay tentative and hold up boot.
 DuplicateAddressDetection=none
 
