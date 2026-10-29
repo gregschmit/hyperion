@@ -35,12 +35,9 @@ on. Then check that:
 
 - `networkctl` shows every link configured. Power-cycle the modem of an uplink that gets no
   address.
-- `ip -6 route show type unreachable proto dhcp` shows the delegated prefix,
-  `2603:300a:2161:cb00::/56`. A /59 from `ca00::/56` instead means the Comcast gateway ignored the
-  request for it (see `20-wan6.network`). Comcast may also tie the prefix to the old router's DHCP
-  identity (its DUID) and delegate another. Then replace the prefix everywhere
-  (`grep -r 2603:300a:2161 src`), or give `wan6` the old router's DUID (`DUIDRawData=` in
-  `[DHCPv6]`).
+- `ip -6 route show type unreachable proto dhcp` shows the prefix that the Comcast gateway
+  delegated, e.g. `2603:300a:2161:cae0::/59`: `lan` and `guest6` take its first two /64s. If it
+  changes, update the LAN's /64 in `nginx/conf.d/unifi.schmit.net.conf`, and the AAAA records.
 - LAN clients and guests get addresses, and reach the internet over IPv6 (e.g.
   `curl -6 -I https://ipv6.google.com`). Guests don't reach the LAN.
 - nginx got its certificates (see `/var/log/nginx/error.log`).

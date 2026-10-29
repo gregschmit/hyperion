@@ -1,10 +1,10 @@
 # IPv6 uplink (Comcast): take the default route from the ISP's router advertisements, and ask for
 # a delegated prefix (DHCPv6-PD), so the ISP routes it here. IPv6 isn't NATed.
 #
-# Comcast's gateway routes both of my /56s, 2603:300a:2161:ca00::/56 and cb00::/56, to itself. It
-# uses ca00::/64 for its own LAN, which is this link, and hands routers behind it a /59 from the
-# first /56 (cae0::/59). So ask for the second /56 by name: lan and guest6 use its first two /64s
-# (see 20-lan.network and 20-guest6.network).
+# Comcast's gateway routes both of my /56s (2603:300a:2161:ca00::/56 and cb00::/56) to itself, uses
+# ca00::/64 for its own LAN (this link), and delegates a smaller prefix to routers behind it, e.g.
+# cae0::/59. lan and guest6 take its first two /64s, whatever it is (see 20-lan.network and
+# 20-guest6.network).
 [Match]
 Name=wan6
 
@@ -17,8 +17,8 @@ IPv6AcceptRA=yes
 DHCPv6Client=always
 
 [DHCPv6]
-# Only a hint; the ISP decides what to delegate.
-PrefixDelegationHint=2603:300a:2161:cb00::/56
+# Only a hint; the ISP decides the size.
+PrefixDelegationHint=::/56
 # Keep the prefix across reboots (RFC 9096), and keep our own hostname.
 SendRelease=no
 UseHostname=no

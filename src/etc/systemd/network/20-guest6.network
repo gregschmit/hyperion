@@ -1,20 +1,22 @@
-# Guest network for IPv6 only: VLAN 21 on lan, with the second /64 of the delegated prefix (lan has
-# the first; see 20-lan.network). dnsmasq sends the router advertisements that guests configure
-# their addresses from (SLAAC; see dnsmasq.d/guest.conf), nftables.conf lets guests reach the
-# internet but nothing local, and /usr/local/sbin/guest-shaper limits their bandwidth.
+# Guest network for IPv6 only: VLAN 21 on lan, with the second /64 of the delegated prefix and the
+# router at ::1 in it (lan has the first; see 20-lan.network). dnsmasq sends the router
+# advertisements that guests configure their addresses from (SLAAC; see dnsmasq.d/guest.conf),
+# nftables.conf lets guests reach the internet but nothing local, and /usr/local/sbin/guest-shaper
+# limits their bandwidth.
 [Match]
 Name=guest6
 
 [Network]
+DHCPPrefixDelegation=yes
 # dnsmasq advertises this router here; never take an address or a route from another one.
 IPv6AcceptRA=no
 # Like lan (see 20-lan.network): configure it even with no link.
 ConfigureWithoutCarrier=yes
 
-[Address]
-Address=2603:300a:2161:cb01::1/64
-# DAD needs a link; without one, the address would stay tentative and hold up boot.
-DuplicateAddressDetection=none
+[DHCPPrefixDelegation]
+# The second /64 of the prefix, and ::1 in it.
+SubnetId=1
+Token=::1
 
 [Link]
 RequiredForOnline=no-carrier

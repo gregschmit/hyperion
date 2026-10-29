@@ -89,7 +89,7 @@ ip -n isp4 addr add 209.173.223.177/29 dev up4
 ip -n isp4 link set up4 up
 ip netns exec isp4 dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --user=root \
   --log-facility=- --log-queries --no-resolv --no-hosts --host-record=example.com,192.0.2.80 \
-  --host-record=schmit.net,209.173.223.178,2603:300a:2161:cb00::1 \
+  --host-record=schmit.net,209.173.223.178,2603:300a:2161:cae0::1 \
   --cname=unifi.schmit.net,schmit.net </dev/null >$LOG/isp4-dnsmasq.log 2>&1 &
 # Tell clients the address they connect from.
 ip netns exec isp4 socat TCP-LISTEN:7,fork,reuseaddr "SYSTEM:echo \$SOCAT_PEERADDR" \
@@ -98,8 +98,7 @@ ip -n isp4 link set wan4 netns router
 
 # The IPv6 ISP: router advertisements without the managed flag (radvd), so the router asks for a
 # prefix only because of DHCPv6Client=always; DHCPv6 with prefix delegation and renewals every 10
-# seconds (Kea); and DNS like the IPv4 ISP. Like Comcast's gateway, Kea delegates a /59 of the
-# first /56 by default, so the router gets the second /56 only if it asks for it by name (see
+# seconds (Kea); and DNS like the IPv4 ISP. Kea delegates a /59, like Comcast's gateway (see
 # 20-wan6.network). Kea needs a link-local address to start, so skip DAD
 # and keep both veth ends here until it runs. radvd warns if the ISP doesn't route.
 ip netns add isp6
@@ -140,10 +139,7 @@ cat >$LOG/kea-dhcp6.conf <<EOF
       "subnet": "2001:db8::/64",
       "interface": "up6",
       "pools": [ { "pool": "2001:db8::1000-2001:db8::1fff" } ],
-      "pd-pools": [
-        { "prefix": "2603:300a:2161:cae0::", "prefix-len": 59, "delegated-len": 59 },
-        { "prefix": "2603:300a:2161:cb00::", "prefix-len": 56, "delegated-len": 56 }
-      ]
+      "pd-pools": [ { "prefix": "2603:300a:2161:cae0::", "prefix-len": 59, "delegated-len": 59 } ]
     } ],
     "loggers": [ {
       "name": "kea-dhcp6",
@@ -157,7 +153,7 @@ ip netns exec isp6 env KEA_PIDFILE_DIR=$LOG KEA_LOCKFILE_DIR=none kea-dhcp6 -c $
   </dev/null >$LOG/isp6-kea.log 2>&1 &
 ip netns exec isp6 dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= --user=root \
   --log-facility=- --log-queries --no-resolv --no-hosts --host-record=example.com,192.0.2.80 \
-  --host-record=schmit.net,209.173.223.178,2603:300a:2161:cb00::1 \
+  --host-record=schmit.net,209.173.223.178,2603:300a:2161:cae0::1 \
   --cname=unifi.schmit.net,schmit.net </dev/null >$LOG/isp6-dnsmasq.log 2>&1 &
 ip netns exec isp6 socat TCP6-LISTEN:7,fork,reuseaddr "SYSTEM:echo \$SOCAT_PEERADDR" \
   </dev/null >/dev/null 2>&1 &
@@ -223,7 +219,9 @@ fi
 failed=$(systemctl list-units --failed --plain --no-legend | cut -d' ' -f1 | tr '\n' ' ')
 [ "$state" = running ]
 check $? "systemd booted: $state" || echo "      failed units: $failed"
-for nic in lan guest4 guest6 rxg; do
+# guest6 waits for a link: its only address comes from the delegated prefix. It doesn't hold up
+# boot either (see RequiredForOnline= in 20-guest6.network); "guest6 has ..." below checks it.
+for nic in lan guest4 rxg; do
   networkctl list --no-legend $nic | grep -q "no-carrier *configured"
   check $? "$nic is configured with no link"
 done
@@ -304,18 +302,18 @@ lan_net=$(ip -6 route show dev lan proto kernel | awk '$1 !~ /^fe80/ { print $1 
 check $? "wan4 has the static $wan4_ip, with a default route via $wan4_gw"
 [ -n "$wan6_gw" ] && [ -n "$wan6_ip" ]
 check $? "wan6 got a default route via $wan6_gw by RA, and the address $wan6_ip"
-[ "$pd" = 2603:300a:2161:cb00::/56 ]
+[ "$pd" = 2603:300a:2161:cae0::/59 ]
 check $? "wan6 got the delegated prefix $pd"
 ip -4 -o addr show dev lan | grep -q " 172.31.0.1/24 "
 check $? "lan has 172.31.0.1/24"
 ip -4 -o addr show dev guest4 | grep -q " 172.31.20.1/24 " && [ -z "$(ip -6 addr show dev guest4)" ]
 check $? "guest4 has 172.31.20.1/24, and no IPv6 address"
 guest6_ip6=$(addrs -6 dev guest6 scope global)
-[ "$guest6_ip6" = 2603:300a:2161:cb01::1 ] && [ -z "$(ip -4 addr show dev guest6)" ]
+[ "$guest6_ip6" = 2603:300a:2161:cae1::1 ] && [ -z "$(ip -4 addr show dev guest6)" ]
 check $? "guest6 has $guest6_ip6, and no IPv4 address"
 ip -4 -o addr show dev rxg | grep -q " 10.255.0.2/24 " && [ -z "$(ip -6 addr show dev rxg)" ]
 check $? "rxg has 10.255.0.2/24, and no IPv6 address"
-[ "$lan_ip6" = 2603:300a:2161:cb00::1 ] && [ "$lan_net" = 2603:300a:2161:cb00::/64 ]
+[ "$lan_ip6" = 2603:300a:2161:cae0::1 ] && [ "$lan_net" = 2603:300a:2161:cae0::/64 ]
 check $? "lan has $lan_ip6 in $lan_net, and only that"
 
 # The ISP routes the delegated prefixes to the router.
@@ -444,7 +442,7 @@ done
 answer=$(dig_c1 unifi.schmit.net 172.31.0.1 | paste -sd' ')
 answer6=$(dig_c1 unifi.schmit.net 172.31.0.1 AAAA | paste -sd' ')
 [ "$answer" = "schmit.net. 209.173.223.178" ] &&
-  [ "$answer6" = "schmit.net. 2603:300a:2161:cb00::1" ]
+  [ "$answer6" = "schmit.net. 2603:300a:2161:cae0::1" ]
 check $? "c1 looks up unifi.schmit.net in public DNS: $answer, $answer6"
 # The router's own lookups go through /etc/resolv.conf, which install links to dnsmasq.
 answer=$(getent hosts example.com | awk '{ print $1 }')
@@ -467,7 +465,7 @@ check $? "c1 reaches the IPv6 ISP from its own address: $peer"
 for port in 22 80 443 5432 6379 8080 11443; do
   listen router $port router
 done
-for port in 22 80; do
+for port in 22 80 443; do
   listen c1 $port c1
 done
 sleep 1
@@ -515,13 +513,14 @@ check $? "isp6 can't reach c1 on TCP 80"
 
 # Uncomment the example rules in nftables.conf: the IPv6 server rule and the port forward, both
 # for c1.
-sed -e "s|# \(iifname .*ip6 daddr\) 2603:300a:2161:cb00::2 |\1 $c1_ip6 |" \
+c1_iid=::$(echo "$c1_ip6" | cut -d: -f5-8)
+sed -e "s|# \(iifname .*ip6 daddr .* == \)::2 |\1$c1_iid |" \
   -e "s|# \(iifname .*dnat to\) 172\.31\.0\.10:|\1 $c1_ip:|" /etc/nftables.conf >$LOG/nftables.conf
 nft list ruleset >$LOG/ruleset
 [ "$(diff /etc/nftables.conf $LOG/nftables.conf | grep -c "^>")" = 2 ] && nft -f $LOG/nftables.conf
 check $? "the example rules in nftables.conf load when uncommented"
-[ "$(tcp isp6 "[$c1_ip6]:80")" = c1 ]
-check $? "with them, isp6 reaches c1 on TCP 80"
+[ "$(tcp isp6 "[$c1_ip6]:443")" = c1 ]
+check $? "with them, isp6 reaches c1 on TCP 443"
 [ -z "$(tcp isp6 "[$c1_ip6]:22")" ]
 check $? "with them, isp6 still can't reach c1 on TCP 22"
 [ "$(tcp isp4 "$wan4_ip:2222")" = c1 ]
@@ -603,7 +602,7 @@ check $? "c3 gets no router advertisement, and no IPv6 address"
   [ -z "$(ip -n c4 -4 addr show dev eth0)" ]
 check $? "c4 gets no DHCP offer, and no IPv4 address"
 
-guest6_net=2603:300a:2161:cb01::/64
+guest6_net=2603:300a:2161:cae1::/64
 for c in c4 c5; do
   for _ in $(seq 10); do
     ip -n $c -6 addr show dev eth0 scope global -tentative | grep -q inet6 && break
@@ -636,14 +635,14 @@ check $? "c3 looks up example.com at 1.1.1.1: $answer"
 answer=$(ip netns exec c4 dig +short +time=2 +tries=1 @2606:4700:4700::1111 example.com 2>&1)
 [ "$answer" = 192.0.2.80 ]
 check $? "c4 looks up example.com at 2606:4700:4700::1111: $answer"
-for server in c3:172.31.20.1 c4:2603:300a:2161:cb01::1; do
+for server in c3:172.31.20.1 c4:2603:300a:2161:cae1::1; do
   ! ip netns exec "${server%%:*}" dig +time=2 +tries=1 "@${server#*:}" example.com >/dev/null
   check $? "${server%%:*} gets no DNS answer from the router at ${server#*:}"
 done
 
 # Guests reach on the router only what the internet does, at any of its addresses. That includes
 # Postgres and Redis over IPv6, though guest6's prefix is in trusted_clients_v6 (see nftables.conf).
-for server in c3:172.31.20.1 c3:172.31.0.1 "c4:[2603:300a:2161:cb01::1]" "c4:[$lan_ip6]"; do
+for server in c3:172.31.20.1 c3:172.31.0.1 "c4:[2603:300a:2161:cae1::1]" "c4:[$lan_ip6]"; do
   c=${server%%:*}
   addr=${server#*:}
   for port in 22 80 443; do
@@ -676,9 +675,9 @@ seen=$(arrives c3 209.173.223.177 isp4 "$c3_ip" 172.31.0.99)
 ip -n c3 addr del 172.31.0.99/32 dev eth0
 [ "$seen" = "$c3_ip" ]
 check $? "the router forwards what c3 sends from its own address, not from a LAN one: $seen"
-ip -n c4 addr add 2603:300a:2161:cb00::99/128 dev eth0 nodad
-seen=$(arrives c4 2001:db8::1 isp6 "$c4_ip6" 2603:300a:2161:cb00::99)
-ip -n c4 addr del 2603:300a:2161:cb00::99/128 dev eth0
+ip -n c4 addr add 2603:300a:2161:cae0::99/128 dev eth0 nodad
+seen=$(arrives c4 2001:db8::1 isp6 "$c4_ip6" 2603:300a:2161:cae0::99)
+ip -n c4 addr del 2603:300a:2161:cae0::99/128 dev eth0
 [ "$seen" = "$c4_ip6" ]
 check $? "the router forwards what c4 sends from its own address, not from a LAN one: $seen"
 
@@ -790,8 +789,8 @@ bandwidth_checks() {
   about "$rate1" 20 && about "$rate2" 20
   check $? "c4 and c5 download at once at 20 Mbit/s each: $rate1 and $rate2"
   # A device's addresses share its limit.
-  ip -n c4 addr add 2603:300a:2161:cb01::c4/64 dev eth0 nodad
-  two_downs c4 2001:db8::1 5201 c4 2001:db8::1 5202 "$c4_ip6" 2603:300a:2161:cb01::c4
+  ip -n c4 addr add 2603:300a:2161:cae1::c4/64 dev eth0 nodad
+  two_downs c4 2001:db8::1 5201 c4 2001:db8::1 5202 "$c4_ip6" 2603:300a:2161:cae1::c4
   about "$total" 20
   check $? "c4 downloads to two of its addresses at once at 20 Mbit/s in all: $rate1 + $rate2"
 
