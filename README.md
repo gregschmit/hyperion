@@ -52,6 +52,13 @@ for useful changes, then delete it.
 To push from the server, add `gns`'s SSH key to GitHub, and run
 `git remote set-url origin git@github.com:gregschmit/hyperion.git`.
 
+## Turning IPv6 off
+
+When the ISP's IPv6 is broken and dual-stack clients suffer, `ipv6 off` (or `disable`) makes them
+use IPv4, and `ipv6 on` (or `enable`) brings it back. `ipv6` alone prints which it is. Off lasts
+across reboots. It takes down `wan6`, so guests on `guest6` (IPv6-only) lose the internet. The
+public AAAA records stay, so outside clients try IPv6 first and have to fall back to IPv4.
+
 ## Testing
 
 `test/run` boots the router config in a Debian container with fake ISPs, LAN clients, and guests,

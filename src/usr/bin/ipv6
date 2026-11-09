@@ -1,0 +1,44 @@
+#!/bin/sh
+
+# Turn IPv6 on or off for the whole network, e.g. when the ISP's IPv6 is broken and slows down
+# dual-stack clients. Off takes down wan6, the IPv6-only uplink. The delegated prefix goes with it,
+# so lan and guest6 lose their global addresses, dnsmasq advertises the prefix as deprecated, and
+# clients use IPv4. IPv4 doesn't use wan6, and lan keeps the link-local address that those
+# advertisements come from. Guests on guest6 are IPv6-only, so they lose the internet.
+#
+#   ipv6                 print on or off
+#   ipv6 on|enable       turn IPv6 on
+#   ipv6 off|disable     turn IPv6 off, also across reboots
+
+set -eu
+
+DROPIN=/etc/systemd/network/20-wan6.network.d/ipv6-off.conf
+
+case "${1:-}" in
+  "")
+    if [ -e "$DROPIN" ]; then echo off; else echo on; fi
+    exit
+    ;;
+  on | enable) state=on ;;
+  off | disable) state=off ;;
+  *)
+    echo "usage: ipv6 [on|enable|off|disable]" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$(id -u)" -ne 0 ]; then exec sudo "$0" "$@"; fi
+
+if [ "$state" = on ]; then
+  rm -f "$DROPIN"
+else
+  # Down first: networkd keeps the delegated prefix on lan and guest6 if the reload below takes
+  # the link down.
+  networkctl down wan6
+  mkdir -p "$(dirname "$DROPIN")"
+  printf '[Link]\nActivationPolicy=down\n' >"$DROPIN"
+fi
+
+# Reconfigures only the links whose config changed: here, wan6.
+networkctl reload
+echo "IPv6 is $state"

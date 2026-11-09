@@ -3,9 +3,9 @@
 
 # Plug fake ISPs, LAN clients, guests, and a host on the old rXg's network into the router, and
 # check DHCP, SLAAC, DNS, NAT, the firewall, the guest networks and their bandwidth limits, and the
-# route to the rXg's network. test/run runs this in the test container, whose own network
-# namespace is the router. The rest of the network is made of namespaces (veth ends in
-# parentheses):
+# route to the rXg's network, and the ipv6 command. test/run runs this in the test container,
+# whose own network namespace is the router. The rest of the network is made of namespaces (veth
+# ends in parentheses):
 #
 #                                                  (c1)---(eth0) c1
 #   isp4 (up4)---(wan4)                            (c2)---(eth0) c2
@@ -847,6 +847,85 @@ log=$(journalctl -b -q -u systemd-networkd)
 [ "$(echo "$log" | grep -c "wan6: DHCP: received delegated prefix")" = 1 ] &&
   ! echo "$log" | grep -q "lease lost"
 check $? "networkd got the prefix once and lost no lease"
+
+## Turning IPv6 off
+
+# Retry the command in $2... once a second for up to $1 seconds, until it succeeds.
+within() {
+  seconds=$1
+  shift
+  for _ in $(seq "$seconds"); do
+    "$@" && return
+    sleep 1
+  done
+  return 1
+}
+
+# wan6 is down, and neither it nor what it fed has IPv6 left.
+ipv6_gone() {
+  ip -br link show wan6 | grep -q ' DOWN ' &&
+    [ -z "$(ip -6 route show default)$(ip -6 route show type unreachable proto dhcp)" ] &&
+    [ -z "$(addrs -6 dev wan6 scope global)$(addrs -6 dev lan scope global)" ] &&
+    [ -z "$(addrs -6 dev guest6 scope global)" ]
+}
+
+# c1 has stopped using the address it got by SLAAC.
+c1_ip6_deprecated() {
+  [ -z "$(ip -n c1 -6 -o addr show dev eth0 scope global | grep -v 'preferred_lft 0sec')" ]
+}
+
+# The prefix is back on lan and guest6, and c1 uses it again.
+ipv6_back() {
+  [ "$(ip -6 route show type unreachable proto dhcp | awk '{ print $2 }')" = "$pd" ] &&
+    [ "$(addrs -6 dev lan scope global)" = "$lan_ip6" ] &&
+    [ "$(addrs -6 dev guest6 scope global)" = "$guest6_ip6" ] &&
+    ip -n c1 -6 -o addr show dev eth0 scope global | grep -qv 'preferred_lft 0sec'
+}
+
+[ "$(ipv6)" = on ]
+check $? "ipv6 prints on"
+ipv6 off >/dev/null && [ "$(ipv6)" = off ] && within 15 ipv6_gone
+check $? "ipv6 off takes down wan6, the delegated prefix, and the addresses on lan and guest6"
+[ -n "$(addrs -6 dev lan scope link)" ]
+check $? "lan keeps its link-local address, to advertise the prefix as deprecated"
+within 15 c1_ip6_deprecated
+check $? "c1 stops using its IPv6 address"
+
+check_ipv4() {
+  peer=$(tcp c1 209.173.223.177:7)
+  [ "$peer" = "$wan4_ip" ]
+  check $? "$1: c1 reaches the IPv4 ISP: $peer"
+}
+check_ipv4 "IPv6 off"
+
+# With no IPv6 route, a lookup must not wait for the IPv6 servers in lan.conf. The restart also
+# clears the cache, and shows that dnsmasq starts without IPv6.
+systemctl restart dnsmasq && within 5 systemctl -q is-active dnsmasq
+check $? "IPv6 off: dnsmasq restarts"
+answer=$(within 5 dig_c1 example.com 172.31.0.1)
+[ "$answer" = 192.0.2.80 ]
+check $? "IPv6 off: c1 looks up example.com: $answer"
+systemctl restart nftables
+check $? "IPv6 off: nftables restarts"
+check_ipv4 "IPv6 off, after those restarts"
+
+ipv6 off >/dev/null && ipv6_gone
+check $? "ipv6 off again changes nothing"
+
+# Like a reboot: networkd reads the configs afresh.
+systemctl restart systemd-networkd && sleep 5 && ipv6_gone
+check $? "ipv6 off lasts across a networkd restart"
+
+ipv6 on >/dev/null && [ "$(ipv6)" = on ] && within 60 ipv6_back
+check $? "ipv6 on brings back $pd, the addresses on lan and guest6, and c1's IPv6"
+# The ISP's route to the router went away with the link.
+ip -n isp6 route replace 2603:300a:2161:ca00::/55 via "$wan6_ll" dev up6
+c1_ip6_now=$(ip netns exec c1 cat /proc/net/if_inet6 | awk '$6 == "eth0" && $4 == "00" { print $1 }' |
+  sed 's/..../&:/g; s/:$//')
+peer=$(within 15 tcp c1 '[2001:db8::1]:7')
+[ "$peer" = "[$c1_ip6_now]" ]
+check $? "IPv6 on: c1 reaches the IPv6 ISP from its own address: $peer"
+check_ipv4 "IPv6 on"
 
 echo
 if [ $fails -gt 0 ]; then
