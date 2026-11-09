@@ -13,5 +13,9 @@ Gateway=209.173.223.177
 IPv6AcceptRA=no
 
 [Link]
+# Packets over about 1288 bytes are lost past this uplink, with no ICMP error to say so, which
+# stalls TCP. Stay under that (nftables.conf clamps forwarded TCP to match). Metronet's to fix: go
+# back to the default of 1500 when 1500-byte packets get through.
+MTUBytes=1280
 # Don't hold up boot when the ISP is down; dnsmasq waits for network-online.target.
 RequiredForOnline=no

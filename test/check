@@ -458,6 +458,41 @@ peer=$(tcp c1 '[2001:db8::1]:7')
 [ "$peer" = "[$c1_ip6]" ]
 check $? "c1 reaches the IPv6 ISP from its own address: $peer"
 
+## wan4's MTU
+
+ip -o link show wan4 | grep -q ' mtu 1280 '
+check $? "wan4 has an MTU of 1280"
+
+# Print the MSS of the first TCP handshake packet on interface $2 in namespace $1 that matches the
+# tcpdump filter $3, while c1 connects to the IPv4 ISP.
+mss() {
+  : >$LOG/mss.err
+  timeout 3 ip netns exec "$1" tcpdump -l -n -i "$2" -c 1 "tcp[tcpflags] & tcp-syn != 0 and $3" \
+    </dev/null >$LOG/mss.out 2>$LOG/mss.err &
+  dump=$!
+  for _ in $(seq 20); do
+    grep -q listening $LOG/mss.err && break
+    sleep 0.1
+  done
+  tcp c1 209.173.223.177:7 >/dev/null
+  wait $dump
+  sed -n 's/.*mss \([0-9]*\).*/\1/p' $LOG/mss.out
+}
+
+syn=$(mss isp4 up4 'tcp dst port 7')
+[ "$syn" = 1240 ]
+check $? "c1's SYN reaches the IPv4 ISP with an MSS of $syn"
+synack=$(mss c1 eth0 'tcp src port 7')
+[ "$synack" = 1240 ]
+check $? "the IPv4 ISP's SYN-ACK reaches c1 with an MSS of $synack"
+
+# What `networkctl reload` does to a running link when its config changes.
+ip link set wan4 mtu 1500
+networkctl reconfigure wan4 && sleep 3
+peer=$(tcp c1 209.173.223.177:7)
+ip -o link show wan4 | grep -q ' mtu 1280 ' && [ "$peer" = "$wan4_ip" ]
+check $? "a live reconfigure sets wan4's MTU, and c1 still reaches the IPv4 ISP: $peer"
+
 ## Firewall
 
 # 5432 and 6379 stand for Postgres and Redis, and 8080 and 11443 for UniFi OS Server (device
