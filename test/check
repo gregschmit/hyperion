@@ -950,6 +950,12 @@ check $? "ipv6 off again changes nothing"
 # Like a reboot: networkd reads the configs afresh.
 systemctl restart systemd-networkd && sleep 5 && ipv6_gone
 check $? "ipv6 off lasts across a networkd restart"
+# dnsmasq and nginx start after network-online.target, so with no prefix (IPv6 off, or the ISP
+# delegating none), boot mustn't wait for the links that only the prefix can configure. The
+# service waits up to 2 minutes; 10 seconds is plenty.
+/usr/lib/systemd/systemd-networkd-wait-online --timeout=10
+check $? "IPv6 off: the network is online without the prefix, so boot doesn't wait for it" ||
+  networkctl list --no-legend | sed 's/^/      /'
 
 ipv6 on >/dev/null && [ "$(ipv6)" = on ] && within 60 ipv6_back
 check $? "ipv6 on brings back $pd, the addresses on lan and guest6, and c1's IPv6"

@@ -19,4 +19,7 @@ SubnetId=1
 Token=::1
 
 [Link]
-RequiredForOnline=no-carrier
+# Its only address comes from the delegated prefix, so don't hold up boot for it: with IPv6 off, or
+# no prefix from the ISP, it never finishes configuring. dnsmasq and nginx wait for
+# network-online.target, and dnsmasq picks up the address whenever it comes (see lan.conf).
+RequiredForOnline=no
