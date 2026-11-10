@@ -1,0 +1,53 @@
+#!/bin/sh
+
+# Keep what goes out wan4 under a smaller MTU, for when packets over a size limit get lost past it
+# with no ICMP error to say so (see mtu-test), or stop. It adds a second default route with that
+# MTU, which wins over the one in 20-wan4.network by its lower metric. nftables.conf follows the
+# route: it fits forwarded TCP to it, and turns away QUIC when it's too small for QUIC's packets, so
+# browsers use TCP at once. The link keeps its own MTU, so mtu-test still finds the real limit.
+#
+#   wan4-mtu          print the MTU, or off
+#   wan4-mtu <bytes>  keep packets out wan4 to that size (576 to 1500), also across reboots
+#   wan4-mtu off      stop
+
+set -eu
+
+NETWORK=/etc/systemd/network/20-wan4.network
+DROPIN=$NETWORK.d/mtu.conf
+
+case "${1:-}" in
+  "")
+    if [ -e "$DROPIN" ]; then sed -n 's/^MTUBytes=//p' "$DROPIN"; else echo off; fi
+    exit
+    ;;
+  off) mtu=off ;;
+  *[!0-9]* | 0*) mtu="" ;;
+  *) mtu=$1 ;;
+esac
+if [ "$mtu" != off ] && { [ -z "$mtu" ] || [ "$mtu" -lt 576 ] || [ "$mtu" -gt 1500 ]; }; then
+  echo "usage: wan4-mtu [576 to 1500|off]" >&2
+  exit 2
+fi
+
+if [ "$(id -u)" -ne 0 ]; then exec sudo "$0" "$@"; fi
+
+if [ "$mtu" = off ]; then
+  rm -f "$DROPIN"
+else
+  gateway=$(sed -n 's/^Gateway=//p' "$NETWORK" | head -n1)
+  if [ -z "$gateway" ]; then
+    echo "wan4-mtu: no Gateway= in $NETWORK" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$DROPIN")"
+  printf '# From wan4-mtu; `wan4-mtu off` removes it.\n[Route]\nGateway=%s\nMetric=50\nMTUBytes=%s\n' \
+    "$gateway" "$mtu" >"$DROPIN"
+fi
+
+# Reconfigures only the links whose config changed: here, wan4.
+networkctl reload
+if [ "$mtu" = off ]; then
+  echo "Packets out wan4 can be as big as the link allows"
+else
+  echo "Packets out wan4 are kept to $mtu bytes"
+fi

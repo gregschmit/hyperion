@@ -460,8 +460,9 @@ check $? "c1 reaches the IPv6 ISP from its own address: $peer"
 
 ## wan4's MTU
 
-ip -4 route show default | grep -q ' mtu 576' && ip -o link show wan4 | grep -q ' mtu 1500 '
-check $? "wan4's default route has an MTU of 576, and the link keeps 1500 for mtu-test"
+[ "$(wan4-mtu)" = off ] && ! ip -4 route show default | grep -q ' mtu ' &&
+  ip -o link show wan4 | grep -q ' mtu 1500 '
+check $? "wan4-mtu prints off, and nothing keeps packets out wan4 under the link's 1500 bytes"
 
 # Print the MSS of the first TCP handshake packet on interface $2 in namespace $1 that matches the
 # tcpdump filter $3, while c1 connects to 1.1.1.1 past the IPv4 ISP's gateway (by the default route,
@@ -481,30 +482,61 @@ mss() {
   sed -n 's/.*mss \([0-9]*\).*/\1/p' $LOG/mss.out
 }
 
+# Print what happens to a UDP packet from c1 to port 443 (QUIC) at $1: it gets "through" to an ISP,
+# is "refused" (turned away with an ICMP error), or is "lost".
+: >$LOG/quic
+ip netns exec isp4 socat -u UDP4-RECV:443 OPEN:$LOG/quic,append </dev/null >/dev/null 2>&1 &
+quic4=$!
+ip netns exec isp6 socat -u UDP6-RECV:443 OPEN:$LOG/quic,append </dev/null >/dev/null 2>&1 &
+quic6=$!
+quic() {
+  before=$(wc -l <$LOG/quic)
+  err=$(echo quic | ip netns exec c1 socat -T1 - "UDP:$1:443" 2>&1 >/dev/null)
+  sleep 0.3
+  if [ "$(wc -l <$LOG/quic)" -gt "$before" ]; then
+    echo through
+  elif echo "$err" | grep -q refused; then
+    echo refused
+  else
+    echo lost
+  fi
+}
+
+syn=$(mss isp4 up4 'tcp dst port 7')
+[ "$syn" = 1460 ]
+check $? "c1's SYN reaches the IPv4 ISP with its own MSS of $syn"
+answer=$(quic 1.1.1.1)
+[ "$answer" = through ]
+check $? "QUIC from c1 to the IPv4 ISP: $answer"
+
+wan4-mtu 576 >/dev/null && [ "$(wan4-mtu)" = 576 ] &&
+  ip -4 route show default | grep -q 'metric 50 mtu 576' && ip -o link show wan4 | grep -q ' mtu 1500 '
+check $? "wan4-mtu 576 adds a default route with an MTU of 576 that wins, and the link keeps 1500"
 syn=$(mss isp4 up4 'tcp dst port 7')
 [ "$syn" = 536 ]
-check $? "c1's SYN reaches the IPv4 ISP with an MSS of $syn"
+check $? "wan4-mtu 576: c1's SYN reaches the IPv4 ISP with an MSS of $syn"
 synack=$(mss c1 eth0 'tcp src port 7')
 [ "$synack" = 536 ]
-check $? "the IPv4 ISP's SYN-ACK reaches c1 with an MSS of $synack"
+check $? "wan4-mtu 576: the IPv4 ISP's SYN-ACK reaches c1 with an MSS of $synack"
 # nftables.conf only ever lowers the MSS.
 syn=$(mss isp4 up4 'tcp dst port 7' 400)
 [ "$syn" = 400 ]
-check $? "a smaller MSS that c1 offers reaches the IPv4 ISP as it is: $syn"
-
-# What `networkctl reload` does to a running link when its config changes. Meanwhile, the MSS
-# follows the route's MTU, so at 1500 c1's own MSS gets through.
-ip route replace default via 209.173.223.177 dev wan4 proto static
-syn=$(mss isp4 up4 'tcp dst port 7')
-[ "$syn" = 1460 ]
-check $? "at an MTU of 1500, c1's SYN reaches the IPv4 ISP with its own MSS of $syn"
+check $? "wan4-mtu 576: a smaller MSS that c1 offers reaches the IPv4 ISP as it is: $syn"
+answer=$(quic 1.1.1.1)
+[ "$answer" = refused ]
+check $? "wan4-mtu 576: QUIC from c1 to the IPv4 ISP is turned away: $answer"
+answer=$(quic '[2001:db8::1]')
+[ "$answer" = through ]
+check $? "wan4-mtu 576: QUIC from c1 to the IPv6 ISP, not by wan4: $answer"
+# The limit is in networkd's config, not just on the running link.
 networkctl reconfigure wan4 && sleep 3
-peer=$(tcp c1 209.173.223.177:7)
-ip -4 route show default | grep -q ' mtu 576' && [ "$peer" = "$wan4_ip" ]
-check $? "a live reconfigure puts back the route's MTU, and c1 still reaches the IPv4 ISP: $peer"
+peer=$(tcp c1 1.1.1.1:7)
+ip -4 route show default | grep -q 'metric 50 mtu 576' && [ "$peer" = "$wan4_ip" ]
+check $? "wan4-mtu 576 lasts across a live reconfigure, and c1 still reaches the IPv4 ISP: $peer"
 
-# mtu-test finds where packets stop: here, past isp4, which drops what's over 744 bytes, like the
-# real ISP (at about 750 bytes once). It logs what it finds.
+# mtu-test finds where packets stop, though wan4-mtu keeps everything else under 576 bytes: here,
+# past isp4, which drops what's over 744 bytes, like the real ISP (at about 750 bytes once). It logs
+# what it finds.
 ip netns exec isp4 nft -f - <<'EOF'
 table ip blackhole {
 	chain in {
@@ -526,6 +558,15 @@ check $? "mtu-test finds that isp4 lets 744-byte packets through and drops 745-b
   echo "$out" | sed 's/^/      /'
   echo "      logged: $logged"
 }
+
+wan4-mtu off >/dev/null && [ "$(wan4-mtu)" = off ] && ! ip -4 route show default | grep -q ' mtu '
+check $? "wan4-mtu off takes the route away" || ip -4 route show default | sed 's/^/      /'
+syn=$(mss isp4 up4 'tcp dst port 7')
+answer=$(quic 1.1.1.1)
+peer=$(tcp c1 1.1.1.1:7)
+[ "$syn" = 1460 ] && [ "$answer" = through ] && [ "$peer" = "$wan4_ip" ]
+check $? "wan4-mtu off: c1 reaches the IPv4 ISP with an MSS of $syn, and QUIC gets $answer"
+kill $quic4 $quic6
 
 ## Firewall
 

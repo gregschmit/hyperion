@@ -3,8 +3,8 @@
 # Find the largest packet that gets through wan4 and back, as a record for the ISP: 3 pings of each
 # size to the uplink's gateway and to 1.1.1.1 (or to the hosts given), then down to the byte
 # between the last size that got through and the first that didn't. Sizes are whole IPv4 packets,
-# headers included. The pings set Don't Fragment but use wan4's own MTU, not the smaller one on its
-# default route (see 20-wan4.network), so they can find the real limit.
+# headers included. The pings set Don't Fragment but use wan4's own MTU, not a smaller one on its
+# routes (see wan4-mtu), so they can find the real limit.
 #
 #   mtu-test [host...]
 #

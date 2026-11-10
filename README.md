@@ -59,13 +59,18 @@ use IPv4, and `ipv6 on` (or `enable`) brings it back. `ipv6` alone prints which 
 across reboots. It takes down `wan6`, so guests on `guest6` (IPv6-only) lose the internet. The
 public AAAA records stay, so outside clients try IPv6 first and have to fall back to IPv4.
 
-## Testing packet sizes on wan4
+## Packet sizes on wan4
 
-Metronet's line drops packets over a size limit without saying so, and the limit moves. `mtu-test`
-sends 3 pings of each size from 576 to 1500 bytes to `wan4`'s gateway and to 1.1.1.1, and narrows
-the limit down to the byte. `mtu-test <host>...` tests other hosts. Each run logs what it finds, so
-`journalctl -t mtu-test` shows how the limit has changed. Until the line is fixed, `wan4`'s default
-route keeps traffic to 576 bytes (see `20-wan4.network`).
+Metronet's line once started dropping packets over a size limit without saying so (1288 bytes, then
+782), until a restart of their ONT fixed it. `mtu-test` sends 3 pings of each size from 576 to 1500
+bytes to `wan4`'s gateway and to 1.1.1.1, and narrows the limit down to the byte. `mtu-test
+<host>...` tests other hosts. Each run logs what it finds, so `journalctl -t mtu-test` shows how the
+limit has changed.
+
+While the line drops big packets, `wan4-mtu 576` (or another size under the limit) keeps everything
+out `wan4` to that size, also across reboots, and `wan4-mtu off` stops it. `wan4-mtu` alone prints
+the size, or off. Meanwhile, nftables.conf fits forwarded TCP to the size, and turns away QUIC,
+which needs 1200-byte packets, so browsers use TCP at once. `mtu-test` still sees the real limit.
 
 ## Testing
 

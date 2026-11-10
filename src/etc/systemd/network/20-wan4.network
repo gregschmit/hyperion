@@ -13,13 +13,9 @@ IPv6AcceptRA=no
 
 [Route]
 Gateway=209.173.223.177
-# Packets over a size limit are lost past this uplink, with no ICMP error to say so, which stalls
-# TCP. The limit moves (1288 bytes one day, about 750 the next; see `mtu-test`), so stay well under
-# it (nftables.conf fits forwarded TCP to this). It's on this route, not the link, so that mtu-test
-# can still send bigger packets. Hosts on the /29 itself (the gateway, and the rXg at .179, which
-# gets 1500 bytes) are reached by another route. Metronet's to fix: remove this when 1500 bytes get
-# through.
-MTUBytes=576
+# wan4-mtu adds a second default route with a smaller MTU, for when packets over a size limit get
+# lost past this uplink. A lower metric makes it win over this one.
+Metric=100
 
 [Link]
 # Don't hold up boot when the ISP is down; dnsmasq waits for network-online.target.
