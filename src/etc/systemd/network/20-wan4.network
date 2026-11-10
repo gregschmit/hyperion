@@ -9,13 +9,17 @@ Name=wan4
 
 [Network]
 Address=209.173.223.178/29
-Gateway=209.173.223.177
 IPv6AcceptRA=no
 
+[Route]
+Gateway=209.173.223.177
+# Packets over a size limit are lost past this uplink, with no ICMP error to say so, which stalls
+# TCP. The limit moves (1288 bytes one day, about 750 the next; see `mtu-test`), so stay well under
+# it (nftables.conf fits forwarded TCP to this). It's on this route, not the link, so that mtu-test
+# can still send bigger packets; only the gateway itself is reached by another route. Metronet's to
+# fix: remove this when 1500 bytes get through.
+MTUBytes=576
+
 [Link]
-# Packets over about 1288 bytes are lost past this uplink, with no ICMP error to say so, which
-# stalls TCP. Stay under that (nftables.conf clamps forwarded TCP to match). Metronet's to fix: go
-# back to the default of 1500 when 1500-byte packets get through.
-MTUBytes=1280
 # Don't hold up boot when the ISP is down; dnsmasq waits for network-online.target.
 RequiredForOnline=no

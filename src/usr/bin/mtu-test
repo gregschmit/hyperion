@@ -1,0 +1,60 @@
+#!/bin/sh
+
+# Find the largest packet that gets through wan4 and back, as a record for the ISP: 3 pings of each
+# size to the uplink's gateway and to 1.1.1.1 (or to the hosts given), then down to the byte
+# between the last size that got through and the first that didn't. Sizes are whole IPv4 packets,
+# headers included. The pings set Don't Fragment but use wan4's own MTU, not the smaller one on its
+# default route (see 20-wan4.network), so they can find the real limit.
+#
+#   mtu-test [host...]
+#
+# Each run logs a line per host, so `journalctl -t mtu-test` shows how the limit changes.
+
+set -eu
+
+IFACE=wan4
+SIZES="576 700 800 900 1000 1100 1200 1280 1300 1400 1500"
+
+if [ "$(id -u)" -ne 0 ]; then exec sudo "$0" "$@"; fi
+
+gateway=$(ip -4 route show default dev "$IFACE" | awk '{ print $3; exit }')
+[ $# -gt 0 ] || set -- ${gateway:+"$gateway"} 1.1.1.1
+mtu=$(cat "/sys/class/net/$IFACE/mtu")
+
+# Print how many of 3 pings of $2 bytes to $1 come back.
+replies() {
+  n=$(ping -q -n -I "$IFACE" -M probe -c 3 -i 0.2 -W 1 -s $(($2 - 28)) "$1" 2>/dev/null |
+    sed -n 's/.* \([0-9]*\) received.*/\1/p')
+  echo "${n:-0}"
+}
+
+echo "$(date '+%F %T %Z'), out $IFACE (MTU $mtu): pings back of 3, by size in bytes"
+for host; do
+  echo
+  echo "$host"
+  if [ "$(replies "$host" 84)" -eq 0 ]; then
+    # It doesn't answer pings at all, so it can't tell us anything.
+    result="no replies, even at 84 bytes"
+  else
+    good=84 bad=""
+    for size in $SIZES; do
+      [ "$size" -le "$mtu" ] || break
+      n=$(replies "$host" "$size")
+      printf '%6s: %s\n' "$size" "$n"
+      if [ -z "$bad" ]; then
+        if [ "$n" -eq 3 ]; then good=$size; else bad=$size; fi
+      fi
+    done
+    if [ -z "$bad" ]; then
+      result="all got through, up to $good bytes"
+    else
+      while [ $((bad - good)) -gt 1 ]; do
+        mid=$(((good + bad) / 2))
+        if [ "$(replies "$host" $mid)" -eq 3 ]; then good=$mid; else bad=$mid; fi
+      done
+      result="$good bytes got through, $bad didn't"
+    fi
+  fi
+  echo "$result"
+  logger -t mtu-test "$host: $result"
+done

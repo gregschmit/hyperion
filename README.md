@@ -59,6 +59,14 @@ use IPv4, and `ipv6 on` (or `enable`) brings it back. `ipv6` alone prints which 
 across reboots. It takes down `wan6`, so guests on `guest6` (IPv6-only) lose the internet. The
 public AAAA records stay, so outside clients try IPv6 first and have to fall back to IPv4.
 
+## Testing packet sizes on wan4
+
+Metronet's line drops packets over a size limit without saying so, and the limit moves. `mtu-test`
+sends 3 pings of each size from 576 to 1500 bytes to `wan4`'s gateway and to 1.1.1.1, and narrows
+the limit down to the byte. `mtu-test <host>...` tests other hosts. Each run logs what it finds, so
+`journalctl -t mtu-test` shows how the limit has changed. Until the line is fixed, `wan4`'s default
+route keeps traffic to 576 bytes (see `20-wan4.network`).
+
 ## Testing
 
 `test/run` boots the router config in a Debian container with fake ISPs, LAN clients, and guests,

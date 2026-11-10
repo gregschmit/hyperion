@@ -460,11 +460,12 @@ check $? "c1 reaches the IPv6 ISP from its own address: $peer"
 
 ## wan4's MTU
 
-ip -o link show wan4 | grep -q ' mtu 1280 '
-check $? "wan4 has an MTU of 1280"
+ip -4 route show default | grep -q ' mtu 576' && ip -o link show wan4 | grep -q ' mtu 1500 '
+check $? "wan4's default route has an MTU of 576, and the link keeps 1500 for mtu-test"
 
 # Print the MSS of the first TCP handshake packet on interface $2 in namespace $1 that matches the
-# tcpdump filter $3, while c1 connects to the IPv4 ISP, offering an MSS of $4 if given.
+# tcpdump filter $3, while c1 connects to 1.1.1.1 past the IPv4 ISP's gateway (by the default route,
+# like the rest of the internet), offering an MSS of $4 if given.
 mss() {
   : >$LOG/mss.err
   timeout 3 ip netns exec "$1" tcpdump -l -n -i "$2" -c 1 "tcp[tcpflags] & tcp-syn != 0 and $3" \
@@ -474,33 +475,57 @@ mss() {
     grep -q listening $LOG/mss.err && break
     sleep 0.1
   done
-  ip netns exec c1 socat -T2 - "TCP:209.173.223.177:7,connect-timeout=2${4:+,mss=$4}" \
+  ip netns exec c1 socat -T2 - "TCP:1.1.1.1:7,connect-timeout=2${4:+,mss=$4}" \
     </dev/null >/dev/null 2>&1
   wait $dump
   sed -n 's/.*mss \([0-9]*\).*/\1/p' $LOG/mss.out
 }
 
 syn=$(mss isp4 up4 'tcp dst port 7')
-[ "$syn" = 1240 ]
+[ "$syn" = 536 ]
 check $? "c1's SYN reaches the IPv4 ISP with an MSS of $syn"
 synack=$(mss c1 eth0 'tcp src port 7')
-[ "$synack" = 1240 ]
+[ "$synack" = 536 ]
 check $? "the IPv4 ISP's SYN-ACK reaches c1 with an MSS of $synack"
 # nftables.conf only ever lowers the MSS.
-syn=$(mss isp4 up4 'tcp dst port 7' 1000)
-[ "$syn" = 1000 ]
+syn=$(mss isp4 up4 'tcp dst port 7' 400)
+[ "$syn" = 400 ]
 check $? "a smaller MSS that c1 offers reaches the IPv4 ISP as it is: $syn"
 
 # What `networkctl reload` does to a running link when its config changes. Meanwhile, the MSS
-# follows wan4's MTU, so at 1500 c1's own MSS gets through.
-ip link set wan4 mtu 1500
+# follows the route's MTU, so at 1500 c1's own MSS gets through.
+ip route replace default via 209.173.223.177 dev wan4 proto static
 syn=$(mss isp4 up4 'tcp dst port 7')
 [ "$syn" = 1460 ]
 check $? "at an MTU of 1500, c1's SYN reaches the IPv4 ISP with its own MSS of $syn"
 networkctl reconfigure wan4 && sleep 3
 peer=$(tcp c1 209.173.223.177:7)
-ip -o link show wan4 | grep -q ' mtu 1280 ' && [ "$peer" = "$wan4_ip" ]
-check $? "a live reconfigure sets wan4's MTU, and c1 still reaches the IPv4 ISP: $peer"
+ip -4 route show default | grep -q ' mtu 576' && [ "$peer" = "$wan4_ip" ]
+check $? "a live reconfigure puts back the route's MTU, and c1 still reaches the IPv4 ISP: $peer"
+
+# mtu-test finds where packets stop: here, past isp4, which drops what's over 744 bytes, like the
+# real ISP (at about 750 bytes once). It logs what it finds.
+ip netns exec isp4 nft -f - <<'EOF'
+table ip blackhole {
+	chain in {
+		type filter hook prerouting priority filter;
+		meta length > 744 drop
+	}
+}
+EOF
+out=$(mtu-test 209.173.223.177)
+ip netns exec isp4 nft delete table ip blackhole
+for _ in $(seq 5); do
+  logged=$(journalctl -q -t mtu-test -o cat)
+  [ -n "$logged" ] && break
+  sleep 1
+done
+echo "$out" | grep -qx "744 bytes got through, 745 didn't" &&
+  [ "$logged" = "209.173.223.177: 744 bytes got through, 745 didn't" ]
+check $? "mtu-test finds that isp4 lets 744-byte packets through and drops 745-byte ones" || {
+  echo "$out" | sed 's/^/      /'
+  echo "      logged: $logged"
+}
 
 ## Firewall
 

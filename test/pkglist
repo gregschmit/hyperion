@@ -2,3 +2,4 @@
 # container has no network to install the others (nginx, postgres) with.
 nftables
 dnsmasq
+iputils-ping
