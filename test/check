@@ -464,7 +464,7 @@ ip -o link show wan4 | grep -q ' mtu 1280 '
 check $? "wan4 has an MTU of 1280"
 
 # Print the MSS of the first TCP handshake packet on interface $2 in namespace $1 that matches the
-# tcpdump filter $3, while c1 connects to the IPv4 ISP.
+# tcpdump filter $3, while c1 connects to the IPv4 ISP, offering an MSS of $4 if given.
 mss() {
   : >$LOG/mss.err
   timeout 3 ip netns exec "$1" tcpdump -l -n -i "$2" -c 1 "tcp[tcpflags] & tcp-syn != 0 and $3" \
@@ -474,7 +474,8 @@ mss() {
     grep -q listening $LOG/mss.err && break
     sleep 0.1
   done
-  tcp c1 209.173.223.177:7 >/dev/null
+  ip netns exec c1 socat -T2 - "TCP:209.173.223.177:7,connect-timeout=2${4:+,mss=$4}" \
+    </dev/null >/dev/null 2>&1
   wait $dump
   sed -n 's/.*mss \([0-9]*\).*/\1/p' $LOG/mss.out
 }
@@ -485,9 +486,17 @@ check $? "c1's SYN reaches the IPv4 ISP with an MSS of $syn"
 synack=$(mss c1 eth0 'tcp src port 7')
 [ "$synack" = 1240 ]
 check $? "the IPv4 ISP's SYN-ACK reaches c1 with an MSS of $synack"
+# nftables.conf only ever lowers the MSS.
+syn=$(mss isp4 up4 'tcp dst port 7' 1000)
+[ "$syn" = 1000 ]
+check $? "a smaller MSS that c1 offers reaches the IPv4 ISP as it is: $syn"
 
-# What `networkctl reload` does to a running link when its config changes.
+# What `networkctl reload` does to a running link when its config changes. Meanwhile, the MSS
+# follows wan4's MTU, so at 1500 c1's own MSS gets through.
 ip link set wan4 mtu 1500
+syn=$(mss isp4 up4 'tcp dst port 7')
+[ "$syn" = 1460 ]
+check $? "at an MTU of 1500, c1's SYN reaches the IPv4 ISP with its own MSS of $syn"
 networkctl reconfigure wan4 && sleep 3
 peer=$(tcp c1 209.173.223.177:7)
 ip -o link show wan4 | grep -q ' mtu 1280 ' && [ "$peer" = "$wan4_ip" ]
