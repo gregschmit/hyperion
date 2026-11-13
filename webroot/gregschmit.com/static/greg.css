@@ -1,0 +1,15 @@
+html, body { background-color: #4682b4; }
+
+#greg { border-radius: 50%; }
+
+.greg-title { font-weight: lighter; }
+
+.greg-subtitle {
+  font-weight: lighter;
+  font-size: 1.7em; }
+
+#toggleCSS {
+  position: absolute;
+  top: 1em;
+  right: 1em;
+}

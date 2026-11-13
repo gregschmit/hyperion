@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="/static/favicon-128.png" sizes="128x128" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/uikit/3.0.0-beta.25/css/uikit.min.css" />
+  <link rel="stylesheet" href="/static/greg.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/uikit/3.0.0-beta.25/js/uikit.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/uikit/3.0.0-beta.25/js/uikit-icons.min.js"></script>
+  <title>Greg Schmit</title>
+
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-59NBJC5Q63"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'G-59NBJC5Q63');
+  </script>
+</head>
+<body>
+  <div class="uk-section uk-section-secondary uk-light uk-padding-small">
+    <div class="uk-container uk-text-center">
+      <input id="toggleCSS" type="button" value="Toggle CSS" onclick="for(i=0;i<document.styleSheets.length;i++){void(document.styleSheets.item(i).disabled=!document.styleSheets.item(i).disabled);}">
+      <div><img id="greg" alt="greg's photo" src="/static/greg.jpg" width="150"></div>
+      <h1 class="uk-margin-small greg-title">Greg Schmit</h1>
+      <h2 class="uk-margin-small greg-subtitle">Software Engineer</h2>
+    </div>
+  </div>
+  <div class="uk-section uk-padding-small">
+    <div class="uk-container uk-container-small">
+      <div class="uk-text-break uk-card uk-card-default uk-card-body uk-padding-small uk-margin-small">
+        <h3 class="uk-card-title">About Me</h3>
+        <p>
+          I'm a full-stack engineer. My first language (other than QBasic/VB) was C, and my
+          undergrad program was Computer Engineering, so I wrote embedded software and device
+          drivers and really enjoyed learning the low-level aspects of software engineering. On my
+          own time (and in some higher-level CS courses) I learned Python/Django. I have been doing
+          Ruby on Rails for the past 8 years. I have also been learning Rust by writing <a
+          href="https://github.com/gregschmit/omake">an implementation of make</a>. I am also fairly
+          proficient in the JS/TS frontend ecosystem, including React, Vue, and Svelte.
+        </p>
+        <p>
+          I did a little bit of work on Physically Unclonable Functions at UIC under <a
+          href="https://ece.uic.edu/profiles/wenjing-rao-phd/">Wenjing Rao</a>. I would like to find
+          time in the future to finish a graduate program.
+        </p>
+        <p>
+          I am very interested in the various software engineering methodologies. I've tried
+          test-driven development, and find it really helpful when the project specification is
+          well-defined, however it seems to limit the ability to iterate quickly on more dynamic
+          projects because the tests can "cement" the code in place. This seems especially true with
+          UI development, where moving things around can cause tests to fail. I am currently
+          studying for the IEEE Professional Software Engineering Master certification.
+        </p>
+      </div>
+      <div class="uk-text-break uk-card uk-card-default uk-card-body uk-padding-small uk-margin-small">
+        <h3 class="uk-card-title">Interesting Stuff</h3>
+        <p><a href="http://nuclear.mutantstargoat.com/articles/make/">Practical Makefiles, by John Tsiombikas</a></p>
+        <p><a href="https://youtu.be/Qslo4-DpzPs">(YouTube) A Debate on Effective Altruism (Will MacAskill vs. Giles Fraser)</a></p>
+      </div>
+      <div class="uk-text-break uk-card uk-card-default uk-card-body uk-padding-small uk-margin-small">
+        <h3 class="uk-card-title">Contact</h3>
+        <dl class="uk-description-list uk-text-left">
+          <dt>Email:</dt>
+          <dd><a href="mailto:me@gregschmit.com">me@gregschmit.com</a></dd>
+          <dt>Social:</dt>
+          <dd>
+            <a href="https://stackoverflow.com/users/6515554/greg-schmit" target="_blank" class="uk-margin-small-right"><img src="/static/somacro/stackoverflow.png" alt="StackOverflow" width="40" height="40"></a>
+            <a href="https://github.com/gregschmit" target="_blank" class="uk-margin-small-right"><img src="/static/somacro/github.png" alt="GitHub" width="40" height="40"></a>
+            <a href="https://www.linkedin.com/in/gregschmit/" target="_blank" class="uk-margin-small-right"><img src="/static/somacro/linkedin.png" alt="LinkedIn" width="40" height="40"></a>
+          </dd>
+          <dt>SSH Public Key:</dt>
+          <dd><pre><a href="/static/gns-id_ed25519.pub">SHA256:wvQ/OggLliWpl9CXHR91UUqKPChs0OnZO3wrVmWMQfs</a> (username: gns)</pre></dd>
+          <dt>PGP Public Key:</dt>
+          <dd><pre><a href="/static/gns-pgp.pub">9223 FD79 96D1 0E80 263E  A32B FE10 BE3B D89C D73D</a> (<a href="https://pgp.mit.edu/pks/lookup?op=vindex&search=0xFE10BE3BD89CD73D" target="_blank">MIT PGP Server</a>)</pre></dd>
+          <dt>RG Nets SSH Public Key:</dt>
+          <dd><pre><a href="/static/gns-id_rsa_rxg2.pub">SHA256:MQKUa3fGNavznCD6uK/Rr8NFLEjuMXg0fMnmGeCz0RQ</a> (username: gns)</pre></dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -28,10 +28,11 @@ reboot. If it warns that no NIC has a MAC address from a `.link` file, fix the f
 again.
 
 Before you reboot (decline `install`'s offer until then), take the old router off the LAN, and
-point `schmit.net` and the subdomains that nginx serves at `209.173.223.178` in public DNS. After
-the reboot, restart the LAN switch, so clients get new addresses now. In UniFi, add the guest
-networks (VLAN only, with IDs 20 and 21), each with a WiFi network that has client device isolation
-on. Then check that:
+point `schmit.net` and the subdomains that nginx serves at `209.173.223.178` in public DNS, and
+`gregschmit.com` and `www.gregschmit.com` at `hyperion.schmit.net` on Cloudflare (see their nginx
+config for the settings). After the reboot, restart the LAN switch, so clients get new addresses
+now. In UniFi, add the guest networks (VLAN only, with IDs 20 and 21), each with a WiFi network
+that has client device isolation on. Then check that:
 
 - `networkctl` shows every link configured. Power-cycle the modem of an uplink that gets no
   address.
