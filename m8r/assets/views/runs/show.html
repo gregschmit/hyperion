@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.id }} · m8r{% endblock title %}
+{% block content %}
+<h1>Run {{ run.id }}: {{ run.operation }} in <span class="mono">{{ run.repo }}</span></h1>
+<p><span class="status {{ run.status }}">{{ run.status }}</span>
+  <span class="muted">· queued {{ run.queued_at }}{% if run.started_at %} · started {{ run.started_at }}{% endif %}{% if run.finished_at %} · finished {{ run.finished_at }}{% endif %}</span></p>
+
+{% if run.error %}
+<div class="problem">{{ run.error }}</div>
+{% endif %}
+
+<h2>Artifacts</h2>
+<ul class="artifacts">
+  {% for artifact in run.artifacts %}
+  <li><a href="{{ artifact.href }}">{{ artifact.name }}</a>
+    <small>{% if artifact.hosted %}files{% else %}{{ artifact.href }}{% endif %}</small></li>
+  {% else %}
+  <li class="muted">None.</li>
+  {% endfor %}
+</ul>
+
+<h2>What the agent printed</h2>
+{% if run.output %}<pre>{{ run.output }}</pre>{% else %}<p class="muted">Nothing{% if run.status == "running" %} yet: it shows when the run ends{% endif %}.</p>{% endif %}
+
+<h2>The prompt it got</h2>
+{% if run.prompt %}<pre>{{ run.prompt }}</pre>{% else %}<p class="muted">None yet: m8r compiles it when the run starts.</p>{% endif %}
+{% endblock content %}

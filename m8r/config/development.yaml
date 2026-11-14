@@ -1,0 +1,69 @@
+# Development: `cargo loco start --scheduler`. Put your own overrides (e.g. a real agent
+# command) in development.local.yaml, which git ignores.
+
+logger:
+  enable: true
+  pretty_backtrace: true
+  # trace, debug, info, warn or error
+  level: <%= get_env(name="LOG_LEVEL", default="debug") %>
+  # compact, pretty or json
+  format: compact
+
+server:
+  port: <%= get_env(name="PORT", default="5150") %>
+  binding: <%= get_env(name="BINDING", default="localhost") %>
+  host: http://localhost
+  middlewares:
+    static:
+      enable: true
+      must_exist: true
+      precompressed: false
+      folder:
+        uri: "/static"
+        path: "assets/static"
+      fallback: "assets/static/404.html"
+
+# m8r has no background workers: a run happens inside the tick task.
+workers:
+  mode: BackgroundAsync
+
+database:
+  uri: <%= get_env(name="DATABASE_URL", default="sqlite://m8r_development.sqlite?mode=rwc") %>
+  enable_logging: <%= get_env(name="DB_LOGGING", default="false") %>
+  connect_timeout: <%= get_env(name="DB_CONNECT_TIMEOUT", default="500") %>
+  idle_timeout: <%= get_env(name="DB_IDLE_TIMEOUT", default="500") %>
+  min_connections: <%= get_env(name="DB_MIN_CONNECTIONS", default="1") %>
+  max_connections: <%= get_env(name="DB_MAX_CONNECTIONS", default="1") %>
+  auto_migrate: true
+  dangerously_truncate: false
+  dangerously_recreate: false
+
+# One secret signs the access links (JWTs) and the session cookies. This one is for
+# development only. Both last 8 hours.
+auth:
+  jwt:
+    secret: bThyLWRldmVsb3BtZW50LXNlY3JldC1ub3QtZm9yLXByb2R1Y3Rpb24tdXNlLTAwMDA=
+    expiration: 28800
+  session:
+    secret: bThyLWRldmVsb3BtZW50LXNlY3JldC1ub3QtZm9yLXByb2R1Y3Rpb24tdXNlLTAwMDA=
+    max_age: 28800
+
+# m8r's schedules are rows, so this is the only job: the tick task reads them.
+scheduler:
+  output: stdout
+  jobs:
+    tick:
+      run: tick
+      schedule: run every minute
+
+settings:
+  # Where the app is reached, for the links that `task link` prints.
+  url: http://localhost:5150
+  # The shell that starts the tools, as a login shell, so they get your PATH.
+  shell: '<%= get_env(name="SHELL", default="/bin/sh") %>'
+  # The command a run pipes its prompt to. `cat` prints the prompt back and costs nothing.
+  agent: '<%= get_env(name="M8R_AGENT", default="cat") %>'
+  # Minutes before a run is killed.
+  run_limit: 120
+  # Where the artifacts and the run lock go.
+  data: data

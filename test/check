@@ -654,6 +654,45 @@ ln -sfn $repo/src/etc/nftables.conf /etc/nftables.conf
 systemctl reload-or-restart nftables && [ "$(tcp c1 209.173.223.177:7)" = "$wan4_ip" ]
 check $? "reload-or-restart with the good file again brings routing back"
 
+## m8r
+
+# m8r and its agents run as the m8r user (see nftables.conf). A process run as m8r here stands
+# in for them: it may reach the internet (here, example.com, on isp4) and the router's DNS, but
+# nothing on the LAN, and none of the router's other services.
+
+# Connect as m8r to $1 (host:port), and print what the server says.
+m8r_tcp() {
+  runuser -u m8r -- socat -T2 - "TCP:$1,connect-timeout=2" </dev/null 2>/dev/null
+}
+
+id -u m8r >/dev/null 2>&1
+check $? "install added the m8r user"
+ip -n isp4 addr add 192.0.2.80/32 dev lo
+for port in 22 80 443; do
+  listen isp4 $port isp4
+done
+# m8r's pages, as m8r-web would serve them to nginx.
+runuser -u m8r -- socat TCP-LISTEN:5150,bind=127.0.0.1,fork,reuseaddr "SYSTEM:echo pages" \
+  </dev/null >/dev/null 2>&1 &
+sleep 1
+
+answer=$(runuser -u m8r -- getent ahostsv4 example.com | awk 'NR == 1 { print $1 }')
+[ "$answer" = 192.0.2.80 ]
+check $? "m8r looks up example.com through dnsmasq: $answer"
+for port in 22 80 443; do
+  [ "$(m8r_tcp "192.0.2.80:$port")" = isp4 ]
+  check $? "m8r reaches the internet (example.com) on TCP $port"
+done
+for target in "$c1_ip:22" "$c1_ip:443" 127.0.0.1:22 127.0.0.1:443 127.0.0.1:5432 172.31.0.1:6379 \
+  172.31.0.1:11443 "$wan4_ip:5432" 127.0.0.1:5150; do
+  [ -z "$(m8r_tcp "$target")" ]
+  check $? "m8r can't reach $target"
+done
+[ "$(tcp router 127.0.0.1:5150)" = pages ]
+check $? "other users on the router (nginx) reach m8r's pages on TCP 5150, and get the answer"
+[ "$(tcp router "$c1_ip:22")" = c1 ]
+check $? "other users on the router still reach c1 on TCP 22"
+
 ## Guest networks
 
 # Get a lease for guest $1 on the guest network whose IPv4 /24 starts with $2, and check it: an

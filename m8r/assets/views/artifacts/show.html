@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} · m8r{% endblock title %}
+{% block content %}
+<h1>{{ name }}</h1>
+<p class="muted">An artifact of <a href="/runs/{{ run_id }}">run {{ run_id }}</a>.</p>
+<ul class="artifacts">
+  {% for file in files %}
+  <li><a class="mono" href="{{ file.href }}">{{ file.name }}</a></li>
+  {% else %}
+  <li class="muted">Its files are gone.</li>
+  {% endfor %}
+</ul>
+{% endblock content %}

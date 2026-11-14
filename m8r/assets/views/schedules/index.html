@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Schedules · m8r{% endblock title %}
+{% block content %}
+<h1>Schedules</h1>
+<p class="muted">When each operation runs, and in which clone. The time is a five-field cron
+  expression in the server's time zone: minute, hour, day of the month, month, day of the week.
+  <code>0 6 * * 1-5</code> is 06:00 on weekdays.</p>
+{% if not configured %}
+<div class="problem">No configuration is active, so nothing runs: the schedules queue nothing, and
+  a run that you queue here fails. <a href="/configurations">Make one active.</a></div>
+{% endif %}
+
+{% if has_problem %}<div class="problem">{{ problem }}</div>{% endif %}
+<form class="row" method="post" action="/schedules">
+  <select name="operation">
+    {% for operation in operations %}
+    <option value="{{ operation }}"{% if form.operation == operation %} selected{% endif %}>{{ operation }}</option>
+    {% endfor %}
+  </select>
+  <input type="text" name="repo" value="{{ form.repo }}" placeholder="/home/m8r/git/group/project" required>
+  <input type="text" name="cron" value="{{ form.cron }}" placeholder="0 6 * * 1-5" required size="14" style="flex: 0 1 10rem">
+  <button class="primary">Add</button>
+</form>
+
+<table>
+  <tr><th>Operation</th><th>Repo</th><th>Cron</th><th>Next</th><th></th></tr>
+  {% for schedule in schedules %}
+  <tr>
+    <td>
+      <select name="operation" form="schedule-{{ schedule.id }}">
+        {% for operation in operations %}
+        <option value="{{ operation }}"{% if schedule.operation == operation %} selected{% endif %}>{{ operation }}</option>
+        {% endfor %}
+      </select>
+    </td>
+    <td><input type="text" name="repo" value="{{ schedule.repo }}" form="schedule-{{ schedule.id }}" required></td>
+    <td><input type="text" name="cron" value="{{ schedule.cron }}" form="schedule-{{ schedule.id }}" required size="14"></td>
+    <td>{{ schedule.next }}</td>
+    <td class="actions">
+      <form id="schedule-{{ schedule.id }}" method="post" action="/schedules/{{ schedule.id }}"><button>Save</button></form>
+      <form method="post" action="/schedules/{{ schedule.id }}/run"><button>Run now</button></form>
+      <form method="post" action="/schedules/{{ schedule.id }}/remove"><button class="danger">Remove</button></form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="muted">No schedules.</td></tr>
+  {% endfor %}
+</table>
+{% endblock content %}

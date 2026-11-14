@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}m8r{% endblock title %}</title>
+  <link rel="stylesheet" href="/static/m8r.css">
+</head>
+<body>
+<header>
+  <a class="brand" href="/">m8r</a>
+  <nav>
+    <a href="/"{% if section == "report" %} aria-current="page"{% endif %}>Report</a>
+    <a href="/runs"{% if section == "runs" %} aria-current="page"{% endif %}>Runs</a>
+    <a href="/items"{% if section == "items" %} aria-current="page"{% endif %}>Items</a>
+    <a href="/schedules"{% if section == "schedules" %} aria-current="page"{% endif %}>Schedules</a>
+    <a href="/configurations"{% if section == "configurations" %} aria-current="page"{% endif %}>Configurations</a>
+  </nav>
+</header>
+{% if has_errors %}
+<section class="errors">
+  <h2>What doesn't work</h2>
+  <table>
+    <tr><th>Tool</th><th>Host</th><th>What's wrong</th><th>Since</th></tr>
+    {% if scheduler_late %}
+    <tr>
+      <td><code>m8r-scheduler</code></td>
+      <td></td>
+      <td>The scheduler isn't running, so nothing starts a run: it ticks every minute, and there
+        was no tick {% if last_tick %}since {{ last_tick }}{% else %}yet{% endif %}.</td>
+      <td>{{ last_tick }}</td>
+    </tr>
+    {% endif %}
+    {% for error in tool_errors %}
+    <tr>
+      <td><code>{{ error.tool }}</code></td>
+      <td>{{ error.host }}</td>
+      <td>{{ error.message }}</td>
+      <td>{{ error.since }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="muted">Fix the tools as the <code>m8r</code> user. m8r looks again every minute, and a row goes when
+    its tool works.</p>
+</section>
+{% endif %}
+<main>
+{% block content %}{% endblock content %}
+</main>
+</body>
+</html>

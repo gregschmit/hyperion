@@ -73,6 +73,14 @@ out `wan4` to that size, also across reboots, and `wan4-mtu off` stops it. `wan4
 the size, or off. Meanwhile, nftables.conf fits forwarded TCP to the size, and turns away QUIC,
 which needs 1200-byte packets, so browsers use TCP at once. `mtu-test` still sees the real limit.
 
+## m8r
+
+m8r, in `m8r/`, runs coding agents on a schedule to maintain repos, with pages at
+`m8r.schmit.net`. `install` builds and starts it, and it runs nothing until it's configured:
+[m8r/README.md](m8r/README.md) says how to deploy and use it. Its agents run as the `m8r` user,
+which the firewall lets reach the internet and the router's DNS, but not the LAN, the guests, the
+rXg's network, or the router's other services.
+
 ## Testing
 
 `test/run` boots the router config in a Debian container with fake ISPs, LAN clients, and guests,

@@ -10,9 +10,13 @@ dnsmasq
 iputils-ping
 
 curl
+git
 jq
 speedtest-cli
 podman
 uidmap
 slirp4netns
 passt
+
+# To build m8r (see install). Rust itself comes from rustup.
+build-essential

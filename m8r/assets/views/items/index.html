@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Items · m8r{% endblock title %}
+{% block content %}
+<h1>Items</h1>
+<p class="muted">The issues and PRs/MRs that you care about. Medium means you care about it, and
+  high means it's urgent. Every run gets this list. m8r asks the forge for each item's title, and
+  an item that closes or merges leaves the list by itself.</p>
+
+{% if has_problem %}<div class="problem">{{ problem }}</div>{% endif %}
+<form class="row" method="post" action="/items">
+  <input type="url" name="url" value="{{ form.url }}" placeholder="https://git.example.com/group/project/-/merge_requests/123" required>
+  <select name="priority">
+    <option value="medium"{% if form.priority == "medium" %} selected{% endif %}>medium</option>
+    <option value="high"{% if form.priority == "high" %} selected{% endif %}>high</option>
+  </select>
+  <input type="text" name="note" value="{{ form.note }}" placeholder="Why it matters">
+  <button class="primary">Add</button>
+</form>
+
+<table>
+  <tr><th>Priority</th><th>Item</th><th>Title</th><th>Note</th><th></th></tr>
+  {% for item in items %}
+  <tr>
+    <td>
+      <select name="priority" form="item-{{ item.id }}">
+        <option value="medium"{% if item.priority == "medium" %} selected{% endif %}>medium</option>
+        <option value="high"{% if item.priority == "high" %} selected{% endif %}>high</option>
+      </select>
+    </td>
+    <td><a href="{{ item.url }}">{{ item.label }}</a></td>
+    <td>{% if item.title %}{{ item.title }}{% else %}<span class="muted">not checked yet</span>{% endif %}</td>
+    <td><input type="text" name="note" value="{{ item.note }}" form="item-{{ item.id }}"></td>
+    <td class="actions">
+      <form id="item-{{ item.id }}" method="post" action="/items/{{ item.id }}"><button>Save</button></form>
+      <form method="post" action="/items/{{ item.id }}/remove"><button class="danger">Remove</button></form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="muted">Nothing has priority.</td></tr>
+  {% endfor %}
+</table>
+{% endblock content %}

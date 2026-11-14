@@ -1,0 +1,72 @@
+# Production. A secret or an address has no default here: `get_env(name="X")` fails at startup
+# when X is unset, which is better than running with a development secret.
+#
+# The variables this file needs: M8R_SECRET, HOST and DATABASE_URL.
+
+logger:
+  enable: true
+  pretty_backtrace: false
+  level: <%= get_env(name="LOG_LEVEL", default="info") %>
+  format: compact
+
+server:
+  port: <%= get_env(name="PORT", default="5150") %>
+  # Loopback: a reverse proxy with TLS goes in front.
+  binding: <%= get_env(name="BINDING", default="127.0.0.1") %>
+  # The public URL, e.g. https://m8r.example.com. With https, cookies are Secure.
+  host: <%= get_env(name="HOST") %>
+  middlewares:
+    static:
+      enable: true
+      must_exist: true
+      precompressed: false
+      folder:
+        uri: "/static"
+        path: "assets/static"
+      fallback: "assets/static/404.html"
+
+# m8r has no background workers: a run happens inside the tick task.
+workers:
+  mode: BackgroundAsync
+
+database:
+  # e.g. sqlite:///var/lib/m8r/m8r.sqlite?mode=rwc
+  uri: <%= get_env(name="DATABASE_URL") %>
+  enable_logging: <%= get_env(name="DB_LOGGING", default="false") %>
+  connect_timeout: <%= get_env(name="DB_CONNECT_TIMEOUT", default="500") %>
+  idle_timeout: <%= get_env(name="DB_IDLE_TIMEOUT", default="500") %>
+  min_connections: <%= get_env(name="DB_MIN_CONNECTIONS", default="1") %>
+  max_connections: <%= get_env(name="DB_MAX_CONNECTIONS", default="5") %>
+  auto_migrate: <%= get_env(name="DB_AUTO_MIGRATE", default="true") %>
+  dangerously_truncate: false
+  dangerously_recreate: false
+
+# One secret signs the access links (JWTs) and the session cookies: `openssl rand -base64 64`.
+# A new secret ends every link and session. Both last 8 hours.
+auth:
+  jwt:
+    secret: '<%= get_env(name="M8R_SECRET") %>'
+    expiration: 28800
+  session:
+    secret: '<%= get_env(name="M8R_SECRET") %>'
+    max_age: 28800
+
+# m8r's schedules are rows, so this is the only job: the tick task reads them.
+scheduler:
+  output: stdout
+  jobs:
+    tick:
+      run: tick
+      schedule: run every minute
+
+settings:
+  # Where the app is reached, for the links that `task link` prints.
+  url: '<%= get_env(name="HOST") %>'
+  # The shell that starts the tools, as a login shell, so they get the environment you set up.
+  shell: '<%= get_env(name="SHELL", default="/bin/sh") %>'
+  # The command a run pipes its prompt to. Put the model, the effort and the permissions here.
+  agent: '<%= get_env(name="M8R_AGENT", default="claude -p") %>'
+  # Minutes before a run is killed.
+  run_limit: 120
+  # Where the artifacts and the run lock go, e.g. /var/lib/m8r.
+  data: '<%= get_env(name="M8R_DATA") %>'

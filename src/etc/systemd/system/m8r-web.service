@@ -1,0 +1,26 @@
+# m8r's pages, behind nginx at m8r.schmit.net (see nginx/conf.d/m8r.schmit.net.conf and
+# /srv/hyperion/m8r/README.md). install enables and starts it.
+[Unit]
+Description=m8r pages
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=m8r
+Group=m8r
+WorkingDirectory=/srv/hyperion/m8r
+EnvironmentFile=/etc/default/m8r
+EnvironmentFile=/srv/hyperion/m8r/.env
+# /var/lib/m8r, which the scheduler's runs share.
+StateDirectory=m8r
+StateDirectoryMode=0750
+ExecStart=/srv/hyperion/m8r/target/release/m8r-cli start
+Restart=on-failure
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+# The pages only look at the clones: a schedule's repo must be a directory.
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

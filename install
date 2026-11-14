@@ -3,8 +3,9 @@
 # Symlink each file under `src/` to the same path under `/`, e.g. `src/etc/nftables.conf` ->
 # `/etc/nftables.conf`. Directories are created as needed, so files that packages install next to
 # ours are left alone, and links to files that are gone from `src/` are removed. Also installs the
-# packages in `pkglist` and UniFi OS Server, hands networking to systemd-networkd, and sets the
-# postgres password. Run as root after each pull; it is safe to re-run.
+# packages in `pkglist` and UniFi OS Server, hands networking to systemd-networkd, sets the
+# postgres password, and builds and starts m8r. Run as root after each pull; it is safe to
+# re-run.
 
 set -eu
 
@@ -141,6 +142,68 @@ install_postgres() {
   echo "Postgres:    new password for postgres in $pw_file"
 }
 
+# m8r's user (see m8r/README.md): m8r runs as it, and so do its agents, in the home that the
+# developer sets up for them. nftables.conf names the user, so it comes before anything loads
+# that file, everywhere (in test/run too).
+install_m8r_user() {
+  if id -u m8r >/dev/null 2>&1; then return; fi
+  echo "Adding:      user m8r"
+  useradd --create-home --user-group --shell /bin/bash m8r
+}
+
+# Build m8r, give it a secret and a place for its data, and start it. A new m8r is up but
+# unconfigured: it runs nothing until someone opens an access link (`m8r task link`) and
+# configures it. A running m8r is not restarted.
+install_m8r() {
+  local env_file="$REPO/m8r/.env"
+  local bin="$REPO/m8r/target/release/m8r-cli"
+  local owner cargo before out
+
+  # Without a C compiler (see pkglist), skip it (e.g. in test/run): Rust can't link.
+  if ! command -v cc >/dev/null; then return; fi
+
+  # Build as the clone's owner, with rustup's toolchain: Loco needs a newer Rust than Debian's.
+  owner=$(stat -c %U "$REPO")
+  cargo=$(getent passwd "$owner" | cut -d: -f6)/.cargo/bin/cargo
+  if [ ! -x "$cargo" ]; then
+    echo "Installing:  rustup for $owner, to build m8r"
+    runuser -u "$owner" -- sh -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+      sh -s -- -y --profile minimal --no-modify-path" >/dev/null
+  fi
+  before=$(stat -c %Y "$bin" 2>/dev/null || true)
+  if [ -z "$before" ]; then
+    echo "Building:    m8r, which takes a few minutes the first time"
+  fi
+  (cd "$REPO/m8r" && runuser -u "$owner" -- "$cargo" build --release --locked --quiet)
+
+  # The secret signs the access links and the sessions, so a new one ends them all. To get a
+  # new one, delete the line and run this script.
+  if ! grep -q '^M8R_SECRET=.' "$env_file" 2>/dev/null; then
+    (umask 077 && {
+      echo "# m8r's secret (see README.md). install makes it; the m8r units and command load it."
+      echo "M8R_SECRET=$(head -c 64 /dev/urandom | base64 -w0)"
+    } >"$env_file")
+    echo "m8r:         new secret in $env_file"
+  fi
+  chown root:root "$env_file"
+  chmod 600 "$env_file"
+
+  # The units make this too (StateDirectory=), but the migrations come first.
+  install -d -o m8r -g m8r -m 750 /var/lib/m8r
+  if ! out=$(LOG_LEVEL=error "$REPO/src/usr/bin/m8r" db migrate 2>&1); then
+    echo "ERROR: m8r's migrations failed:" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+
+  if ! systemctl -q is-enabled m8r-web m8r-scheduler 2>/dev/null; then
+    echo "m8r:         up, and unconfigured. Next, see m8r/README.md (Deploying)."
+  elif [ "$before" != "$(stat -c %Y "$bin")" ]; then
+    echo "m8r:         rebuilt. Restart it: systemctl restart m8r-web m8r-scheduler"
+  fi
+  systemctl enable -q --now m8r-web m8r-scheduler
+}
+
 # Walk src/$1 and install its entries into /$1. Pass "" to process the src root.
 install_dir() {
   local rel="$1"
@@ -203,6 +266,10 @@ for top in src/*; do
   find "/${top#src/}" -xtype l -lname "$REPO/src/*" -printf 'Removing:    %p -> %l\n' -delete
 done
 
+# m8r's user first: the nftables.conf that `git pull` just brought names it, and a reload or a
+# reboot would fail without it. useradd needs no packages.
+install_m8r_user
+
 # The apt sources first, so apt can install from them. Then the packages, before the rest of the
 # configs, so they set themselves up first: e.g. Debian won't create the postgres cluster when its
 # config directory already exists.
@@ -213,9 +280,10 @@ install_dir ""
 install_network
 
 # The password needs a running postgres, which a container that links the configs before it
-# boots (see test/Dockerfile) doesn't have yet.
+# boots (see test/Dockerfile) doesn't have yet. m8r's units need systemd too.
 if [ -d /run/systemd/system ]; then
   install_postgres
+  install_m8r
 fi
 
 if [ -n "$REBOOT" ]; then

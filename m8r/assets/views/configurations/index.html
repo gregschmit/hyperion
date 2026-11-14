@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Configurations · m8r{% endblock title %}
+{% block content %}
+<h1>Configurations</h1>
+<p class="muted">A configuration is a set of prompts. Runs use the active one. With none active,
+  nothing runs.</p>
+<p><a href="/configurations/new">New configuration</a></p>
+<table>
+  <tr><th>Name</th><th>Active</th><th>Changed</th><th></th></tr>
+  {% for configuration in configurations %}
+  <tr>
+    <td><a href="/configurations/{{ configuration.id }}">{{ configuration.name }}</a></td>
+    <td>{% if configuration.active %}<span class="status ok">active</span>{% endif %}</td>
+    <td>{{ configuration.updated_at }}</td>
+    <td class="actions">
+      {% if configuration.active %}
+      <form method="post" action="/configurations/{{ configuration.id }}/deactivate"><button>Deactivate</button></form>
+      {% else %}
+      <form method="post" action="/configurations/{{ configuration.id }}/activate"><button class="primary">Activate</button></form>
+      {% endif %}
+      <form method="post" action="/configurations/{{ configuration.id }}/remove"><button class="danger">Remove</button></form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="muted">No configurations, so nothing runs.</td></tr>
+  {% endfor %}
+</table>
+{% endblock content %}

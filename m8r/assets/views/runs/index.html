@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Runs · m8r{% endblock title %}
+{% block content %}
+<h1>Runs</h1>
+<p class="muted">One run at a time, oldest first. A tick starts the next one within a minute.</p>
+<table>
+  <tr><th>Run</th><th>Operation</th><th>Repo</th><th>Status</th><th>Queued</th><th>Started</th><th>Finished</th><th>Artifacts</th></tr>
+  {% for run in runs %}
+  <tr>
+    <td><a href="/runs/{{ run.id }}">{{ run.id }}</a></td>
+    <td>{{ run.operation }}</td>
+    <td class="mono">{{ run.repo }}</td>
+    <td><span class="status {{ run.status }}">{{ run.status }}</span></td>
+    <td>{{ run.queued_at }}</td>
+    <td>{{ run.started_at }}</td>
+    <td>{{ run.finished_at }}</td>
+    <td>{% for artifact in run.artifacts %}<a href="{{ artifact.href }}">{{ artifact.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8" class="muted">No runs yet. Queue one from a schedule's "Run now".</td></tr>
+  {% endfor %}
+</table>
+{% endblock content %}

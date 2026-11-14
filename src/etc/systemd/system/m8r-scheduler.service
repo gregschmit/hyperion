@@ -1,0 +1,31 @@
+# m8r's scheduler: every minute it runs m8r's tick task, which starts the agent runs (see
+# /srv/hyperion/m8r/README.md). The agents run as m8r, in this unit. install enables and starts
+# it. A new m8r has no configuration, so the ticks have nothing to run.
+[Unit]
+Description=m8r scheduler and agent runs
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=m8r
+Group=m8r
+WorkingDirectory=/srv/hyperion/m8r
+EnvironmentFile=/etc/default/m8r
+EnvironmentFile=/srv/hyperion/m8r/.env
+StateDirectory=m8r
+StateDirectoryMode=0750
+ExecStart=/srv/hyperion/m8r/target/release/m8r-cli scheduler
+Restart=on-failure
+# A stop ends the run in progress too. The next tick marks it failed.
+TimeoutStopSec=30
+NoNewPrivileges=yes
+# This box routes the house, so a runaway agent mustn't starve DNS or UniFi. The agents are
+# this unit's children, so these limits bound them, and not the pages.
+MemoryMax=4G
+CPUQuota=200%
+CPUWeight=20
+IOWeight=20
+TasksMax=1024
+
+[Install]
+WantedBy=multi-user.target

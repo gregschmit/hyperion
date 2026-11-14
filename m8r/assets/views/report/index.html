@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Report · m8r{% endblock title %}
+{% block content %}
+<h1>Report</h1>
+<p class="days">
+  <a href="/?day={{ day_before }}">← {{ day_before }}</a>
+  <strong>{{ day }}{% if is_today %} (today){% endif %}</strong>
+  {% if has_day_after %}<a href="/?day={{ day_after }}">{{ day_after }} →</a>{% endif %}
+</p>
+
+{% if unconfigured %}
+<section class="setup">
+  <h2>m8r is up, and has nothing to do yet</h2>
+  <p>m8r runs your agent as the <code>m8r</code> user, with the tools and logins in that user's
+    home. It installs none of them. Become that user (<code>sudo -iu m8r</code>), and set its home
+    up as you would a new computer:</p>
+  <ol>
+    <li>Install your dotfiles and tools: the agent CLI, <code>gh</code>, <code>glab</code>.</li>
+    <li>Log each of them in.</li>
+    <li>Clone the repos to maintain.</li>
+  </ol>
+  <p>Then <a href="/configurations/new">write a configuration</a> and make it active,
+    <a href="/schedules">add a schedule</a>, and run it now.</p>
+</section>
+{% endif %}
+
+{% for run in runs %}
+<section>
+  <h2><a href="/runs/{{ run.id }}">{{ run.operation }}</a> in <span class="mono">{{ run.repo }}</span>
+    <small>{{ run.started_at }}</small></h2>
+  <ul class="artifacts">
+    {% for artifact in run.artifacts %}
+    <li><a href="{{ artifact.href }}">{{ artifact.name }}</a>
+      <small>{% if artifact.hosted %}files{% else %}{{ artifact.href }}{% endif %}</small></li>
+    {% endfor %}
+  </ul>
+</section>
+{% else %}
+<p class="muted">No run reported an artifact on this day.</p>
+{% endfor %}
+{% endblock content %}

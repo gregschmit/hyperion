@@ -1,0 +1,15 @@
+# m8r's settings on this box (see /srv/hyperion/m8r/config/production.yaml). The m8r units
+# and the m8r command load this file, and then m8r's secret from /srv/hyperion/m8r/.env, which
+# install makes. Plain KEY=value lines, as systemd reads them: no quotes, and comments only
+# on their own lines. After a change, restart m8r-web and m8r-scheduler.
+
+LOCO_ENV=production
+# Where m8r is reached. nginx serves it (see nginx/conf.d/m8r.schmit.net.conf).
+HOST=https://m8r.schmit.net
+# Everything m8r keeps is in /var/lib/m8r: this database, the artifacts, and the run lock.
+DATABASE_URL=sqlite:///var/lib/m8r/m8r.sqlite?mode=rwc
+M8R_DATA=/var/lib/m8r
+# The command a run pipes its prompt to, as the m8r user. The model, the effort and the
+# permissions go here. Nobody is there to approve a tool call, so give the agent what your
+# prompts need: an --allowedTools list, or --dangerously-skip-permissions.
+M8R_AGENT=claude -p
