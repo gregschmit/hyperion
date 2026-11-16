@@ -38,8 +38,8 @@ database:
   dangerously_truncate: false
   dangerously_recreate: false
 
-# One secret signs the access links (JWTs) and the session cookies. This one is for
-# development only. Both last 8 hours.
+# One secret signs the access links and the runs' tokens (JWTs) and the session cookies. This
+# one is for development only. A link and a session last 8 hours.
 auth:
   jwt:
     secret: bThyLWRldmVsb3BtZW50LXNlY3JldC1ub3QtZm9yLXByb2R1Y3Rpb24tdXNlLTAwMDA=
@@ -61,7 +61,8 @@ settings:
   url: http://localhost:5150
   # The shell that starts the tools, as a login shell, so they get your PATH.
   shell: '<%= get_env(name="SHELL", default="/bin/sh") %>'
-  # The command a run pipes its prompt to. `cat` prints the prompt back and costs nothing.
+  # The agent's command, which a new schedule for triage, review or develop starts with. A run
+  # pipes its prompt to its schedule's command. `cat` prints the prompt back and costs nothing.
   agent: '<%= get_env(name="M8R_AGENT", default="cat") %>'
   # Minutes before a run is killed.
   run_limit: 120

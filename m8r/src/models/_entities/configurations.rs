@@ -15,12 +15,6 @@ pub struct Model {
     pub active: bool,
     #[sea_orm(column_type = "Text")]
     pub system_message: String,
-    #[sea_orm(column_type = "Text")]
-    pub triage_prompt: String,
-    #[sea_orm(column_type = "Text")]
-    pub review_prompt: String,
-    #[sea_orm(column_type = "Text")]
-    pub develop_prompt: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

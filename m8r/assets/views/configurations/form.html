@@ -2,44 +2,35 @@
 {% block title %}{% if is_new %}New configuration{% else %}{{ form.name }}{% endif %} · m8r{% endblock title %}
 {% block content %}
 <h1>{% if is_new %}New configuration{% else %}{{ form.name }}{% endif %}</h1>
-<p class="muted">Each prompt is a template. Put <code>{{ "{{ system_message }}" }}</code> where m8r's
-  system message goes: a prompt without it gets none. The system message is a template too, and
-  both can use <code>items</code> (each has <code>url</code>, <code>priority</code> and
-  <code>note</code>) and <code>artifacts_dir</code>. A run fails if its operation's prompt is
-  blank.</p>
+<p class="muted">A configuration holds the system message: m8r's part of every prompt. A
+  schedule's prompt says where it goes, with <code>{{ "{{ system_message }}" }}</code>.</p>
 
 {% if has_problem %}<div class="problem"><pre>{{ problem }}</pre></div>{% endif %}
 <form method="post" action="{% if is_new %}/configurations{% else %}/configurations/{{ id }}{% endif %}">
   <label for="name">Name</label>
   <input type="text" id="name" name="name" value="{{ form.name }}" required>
 
-  <label for="system_message">System message <small>m8r's part of every prompt: where the agent is, what
-    has priority, and how to report</small></label>
-  <textarea id="system_message" name="system_message" rows="14">{{ form.system_message }}</textarea>
-
-  <label for="triage_prompt">Triage prompt</label>
-  <textarea id="triage_prompt" name="triage_prompt" rows="8">{{ form.triage_prompt }}</textarea>
-
-  <label for="review_prompt">Review prompt</label>
-  <textarea id="review_prompt" name="review_prompt" rows="8">{{ form.review_prompt }}</textarea>
-
-  <label for="develop_prompt">Develop prompt</label>
-  <textarea id="develop_prompt" name="develop_prompt" rows="8">{{ form.develop_prompt }}</textarea>
+  <label for="system_message">System message <small>where the agent is, and how it reports. It's
+    a template, and it can use these too.</small></label>
+  <textarea id="system_message" name="system_message" rows="12">{{ form.system_message }}</textarea>
+  <table class="variables">
+    {% for variable in variables %}
+    <tr><td class="nowrap"><code>{{ variable.name }}</code></td><td>{{ variable.meaning }}</td></tr>
+    {% endfor %}
+  </table>
 
   <p><button class="primary">Save</button> <a href="/configurations">Back</a></p>
 </form>
 
 <h2>Compiled</h2>
-<p class="muted">Each prompt as the next run would get it, with the items as they are now and a
-  sample artifact directory. Save to see your changes here.</p>
-{% for prompt in compiled %}
-<h2>{{ prompt.operation }}</h2>
-{% if prompt.blank %}
-<p class="muted">Blank: a {{ prompt.operation }} run fails.</p>
-{% elif prompt.ok %}
-<pre>{{ prompt.text }}</pre>
+<p class="muted">The system message as the next run would get it, with a sample artifact
+  directory and no watchlist items: a schedule's page shows its prompt with that schedule's
+  items. Save to see your changes here.</p>
+{% if not compiles %}
+<div class="problem"><pre>{{ compiled }}</pre></div>
+{% elif compiled %}
+<pre>{{ compiled }}</pre>
 {% else %}
-<div class="problem"><pre>{{ prompt.text }}</pre></div>
+<p class="muted">Blank: the prompts get no system message.</p>
 {% endif %}
-{% endfor %}
 {% endblock content %}

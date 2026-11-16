@@ -657,8 +657,8 @@ check $? "reload-or-restart with the good file again brings routing back"
 ## m8r
 
 # m8r and its agents run as the m8r user (see nftables.conf). A process run as m8r here stands
-# in for them: it may reach the internet (here, example.com, on isp4) and the router's DNS, but
-# nothing on the LAN, and none of the router's other services.
+# in for them: it may reach the internet (here, example.com, on isp4), the router's DNS and
+# m8r's own pages, but nothing on the LAN, and none of the router's other services.
 
 # Connect as m8r to $1 (host:port), and print what the server says.
 m8r_tcp() {
@@ -684,10 +684,12 @@ for port in 22 80 443; do
   check $? "m8r reaches the internet (example.com) on TCP $port"
 done
 for target in "$c1_ip:22" "$c1_ip:443" 127.0.0.1:22 127.0.0.1:443 127.0.0.1:5432 172.31.0.1:6379 \
-  172.31.0.1:11443 "$wan4_ip:5432" 127.0.0.1:5150; do
+  172.31.0.1:11443 "$wan4_ip:5432"; do
   [ -z "$(m8r_tcp "$target")" ]
   check $? "m8r can't reach $target"
 done
+[ "$(m8r_tcp 127.0.0.1:5150)" = pages ]
+check $? "m8r reaches its own pages on TCP 5150, where an agent uses m8r's API"
 [ "$(tcp router 127.0.0.1:5150)" = pages ]
 check $? "other users on the router (nginx) reach m8r's pages on TCP 5150, and get the answer"
 [ "$(tcp router "$c1_ip:22")" = c1 ]

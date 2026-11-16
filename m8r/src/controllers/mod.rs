@@ -1,6 +1,9 @@
+pub mod api;
 pub mod artifacts;
+pub mod categories;
 pub mod configurations;
-pub mod items;
+pub mod mcp;
 pub mod report;
 pub mod runs;
 pub mod schedules;
+pub mod watchlist;

@@ -9,7 +9,9 @@ HOST=https://m8r.schmit.net
 # Everything m8r keeps is in /var/lib/m8r: this database, the artifacts, and the run lock.
 DATABASE_URL=sqlite:///var/lib/m8r/m8r.sqlite?mode=rwc
 M8R_DATA=/var/lib/m8r
-# The command a run pipes its prompt to, as the m8r user. The model, the effort and the
-# permissions go here. Nobody is there to approve a tool call, so give the agent what your
-# prompts need: an --allowedTools list, or --dangerously-skip-permissions.
+# The agent's command, which a new schedule's form starts with. Each schedule then keeps a
+# command of its own, and a run pipes its prompt to that one, as the m8r user. Nobody is there
+# to approve a tool call, so give the agent what your prompts need, here or in a schedule's
+# command: an --allowedTools list, or --dangerously-skip-permissions. To keep the watchlist, an
+# agent runs curl.
 M8R_AGENT=claude -p

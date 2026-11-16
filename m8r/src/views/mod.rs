@@ -1,5 +1,7 @@
 //! What the pages show. The templates are in `assets/views`.
 
+pub mod api;
+
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
@@ -7,7 +9,7 @@ use loco_rs::prelude::*;
 use serde_json::{json, Value};
 
 use crate::{
-    models::{artifacts, items, runs, schedules, tool_errors},
+    models::{artifacts, categories, runs, schedules, tool_errors, watchlist_items},
     settings::Settings,
 };
 
@@ -86,6 +88,7 @@ pub fn run(run: &runs::Model, artifacts: &[artifacts::Model]) -> Value {
         "id": run.id,
         "operation": run.operation,
         "repo": run.repo,
+        "command": run.command,
         "status": run.status,
         "queued_at": time(&run.created_at),
         "started_at": time_or_blank(run.started_at.as_ref()),
@@ -98,29 +101,42 @@ pub fn run(run: &runs::Model, artifacts: &[artifacts::Model]) -> Value {
 }
 
 #[must_use]
-pub fn item(item: &items::Model) -> Value {
+pub fn category(category: &categories::Model) -> Value {
+    json!({ "id": category.id, "name": category.name })
+}
+
+#[must_use]
+pub fn watchlist_item((item, category): &watchlist_items::Listed) -> Value {
     json!({
         "id": item.id,
         "url": item.url,
         "label": item.label(),
         "title": item.title,
+        "category": category.name,
         "priority": item.priority,
         "note": item.note,
+        "reviewable": item.reviewable(),
+        "review_requested": item.review_requested,
         "checked_at": time_or_blank(item.checked_at.as_ref()),
     })
 }
 
 #[must_use]
-pub fn schedule(schedule: &schedules::Model) -> Value {
+pub fn schedule((schedule, category): &schedules::Listed) -> Value {
+    // On the server's clock, like every time on the pages.
     let next = schedule
-        .next(&Local::now())
-        .map(|at| at.format("%a %Y-%m-%d %H:%M").to_string())
+        .next(&jiff::Zoned::now())
+        .map(|at| at.strftime("%a %Y-%m-%d %H:%M").to_string())
         .unwrap_or_default();
     json!({
         "id": schedule.id,
         "operation": schedule.operation,
+        "category": category.as_ref().map(|it| it.name.as_str()).unwrap_or_default(),
         "repo": schedule.repo,
-        "cron": schedule.cron,
+        "hron": schedule.hron,
+        "command": schedule.command,
         "next": next,
+        // A time from before m8r read times in words may be one that it can't read.
+        "unreadable": schedules::parse(&schedule.hron).is_err(),
     })
 }

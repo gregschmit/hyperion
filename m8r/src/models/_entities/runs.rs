@@ -21,16 +21,32 @@ pub struct Model {
     pub error: String,
     pub started_at: Option<DateTimeWithTimeZone>,
     pub finished_at: Option<DateTimeWithTimeZone>,
+    pub command: String,
+    pub schedule_id: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(has_many = "super::artifacts::Entity")]
     Artifacts,
+    #[sea_orm(
+        belongs_to = "super::schedules::Entity",
+        from = "Column::ScheduleId",
+        to = "super::schedules::Column::Id",
+        on_update = "NoAction",
+        on_delete = "SetNull"
+    )]
+    Schedules,
 }
 
 impl Related<super::artifacts::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Artifacts.def()
+    }
+}
+
+impl Related<super::schedules::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Schedules.def()
     }
 }

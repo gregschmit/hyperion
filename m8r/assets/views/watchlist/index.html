@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Watchlist · m8r{% endblock title %}
+{% block content %}
+<h1>Watchlist</h1>
+<p class="muted">The issues and PRs/MRs that you follow, each in a category. Medium means you
+  care about it, and high means it's urgent. A schedule's prompt gets the items of the
+  schedule's category. m8r asks the forge about each one, and one that closes or merges leaves
+  the list by itself.</p>
+<p class="muted">Check "review requested" when someone asks you to review a PR/MR. The prompts
+  then say so, and the agent that reviews it unchecks it.</p>
+
+{% if has_problem %}<div class="problem">{{ problem }}</div>{% endif %}
+<form class="row" method="post" action="/watchlist">
+  <input type="url" name="url" value="{{ form.url }}" placeholder="https://git.example.com/group/project/-/merge_requests/123" required>
+  <select name="category" aria-label="Category">
+    {% for category in categories %}
+    <option value="{{ category.name }}"{% if form.category == category.name %} selected{% endif %}>{{ category.name }}</option>
+    {% endfor %}
+  </select>
+  <select name="priority" aria-label="Priority">
+    <option value="medium"{% if form.priority != "high" %} selected{% endif %}>medium</option>
+    <option value="high"{% if form.priority == "high" %} selected{% endif %}>high</option>
+  </select>
+  <label class="check"><input type="checkbox" name="review_requested" value="true"{% if form.review_requested %} checked{% endif %}> review requested</label>
+  <input type="text" name="note" value="{{ form.note }}" placeholder="Why you follow it">
+  <button class="primary">Add</button>
+</form>
+
+<table>
+  <tr><th>Category</th><th>Priority</th><th>Item</th><th>Title</th><th>Review</th><th>Note</th><th></th></tr>
+  {% for item in items %}
+  <tr>
+    <td>
+      <select name="category" form="item-{{ item.id }}" aria-label="Category">
+        {% for category in categories %}
+        <option value="{{ category.name }}"{% if item.category == category.name %} selected{% endif %}>{{ category.name }}</option>
+        {% endfor %}
+      </select>
+    </td>
+    <td>
+      <select name="priority" form="item-{{ item.id }}" aria-label="Priority">
+        <option value="medium"{% if item.priority == "medium" %} selected{% endif %}>medium</option>
+        <option value="high"{% if item.priority == "high" %} selected{% endif %}>high</option>
+      </select>
+    </td>
+    <td class="nowrap"><a href="{{ item.url }}">{{ item.label }}</a></td>
+    <td>{% if item.title %}{{ item.title }}{% else %}<span class="muted">not checked yet</span>{% endif %}</td>
+    <td>{% if item.reviewable %}<label class="check"><input type="checkbox" name="review_requested" value="true" form="item-{{ item.id }}"{% if item.review_requested %} checked{% endif %}> requested</label>{% endif %}</td>
+    <td><input type="text" name="note" value="{{ item.note }}" form="item-{{ item.id }}" aria-label="Note"></td>
+    <td class="actions">
+      <form id="item-{{ item.id }}" method="post" action="/watchlist/{{ item.id }}"><button>Save</button></form>
+      <form method="post" action="/watchlist/{{ item.id }}/remove"><button class="danger">Remove</button></form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7" class="muted">Nothing is on the watchlist.</td></tr>
+  {% endfor %}
+</table>
+
+<h2 id="categories">Categories</h2>
+<p class="muted">Every item is in one, and a schedule can take the items of one. A category that
+  an item or a schedule uses stays.</p>
+<table class="short">
+  {% for category in categories %}
+  <tr>
+    <td><input type="text" name="name" value="{{ category.name }}" form="category-{{ category.id }}" maxlength="255" aria-label="Name" required></td>
+    <td class="actions">
+      <form id="category-{{ category.id }}" method="post" action="/categories/{{ category.id }}"><button>Rename</button></form>
+      <form method="post" action="/categories/{{ category.id }}/remove"><button class="danger">Remove</button></form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td class="muted">No categories, so nothing can go on the watchlist.</td></tr>
+  {% endfor %}
+</table>
+<form class="row short" method="post" action="/categories">
+  <input type="text" name="name" placeholder="A new category" maxlength="255" required>
+  <button>Add</button>
+</form>
+{% endblock content %}

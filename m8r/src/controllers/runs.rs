@@ -24,7 +24,7 @@ pub async fn index(
     views::page(&v, &ctx, "runs/index.html", "runs", json!({ "runs": rows })).await
 }
 
-/// One run: the prompt it got, what the agent printed, and what it reported.
+/// One run: its command, the prompt it got, what it printed, and what it reported.
 #[debug_handler]
 pub async fn show(
     ViewEngine(v): ViewEngine<TeraView>,

@@ -1,14 +1,23 @@
-//! Shared by the tests: a session for request tests, and stand-ins for the tools.
+//! Shared by the tests: a session and tokens for request tests, and stand-ins for the tools.
 
 use std::{
     fs,
+    net::TcpListener,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
-use loco_rs::{app::AppContext, TestServer};
-use m8r::{initializers::access, settings::Settings};
+use loco_rs::{app::AppContext, prelude::*, TestServer};
+use m8r::{
+    initializers::access,
+    models::{categories, configurations, runs, schedules, tokens, watchlist_items},
+    settings::Settings,
+};
 use serde_json::{json, Value};
+
+/// The categories that every m8r starts with.
+pub const ISSUE: &str = "Issue";
+pub const PR: &str = "Pull/Merge Request";
 
 /// Open an access link, so the server's later requests carry a session. The server must save
 /// cookies (`RequestConfigBuilder::save_cookies`).
@@ -27,10 +36,91 @@ pub fn link_path(ctx: &AppContext, seconds: u64, once: bool) -> String {
         .to_string()
 }
 
+/// A token for the API and the MCP endpoint that covers `scope`.
+pub async fn token(ctx: &AppContext, name: &str, scope: &str) -> String {
+    let made = tokens::Model::create(&ctx.db, name, scope).await;
+    made.unwrap().unwrap()
+}
+
+/// Put what's at `url` on the watchlist, in `category`.
+pub async fn watch(ctx: &AppContext, url: &str, category: &str) -> watchlist_items::Model {
+    let params = watchlist_items::Params {
+        url: url.to_string(),
+        category: category.to_string(),
+        ..watchlist_items::Params::default()
+    };
+    let listed = watchlist_items::Model::create(&ctx.db, &params).await;
+    listed.unwrap().unwrap().0
+}
+
+/// Make a configuration with this system message, and make it active.
+pub async fn configure(ctx: &AppContext, system_message: &str) -> configurations::Model {
+    let params = configurations::Params {
+        name: "Test".to_string(),
+        system_message: system_message.to_string(),
+    };
+    let made = configurations::Model::create(&ctx.db, &params).await;
+    let configuration = made.unwrap().unwrap().into_active_model();
+    configuration.activated(&ctx.db).await.unwrap()
+}
+
+/// What a schedule needs, for a test to change: a triage in `repo`, on weekdays, with `cat`
+/// for a command, which prints the prompt back.
+pub fn schedule_params(repo: &Path, prompt: &str) -> schedules::Params {
+    schedules::Params {
+        operation: "triage".to_string(),
+        repo: repo.to_string_lossy().into_owned(),
+        hron: "every weekday at 06:00".to_string(),
+        command: "cat".to_string(),
+        prompt: prompt.to_string(),
+        ..schedules::Params::default()
+    }
+}
+
+pub async fn schedule(ctx: &AppContext, params: &schedules::Params) -> schedules::Model {
+    let made = schedules::Model::create(&ctx.db, params).await;
+    made.unwrap().unwrap().0
+}
+
+/// Queue a run of a schedule that's made for it: `operation` in `repo`, with `command`. The
+/// schedule skips its form's checks, so the repo needn't be there.
+pub async fn queue(
+    db: &DatabaseConnection,
+    operation: &str,
+    repo: &str,
+    command: &str,
+) -> runs::Model {
+    let mut schedule = schedules::ActiveModel::new();
+    schedule.operation = Set(operation.to_string());
+    schedule.repo = Set(repo.to_string());
+    schedule.hron = Set("every day at 06:00".to_string());
+    schedule.command = Set(command.to_string());
+    let schedule = schedule.insert(db).await.unwrap();
+    runs::Model::queue(db, &schedule).await.unwrap()
+}
+
+/// Start `run` with `prompt`, as a tick does.
+pub async fn start(db: &DatabaseConnection, run: runs::Model, prompt: &str) -> runs::Model {
+    let (schedule, _) = schedules::Model::find(db, run.schedule_id.unwrap())
+        .await
+        .unwrap();
+    let run = run.into_active_model();
+    run.started(db, &schedule, prompt.to_string())
+        .await
+        .unwrap()
+}
+
+pub async fn category(ctx: &AppContext, name: &str) -> categories::Model {
+    let found = categories::Model::named(&ctx.db, name).await;
+    found.unwrap().unwrap()
+}
+
 /// A directory of stand-in tools, and a shell that finds only them. So a test doesn't depend
 /// on the developer's own `gh`, `glab` or login shell.
 pub struct Sandbox {
     pub dir: PathBuf,
+    /// Stands in for the pages: a tick looks whether a run could reach them.
+    pages: TcpListener,
 }
 
 impl Sandbox {
@@ -42,7 +132,9 @@ impl Sandbox {
             .join(name);
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("bin")).unwrap();
-        let sandbox = Self { dir };
+        fs::create_dir_all(dir.join("repo")).unwrap();
+        let pages = TcpListener::bind("127.0.0.1:0").unwrap();
+        let sandbox = Self { dir, pages };
         // m8r starts every tool as `<shell> -lc <script> <args>`. This one is no login shell,
         // and its PATH holds the stand-ins and the system's basics.
         let bin = sandbox.dir.join("bin");
@@ -76,10 +168,32 @@ impl Sandbox {
         self.dir.join(name)
     }
 
+    /// A clone for a schedule to run in: an empty directory.
+    pub fn repo(&self) -> PathBuf {
+        self.dir.join("repo")
+    }
+
+    /// Serve the app itself where the stand-in for the pages listens, so that a run's agent
+    /// can use the API.
+    pub fn serve(&self, router: axum::Router) {
+        let listener = self.pages.try_clone().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await });
+    }
+
+    /// A port on this host where nothing listens.
+    pub fn closed_port(&self) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
     /// The app's context, with settings that use this sandbox and the agent command `agent`.
     pub fn context(&self, ctx: &AppContext, agent: &str) -> AppContext {
         let mut ctx = ctx.clone();
         ctx.config.settings = Some(self.settings(agent));
+        ctx.config.server.binding = "127.0.0.1".to_string();
+        ctx.config.server.port = self.pages.local_addr().unwrap().port().into();
         ctx
     }
 

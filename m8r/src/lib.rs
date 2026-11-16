@@ -2,6 +2,7 @@ pub mod app;
 pub mod controllers;
 pub mod initializers;
 pub mod models;
+pub mod prompts;
 pub mod settings;
 pub mod tasks;
 pub mod tools;

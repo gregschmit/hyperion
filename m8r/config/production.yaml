@@ -41,8 +41,8 @@ database:
   dangerously_truncate: false
   dangerously_recreate: false
 
-# One secret signs the access links (JWTs) and the session cookies: `openssl rand -base64 64`.
-# A new secret ends every link and session. Both last 8 hours.
+# One secret signs the access links and the runs' tokens (JWTs) and the session cookies:
+# `openssl rand -base64 64`. A new secret ends them all. A link and a session last 8 hours.
 auth:
   jwt:
     secret: '<%= get_env(name="M8R_SECRET") %>'
@@ -64,7 +64,8 @@ settings:
   url: '<%= get_env(name="HOST") %>'
   # The shell that starts the tools, as a login shell, so they get the environment you set up.
   shell: '<%= get_env(name="SHELL", default="/bin/sh") %>'
-  # The command a run pipes its prompt to. Put the model, the effort and the permissions here.
+  # The agent's command, which a new schedule for triage, review or develop starts with. Each
+  # schedule then keeps a command of its own, and a run pipes its prompt to that one.
   agent: '<%= get_env(name="M8R_AGENT", default="claude -p") %>'
   # Minutes before a run is killed.
   run_limit: 120

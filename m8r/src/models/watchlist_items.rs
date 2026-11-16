@@ -1,17 +1,17 @@
 use std::collections::{BTreeMap, HashSet};
 
-pub use super::_entities::items::{ActiveModel, Column, Entity, Model};
+pub use super::_entities::watchlist_items::{ActiveModel, Column, Entity, Model};
 use chrono::{DateTime, Utc};
 use loco_rs::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::tool_errors;
+use super::{categories, tool_errors, Checked};
 use crate::tools;
 
-pub type Items = Entity;
+pub type WatchlistItems = Entity;
 
-/// How long an item's title and state are good for. An item whose last check failed is
-/// checked again at every tick.
+/// How long an item's title and state are good for. An item whose last check failed is checked
+/// again at every tick.
 const CHECK_EVERY: chrono::Duration = chrono::Duration::minutes(10);
 
 /// How much you care about an item: at all, or urgently.
@@ -40,19 +40,22 @@ impl Priority {
     }
 }
 
-/// Where an item lives, read from its URL. The forge is the source of truth for the rest.
+/// Where an item's issue or PR/MR lives, read from its URL. The forge is the source of truth
+/// for the rest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Forge {
     /// The CLI that talks to this forge: `gh` for github.com, `glab` for any other host.
     pub tool: &'static str,
     pub host: String,
-    /// The item's path in the forge's REST API.
+    /// Its path in the forge's REST API.
     pub endpoint: String,
-    /// A short name for the item, such as `rgnets/rxg!4521`.
+    /// A short name for it, such as `rgnets/rxg!4521`.
     pub label: String,
+    /// It's a PR/MR, which someone can ask you to review. An issue isn't.
+    pub reviewable: bool,
 }
 
-/// What the forge says about an item.
+/// What the forge says about an item's issue or PR/MR.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Remote {
     Open {
@@ -102,6 +105,7 @@ impl Forge {
                 host: host.to_string(),
                 endpoint: format!("repos/{owner}/{repo}/issues/{number}"),
                 label: format!("{owner}/{repo}#{number}"),
+                reviewable: kind == "pull",
             });
         }
 
@@ -116,19 +120,22 @@ impl Forge {
         if project.len() < 2 || !project.iter().all(|part| plain(part)) {
             return None;
         }
-        let (kind, mark) = match segments[at] {
-            "merge_requests" => ("merge_requests", '!'),
-            _ => ("issues", '#'),
+        let reviewable = segments[at] == "merge_requests";
+        let (kind, mark) = if reviewable {
+            ("merge_requests", '!')
+        } else {
+            ("issues", '#')
         };
         Some(Self {
             tool: "glab",
             host: host.to_string(),
             endpoint: format!("projects/{}/{kind}/{number}", project.join("%2F")),
             label: format!("{}{mark}{number}", project.join("/")),
+            reviewable,
         })
     }
 
-    /// The command that asks the forge about the item.
+    /// The command that asks the forge about the issue or PR/MR.
     #[must_use]
     pub fn command(&self) -> Vec<String> {
         [self.tool, "api", "--hostname", &self.host, &self.endpoint]
@@ -136,18 +143,18 @@ impl Forge {
             .to_vec()
     }
 
-    /// Read the forge's answer: the item as JSON.
+    /// Read the forge's answer: the issue or PR/MR as JSON.
     #[must_use]
     pub fn read(answer: &str) -> Option<Remote> {
         // A login shell may print something of its own first.
         let json = answer.get(answer.find('{')?..)?;
-        let item = serde_json::Deserializer::from_str(json)
+        let found = serde_json::Deserializer::from_str(json)
             .into_iter::<serde_json::Value>()
             .next()?
             .ok()?;
-        let title = item.get("title")?.as_str()?;
+        let title = found.get("title")?.as_str()?;
         // GitHub: open, closed. GitLab: opened, closed, merged, locked.
-        match item.get("state")?.as_str()? {
+        match found.get("state")?.as_str()? {
             "closed" | "merged" => Some(Remote::Closed),
             _ => Some(Remote::Open {
                 title: title.to_string(),
@@ -156,36 +163,84 @@ impl Forge {
     }
 }
 
-/// What an item's form sends.
+/// What the watchlist's forms and the API send.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
 pub struct Params {
-    #[serde(default)]
     pub url: String,
+    /// The category's name.
+    pub category: String,
+    /// Medium, unless it says high.
     pub priority: String,
     pub note: String,
+    /// A checkbox, which a form sends only when it's checked.
+    pub review_requested: bool,
+}
+
+/// What changes on an item: only what's there.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Changes {
+    pub category: Option<String>,
+    pub priority: Option<String>,
+    pub note: Option<String>,
+    pub review_requested: Option<bool>,
 }
 
 impl Params {
-    /// Why these can't be saved, if they can't.
+    /// The item as it is, with `changes`.
     #[must_use]
-    pub fn problem(&self) -> Option<String> {
-        if Priority::parse(&self.priority).is_none() {
-            return Some("Choose medium or high.".to_string());
+    pub fn changed((item, category): &Listed, changes: Changes) -> Self {
+        Self {
+            url: item.url.clone(),
+            category: changes.category.unwrap_or_else(|| category.name.clone()),
+            priority: changes.priority.unwrap_or_else(|| item.priority.clone()),
+            note: changes.note.unwrap_or_else(|| item.note.clone()),
+            review_requested: changes.review_requested.unwrap_or(item.review_requested),
         }
-        if Forge::parse(&self.url).is_none() {
+    }
+
+    fn priority(&self) -> &str {
+        if self.priority.trim().is_empty() {
+            return Priority::Medium.as_str();
+        }
+        self.priority.trim()
+    }
+
+    /// Why these can't be saved, if they can't.
+    fn problem(&self) -> Option<String> {
+        if Priority::parse(self.priority()).is_none() {
+            return Some("The priority is medium or high.".to_string());
+        }
+        let Some(forge) = Forge::parse(&self.url) else {
             return Some(
                 "That isn't the URL of an issue or a PR/MR on GitHub or GitLab.".to_string(),
+            );
+        };
+        if self.review_requested && !forge.reviewable {
+            return Some(
+                "Only a PR/MR can have its review requested. That's an issue.".to_string(),
             );
         }
         None
     }
+
+    /// The category that these name, or why they can't be saved.
+    async fn checked<C: ConnectionTrait>(&self, db: &C) -> ModelResult<Checked<categories::Model>> {
+        if let Some(problem) = self.problem() {
+            return Ok(Err(problem));
+        }
+        categories::Model::named(db, &self.category).await
+    }
 }
+
+/// An item and its category: what the pages, the API and the prompts show.
+pub type Listed = (Model, categories::Model);
 
 /// Why a forge's items couldn't all be checked.
 enum Failure {
     /// The tool itself: it isn't installed, or can't start.
     Tool(String),
-    /// The tool's dealings with this host: its login, the network, or one item.
+    /// The tool's dealings with this host: its login, the network, or one issue or PR/MR.
     Host(String),
 }
 
@@ -206,59 +261,127 @@ impl ActiveModelBehavior for ActiveModel {
 }
 
 impl Model {
-    /// Every item, the urgent ones first.
+    /// The watchlist, or with `category_id`, that category's part of it. Category by category,
+    /// the urgent items first.
     ///
     /// # Errors
     /// When the query fails.
-    pub async fn list(db: &DatabaseConnection) -> ModelResult<Vec<Self>> {
-        Ok(Entity::find()
+    pub async fn list(
+        db: &DatabaseConnection,
+        category_id: Option<i64>,
+    ) -> ModelResult<Vec<Listed>> {
+        let mut items = Entity::find().find_also_related(categories::Entity);
+        if let Some(category_id) = category_id {
+            items = items.filter(Column::CategoryId.eq(category_id));
+        }
+        let items = items
+            .order_by_asc(Column::CategoryId)
             // "high" sorts before "medium".
             .order_by_asc(Column::Priority)
             .order_by_asc(Column::Id)
             .all(db)
-            .await?)
+            .await?;
+        // Every item has a category: the database sees to it.
+        Ok(items
+            .into_iter()
+            .filter_map(|(item, category)| Some((item, category?)))
+            .collect())
     }
 
     /// # Errors
     /// `ModelError::EntityNotFound` when there's no such item.
-    pub async fn find(db: &DatabaseConnection, id: i64) -> ModelResult<Self> {
-        Entity::find_by_id(id)
+    pub async fn find(db: &DatabaseConnection, id: i64) -> ModelResult<Listed> {
+        let item = Entity::find_by_id(id)
             .one(db)
             .await?
-            .ok_or_else(|| ModelError::EntityNotFound)
+            .ok_or_else(|| ModelError::EntityNotFound)?;
+        let category = categories::Model::find(db, item.category_id).await?;
+        Ok((item, category))
     }
 
-    /// Add an item. One that's already listed gets the new priority and note.
+    /// Put an issue or a PR/MR on the watchlist. One that's already there gets the new
+    /// category, priority, note and review request.
     ///
     /// # Errors
     /// When a query fails.
-    pub async fn create(db: &DatabaseConnection, params: &Params) -> ModelResult<Self> {
+    pub async fn create(db: &DatabaseConnection, params: &Params) -> ModelResult<Checked<Listed>> {
         let url = params.url.trim();
         let txn = db.begin().await?;
+        let category = match params.checked(&txn).await? {
+            Ok(category) => category,
+            Err(problem) => return Ok(Err(problem)),
+        };
         let listed = Entity::find().filter(Column::Url.eq(url)).one(&txn).await?;
-        let item = match listed {
-            Some(item) => item.into_active_model().revised(&txn, params).await?,
-            None => {
-                let mut item = ActiveModel::new();
-                item.url = Set(url.to_string());
-                item.priority = Set(params.priority.clone());
-                item.note = Set(params.note.trim().to_string());
-                item.insert(&txn).await?
-            }
+        let item = if let Some(item) = listed {
+            let mut item = item.into_active_model();
+            item.set(params, &category);
+            item.update(&txn).await?
+        } else {
+            let mut item = ActiveModel::new();
+            item.url = Set(url.to_string());
+            item.set(params, &category);
+            item.insert(&txn).await?
         };
         txn.commit().await?;
-        Ok(item)
+        Ok(Ok((item, category)))
     }
 
-    /// The item's short name, such as `rgnets/rxg!4521`.
+    /// Change the item: `params` are all that it has from you.
+    ///
+    /// # Errors
+    /// When a query fails.
+    pub async fn revised(
+        self,
+        db: &DatabaseConnection,
+        params: &Params,
+    ) -> ModelResult<Checked<Listed>> {
+        let category = match params.checked(db).await? {
+            Ok(category) => category,
+            Err(problem) => return Ok(Err(problem)),
+        };
+        let mut item = self.into_active_model();
+        item.set(params, &category);
+        Ok(Ok((item.update(db).await?, category)))
+    }
+
+    /// Change item `id`: only what `changes` has.
+    ///
+    /// # Errors
+    /// `ModelError::EntityNotFound` when there's no such item, or when a query fails.
+    pub async fn change(
+        db: &DatabaseConnection,
+        id: i64,
+        changes: Changes,
+    ) -> ModelResult<Checked<Listed>> {
+        let listed = Self::find(db, id).await?;
+        let params = Params::changed(&listed, changes);
+        listed.0.revised(db, &params).await
+    }
+
+    /// Take item `id` off the watchlist.
+    ///
+    /// # Errors
+    /// `ModelError::EntityNotFound` when there's no such item, or when a query fails.
+    pub async fn remove(db: &DatabaseConnection, id: i64) -> ModelResult<()> {
+        Self::find(db, id).await?.0.delete(db).await?;
+        Ok(())
+    }
+
+    /// A short name for the item, such as `rgnets/rxg!4521`.
     #[must_use]
     pub fn label(&self) -> String {
         Forge::parse(&self.url).map_or_else(|| self.url.clone(), |forge| forge.label)
     }
 
-    /// Ask the forges about the items that are due, through `gh` and `glab`. An item that
-    /// closed or merged leaves the list. What's wrong with a tool goes in `tool_errors`, and
-    /// leaves it when the tool works again.
+    /// It's a PR/MR, which someone can ask you to review. An issue isn't.
+    #[must_use]
+    pub fn reviewable(&self) -> bool {
+        Forge::parse(&self.url).is_some_and(|forge| forge.reviewable)
+    }
+
+    /// Ask the forges about the items that are due, through `gh` and `glab`. An item whose
+    /// issue or PR/MR closed or merged leaves the watchlist. What's wrong with a tool goes in
+    /// `tool_errors`, and leaves it when the tool works again.
     ///
     /// # Errors
     /// When a query fails. A tool that fails is not an error here.
@@ -270,7 +393,7 @@ impl Model {
             .map(|error| (error.tool, error.host))
             .collect();
         let mut forges: BTreeMap<(&'static str, String), Vec<(Self, Forge)>> = BTreeMap::new();
-        for item in Self::list(db).await? {
+        for item in Entity::find().order_by_asc(Column::Id).all(db).await? {
             if let Some(forge) = Forge::parse(&item.url) {
                 let key = (forge.tool, forge.host.clone());
                 forges.entry(key).or_default().push((item, forge));
@@ -367,16 +490,11 @@ impl Model {
 }
 
 impl ActiveModel {
-    /// # Errors
-    /// When the update fails.
-    pub async fn revised<C: ConnectionTrait>(
-        mut self,
-        db: &C,
-        params: &Params,
-    ) -> ModelResult<Model> {
-        self.priority = Set(params.priority.clone());
+    fn set(&mut self, params: &Params, category: &categories::Model) {
+        self.category_id = Set(category.id);
+        self.priority = Set(params.priority().to_string());
         self.note = Set(params.note.trim().to_string());
-        Ok(self.update(db).await?)
+        self.review_requested = Set(params.review_requested);
     }
 
     /// Record what the forge said.

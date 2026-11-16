@@ -1,23 +1,17 @@
 use std::{fs, os::unix::fs::symlink};
 
 use loco_rs::testing::prelude::*;
-use m8r::{
-    app::App,
-    models::{artifacts, configurations::Operation, runs},
-};
+use m8r::{app::App, models::artifacts};
 use serial_test::serial;
 
-use crate::support::{write, Sandbox};
+use crate::support::{queue, write, Sandbox};
 
 #[tokio::test]
 #[serial]
 async fn a_directory_is_an_artifact_and_a_lone_link_is_a_link() {
     let boot = boot_test::<App>().await.unwrap();
     let db = &boot.app_context.db;
-    let run = runs::Model::queue(db, Operation::Review, "/a")
-        .await
-        .unwrap()
-        .unwrap();
+    let run = queue(db, "review", "/a", "cat").await;
     let dir = Sandbox::new("artifacts-collect").path("artifacts");
 
     write(
@@ -72,10 +66,7 @@ async fn a_directory_is_an_artifact_and_a_lone_link_is_a_link() {
 async fn loose_files_become_one_artifact() {
     let boot = boot_test::<App>().await.unwrap();
     let db = &boot.app_context.db;
-    let run = runs::Model::queue(db, Operation::Triage, "/a")
-        .await
-        .unwrap()
-        .unwrap();
+    let run = queue(db, "triage", "/a", "cat").await;
     let dir = Sandbox::new("artifacts-loose").path("artifacts");
     write(&dir.join("TRIAGE.md"), "# Triage");
     write(&dir.join("table.csv"), "a,b");
@@ -101,10 +92,7 @@ async fn loose_files_become_one_artifact() {
 async fn a_lone_loose_link_is_a_link() {
     let boot = boot_test::<App>().await.unwrap();
     let db = &boot.app_context.db;
-    let run = runs::Model::queue(db, Operation::Triage, "/a")
-        .await
-        .unwrap()
-        .unwrap();
+    let run = queue(db, "triage", "/a", "cat").await;
     let dir = Sandbox::new("artifacts-loose-link").path("artifacts");
     write(
         &dir.join("comment.txt"),
@@ -125,10 +113,7 @@ async fn a_lone_loose_link_is_a_link() {
 async fn a_run_that_left_nothing_has_no_artifacts() {
     let boot = boot_test::<App>().await.unwrap();
     let db = &boot.app_context.db;
-    let run = runs::Model::queue(db, Operation::Triage, "/a")
-        .await
-        .unwrap()
-        .unwrap();
+    let run = queue(db, "triage", "/a", "cat").await;
     let sandbox = Sandbox::new("artifacts-none");
 
     // No directory at all, then an empty one, then one that is only a link to elsewhere.

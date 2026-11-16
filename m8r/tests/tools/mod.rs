@@ -11,6 +11,25 @@ fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| (*word).to_string()).collect()
 }
 
+#[test]
+fn the_program_of_a_command_is_its_first_word_when_that_is_a_plain_one() {
+    assert_eq!(tools::program("claude -p --model opus"), Some("claude"));
+    assert_eq!(
+        tools::program("  /opt/bin/codex exec 'x'"),
+        Some("/opt/bin/codex")
+    );
+    assert_eq!(tools::program("cat"), Some("cat"));
+    // The shell's own syntax: a variable, a quote, a subshell.
+    for command in [
+        "NO_COLOR=1 claude -p",
+        "\"my tool\" x",
+        "$(which claude) -p",
+        "",
+    ] {
+        assert_eq!(tools::program(command), None, "{command}");
+    }
+}
+
 #[tokio::test]
 async fn a_tool_gets_its_arguments_as_they_are() {
     let sandbox = Sandbox::new("tools-run");
@@ -45,20 +64,26 @@ async fn a_tool_does_not_get_the_secret() {
         output.stdout
     );
 
+    // A run's command gets what m8r gives it, and still not the secret.
     let printed = sandbox.path("printed");
-    tools::agent(
+    tools::run_command(
         &sandbox.shell(),
         "env",
         &sandbox.dir,
         "",
         &printed,
         Duration::from_secs(30),
+        &[("M8R_URL", "http://127.0.0.1:5150".to_string())],
     )
     .await
     .unwrap();
     let printed = fs::read_to_string(&printed).unwrap();
     assert!(!printed.contains("hunter2"), "{printed}");
     assert!(printed.contains("M8R_TEST_OTHER=kept"), "{printed}");
+    assert!(
+        printed.contains("M8R_URL=http://127.0.0.1:5150\n"),
+        "{printed}"
+    );
 }
 
 #[tokio::test]
@@ -111,13 +136,14 @@ async fn an_agent_gets_the_prompt_on_stdin_and_runs_in_the_repo() {
     fs::create_dir_all(&repo).unwrap();
     let printed = sandbox.path("printed");
 
-    let end = tools::agent(
+    let end = tools::run_command(
         &sandbox.shell(),
         "pwd; cat; echo ' (stderr)' >&2; exit 7",
         &repo,
         "the prompt",
         &printed,
         Duration::from_secs(30),
+        &[],
     )
     .await
     .unwrap();
@@ -125,7 +151,7 @@ async fn an_agent_gets_the_prompt_on_stdin_and_runs_in_the_repo() {
     assert_eq!(end, End::Exited(Some(7)));
     assert_eq!(
         end.problem(Duration::from_secs(60)).unwrap(),
-        "the agent exited with status 7"
+        "the command exited with status 7"
     );
     let repo = fs::canonicalize(&repo).unwrap();
     assert_eq!(
@@ -148,13 +174,14 @@ async fn an_agent_that_passes_the_time_limit_is_killed_with_what_it_started() {
     let started = Instant::now();
 
     let limit = Duration::from_millis(1500);
-    let end = tools::agent(
+    let end = tools::run_command(
         &sandbox.shell(),
         &command,
         &sandbox.dir,
         "",
         &printed,
         limit,
+        &[],
     )
     .await
     .unwrap();

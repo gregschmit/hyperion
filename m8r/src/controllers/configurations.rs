@@ -3,15 +3,12 @@ use loco_rs::prelude::*;
 use serde_json::{json, Value};
 
 use crate::{
-    models::{
-        configurations::{self, Operation, Params, SAMPLE_ARTIFACTS_DIR},
-        items,
-    },
-    views,
+    models::configurations::{self, Params},
+    prompts, views,
 };
 
-/// The form for a new configuration (no `id`) or a saved one, with each prompt compiled as
-/// the next run would get it.
+/// The form for a new configuration (no `id`) or a saved one, with the system message
+/// compiled as the next run would get it.
 async fn form(
     v: &TeraView,
     ctx: &AppContext,
@@ -19,31 +16,26 @@ async fn form(
     form: &Params,
     problem: Option<String>,
 ) -> Result<Response> {
-    let items = items::Model::list(&ctx.db).await?;
-    let compiled: Vec<Value> = Operation::ALL
-        .into_iter()
-        .map(|operation| {
-            let prompt = form.compile(operation, &items, SAMPLE_ARTIFACTS_DIR);
-            json!({
-                "operation": operation.as_str(),
-                "ok": prompt.is_ok(),
-                "blank": prompt.as_ref().is_ok_and(|prompt| prompt.trim().is_empty()),
-                "text": prompt.unwrap_or_else(|problem| problem),
-            })
-        })
+    let compiled = form.compiled(&ctx.db).await?;
+    // The system message can use what a prompt can, but for itself.
+    let variables: Vec<Value> = prompts::VARIABLES[1..]
+        .iter()
+        .map(|(name, meaning)| json!({ "name": name, "meaning": meaning }))
         .collect();
     let data = json!({
         "is_new": id.is_none(),
         "id": id.unwrap_or_default(),
         "form": form,
-        "compiled": compiled,
+        "variables": variables,
+        "compiles": compiled.is_ok(),
+        "compiled": compiled.unwrap_or_else(|problem| problem),
         "has_problem": problem.is_some(),
         "problem": problem.unwrap_or_default(),
     });
     views::page(v, ctx, "configurations/form.html", "configurations", data).await
 }
 
-/// The sets of prompts. One is active, or none, and then nothing runs.
+/// The system messages. One configuration is active, or none, and then nothing runs.
 #[debug_handler]
 pub async fn index(
     ViewEngine(v): ViewEngine<TeraView>,
@@ -86,12 +78,10 @@ pub async fn create(
     State(ctx): State<AppContext>,
     Form(params): Form<Params>,
 ) -> Result<Response> {
-    let items = items::Model::list(&ctx.db).await?;
-    if let Some(problem) = params.problem(&items) {
-        return form(&v, &ctx, None, &params, Some(problem)).await;
+    match configurations::Model::create(&ctx.db, &params).await? {
+        Ok(configuration) => format::redirect(&format!("/configurations/{}", configuration.id)),
+        Err(problem) => form(&v, &ctx, None, &params, Some(problem)).await,
     }
-    let configuration = configurations::Model::create(&ctx.db, &params).await?;
-    format::redirect(&format!("/configurations/{}", configuration.id))
 }
 
 #[debug_handler]
@@ -112,15 +102,10 @@ pub async fn update(
     Form(params): Form<Params>,
 ) -> Result<Response> {
     let configuration = configurations::Model::find(&ctx.db, id).await?;
-    let items = items::Model::list(&ctx.db).await?;
-    if let Some(problem) = params.problem(&items) {
-        return form(&v, &ctx, Some(id), &params, Some(problem)).await;
+    match configuration.revised(&ctx.db, &params).await? {
+        Ok(_) => format::redirect(&format!("/configurations/{id}")),
+        Err(problem) => form(&v, &ctx, Some(id), &params, Some(problem)).await,
     }
-    configuration
-        .into_active_model()
-        .revised(&ctx.db, &params)
-        .await?;
-    format::redirect(&format!("/configurations/{id}"))
 }
 
 #[debug_handler]

@@ -1,4 +1,5 @@
-//! The tools that m8r runs from its user's environment: the agent command, `gh` and `glab`.
+//! What m8r runs from its user's environment: the commands of the runs, which start the
+//! agents, and `gh` and `glab`.
 //!
 //! Each one starts through the user's login shell, so it gets the `PATH` and the environment
 //! that the developer set up there. m8r installs none of them, so any of them can be missing.
@@ -17,8 +18,8 @@ pub const ANSWER_LIMIT: Duration = Duration::from_secs(15);
 /// What the shell says when it finds no such command.
 const NOT_FOUND: i32 = 127;
 
-/// Where production gets m8r's own secret (see `config/production.yaml`). No tool needs it, and
-/// an agent that prints its environment mustn't print this.
+/// Where production gets m8r's own secret (see `config/production.yaml`). Nothing that m8r
+/// runs needs it, and an agent that prints its environment mustn't print this.
 const SECRET: &str = "M8R_SECRET";
 
 /// What a tool printed, and how it ended.
@@ -100,14 +101,25 @@ pub async fn installed(shell: &str, program: &str) -> io::Result<bool> {
     Ok(status.success())
 }
 
-/// How an agent's run ended.
+/// The program that a command line starts, such as `claude`: its first word, when that's a
+/// plain one. Anything else (a variable, a quote, a subshell) is the shell's to read.
+#[must_use]
+pub fn program(command: &str) -> Option<&str> {
+    let first = command.split_whitespace().next()?;
+    first
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_./+".contains(c))
+        .then_some(first)
+}
+
+/// How a run's command ended.
 #[derive(Debug, PartialEq, Eq)]
 pub enum End {
     /// It exited by itself, with this status (none if a signal killed it).
     Exited(Option<i32>),
     /// It passed the time limit, and m8r killed it.
     TimedOut,
-    /// m8r was told to stop, and took the agent with it.
+    /// m8r was told to stop, and took the command with it.
     Interrupted,
 }
 
@@ -118,10 +130,10 @@ impl End {
         match self {
             Self::Exited(Some(0)) => None,
             Self::Exited(Some(NOT_FOUND)) => {
-                Some("the agent command wasn't found (exit status 127)".to_string())
+                Some("the command wasn't found (exit status 127)".to_string())
             }
-            Self::Exited(Some(code)) => Some(format!("the agent exited with status {code}")),
-            Self::Exited(None) => Some("a signal killed the agent".to_string()),
+            Self::Exited(Some(code)) => Some(format!("the command exited with status {code}")),
+            Self::Exited(None) => Some("a signal killed the command".to_string()),
             Self::TimedOut => Some(format!(
                 "the run passed the time limit of {} minutes",
                 limit.as_secs() / 60
@@ -131,18 +143,20 @@ impl End {
     }
 }
 
-/// Start the agent `command` in `dir`, with `prompt` on its stdin, and wait for it to end.
-/// What it prints, stdout and stderr together, goes to the file `output`.
+/// Run a run's `command`, a line for the shell, in `dir`, with `prompt` on its stdin and `env`
+/// in its environment, and wait for it to end. What it prints, stdout and stderr together,
+/// goes to the file `output`.
 ///
 /// # Errors
 /// When the output file can't be made, or the shell can't start.
-pub async fn agent(
+pub async fn run_command(
     shell: &str,
     command: &str,
     dir: &Path,
     prompt: &str,
     output: &Path,
     limit: Duration,
+    env: &[(&str, String)],
 ) -> io::Result<End> {
     let stdout = File::create(output)?;
     let stderr = stdout.try_clone()?;
@@ -150,10 +164,11 @@ pub async fn agent(
         .args(["-lc", command])
         .current_dir(dir)
         .env_remove(SECRET)
+        .envs(env.iter().map(|(name, value)| (name, value)))
         .stdin(Stdio::piped())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
-        // A group of its own, so that the agent's whole tree of processes can be ended.
+        // A group of its own, so that the command's whole tree of processes can be ended.
         .process_group(0)
         .spawn()?;
     let group = child.id();
@@ -163,7 +178,7 @@ pub async fn agent(
 
     let end = {
         let wait = async {
-            // The agent may read slowly, or not at all, so feed it while waiting for it.
+            // The command may read slowly, or not at all, so feed it while waiting for it.
             let feed = async {
                 if let Some(mut stdin) = stdin {
                     let _ = stdin.write_all(prompt.as_bytes()).await;

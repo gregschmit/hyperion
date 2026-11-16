@@ -10,7 +10,8 @@ pub struct Settings {
     pub url: String,
     /// The shell that starts the tools, as a login shell.
     pub shell: String,
-    /// The command a run pipes its prompt to.
+    /// The agent's command, which a new schedule for triage, review or develop starts with. A
+    /// run pipes its prompt to its schedule's own command.
     pub agent: String,
     /// Minutes before a run is killed.
     pub run_limit: u64,
@@ -47,10 +48,11 @@ impl Settings {
     pub fn tick_file(&self) -> PathBuf {
         self.data.join("tick")
     }
+}
 
-    /// The program that the agent command starts, e.g. `claude`.
-    #[must_use]
-    pub fn agent_program(&self) -> &str {
-        self.agent.split_whitespace().next().unwrap_or_default()
-    }
+/// Where a run reaches m8r's API: the address that the pages listen on, on this host.
+#[must_use]
+pub fn local_url(ctx: &AppContext) -> String {
+    let server = &ctx.config.server;
+    format!("http://{}:{}", server.binding, server.port)
 }

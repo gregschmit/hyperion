@@ -23,6 +23,7 @@ tokio = { version = "1.45", default-features = false, features = [
   "signal",
   "time",
   "io-util",
+  "net",
 ] }
 async-trait = { version = "0.1" }
 axum = { version = "0.8" }
@@ -38,8 +39,12 @@ chrono = { version = "0.4" }
 axum-extra = { version = "0.10", features = ["form"] }
 # Prompts are templates (the same engine as the views).
 tera = { version = "2.1" }
-# Schedules are five-field cron expressions.
-croner = { version = "4" }
+# A schedule says when in words, such as "every weekday at 06:00". hron reads them, and
+# works out their times with jiff.
+hron = { version = "2.2", default-features = false }
+jiff = { version = "0.2" }
+sha2 = "0.10"
+rmcp = { version = "3.10", default-features = false, features = ["server", "transport-streamable-http-server"] }
 
 [[bin]]
 name = "m8r-cli"

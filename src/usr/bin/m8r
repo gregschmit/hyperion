@@ -6,6 +6,10 @@
 #   m8r task link             print an access link, which works for 8 hours
 #   m8r task link hours:72    ... for 72 hours
 #   m8r task link once:true   ... one time only
+#   m8r task token name:duet scope:watchlist_items
+#                             make a token for the API and the MCP endpoint, and print it once
+#   m8r task tokens           list the tokens
+#   m8r task revoke name:duet end a token
 #   m8r task tick             do now what the scheduler does every minute
 #   m8r doctor                check the config and the database
 #   m8r <command> [args]      any other command of m8r-cli: see `m8r --help`

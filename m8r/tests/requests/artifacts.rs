@@ -1,20 +1,14 @@
 use std::{fs, os::unix::fs::symlink, path::PathBuf};
 
 use loco_rs::prelude::*;
-use m8r::{
-    models::{artifacts, configurations::Operation, runs},
-    settings::Settings,
-};
+use m8r::{models::artifacts, settings::Settings};
 use serial_test::serial;
 
-use crate::support::{location, signed_in, write};
+use crate::support::{location, queue, signed_in, write};
 
 /// A finished run's artifacts, with their files in the test data directory.
 async fn reported(ctx: &AppContext) -> PathBuf {
-    let run = runs::Model::queue(&ctx.db, Operation::Review, "/a")
-        .await
-        .unwrap()
-        .unwrap();
+    let run = queue(&ctx.db, "review", "/a", "cat").await;
     let dir = Settings::from_context(ctx).unwrap().artifacts_dir(run.id);
     let _ = fs::remove_dir_all(&dir);
     write(

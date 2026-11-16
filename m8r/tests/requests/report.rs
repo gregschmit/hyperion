@@ -2,12 +2,11 @@ use chrono::{Days, Local};
 use loco_rs::prelude::*;
 use m8r::models::{
     artifacts,
-    configurations::{self, Operation, Params},
-    runs,
+    configurations::{self, Params},
 };
 use serial_test::serial;
 
-use crate::support::signed_in;
+use crate::support::{queue, signed_in};
 
 #[tokio::test]
 #[serial]
@@ -25,6 +24,7 @@ async fn a_new_install_says_how_to_set_it_up() {
         };
         configurations::Model::create(&ctx.db, &params)
             .await
+            .unwrap()
             .unwrap();
         let page = request.get("/").await.text();
         assert!(!page.contains("has nothing to do yet"), "{page}");
@@ -40,10 +40,7 @@ async fn a_new_install_says_how_to_set_it_up() {
 #[serial]
 async fn the_report_links_to_the_days_artifacts() {
     signed_in(|request, ctx| async move {
-        let run = runs::Model::queue(&ctx.db, Operation::Review, "/home/m8r/git/rxg")
-            .await
-            .unwrap()
-            .unwrap();
+        let run = queue(&ctx.db, "review", "/home/m8r/git/rxg", "claude -p").await;
         for (name, url) in [
             ("comment on rxg!1", "https://git.example.com/g/p/-/merge_requests/1#note_5"),
             ("review <of> rxg!2", ""),
@@ -69,6 +66,16 @@ async fn the_report_links_to_the_days_artifacts() {
             page.contains(r#"<a href="/artifacts/2">review &lt;of&gt; rxg!2</a>"#),
             "{page}"
         );
+
+        // A run of another kind says which command it was. The others' commands are the usual.
+        let other = queue(&ctx.db, "other", "/home/m8r/git/rxg", "make docs").await;
+        let mut artifact = artifacts::ActiveModel::new();
+        artifact.run_id = Set(other.id);
+        artifact.name = Set("docs".to_string());
+        artifact.insert(&ctx.db).await.unwrap();
+        let page = request.get("/").await.text();
+        assert!(page.contains(r#"<p class="mono muted">make docs</p>"#), "{page}");
+        assert!(!page.contains(r#"<p class="mono muted">claude -p</p>"#), "{page}");
 
         // Another day has none of them.
         let yesterday = Local::now().date_naive().checked_sub_days(Days::new(1)).unwrap();

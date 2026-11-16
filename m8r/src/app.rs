@@ -15,7 +15,10 @@ use std::path::Path;
 
 use crate::{
     controllers, initializers,
-    models::{artifacts, configurations, items, runs, schedules, tool_errors, used_links},
+    models::{
+        artifacts, configurations, runs, schedules, tokens, tool_errors, used_links,
+        watchlist_items,
+    },
     tasks,
 };
 
@@ -52,14 +55,21 @@ impl Hooks for App {
         ])
     }
 
-    fn routes(_ctx: &AppContext) -> AppRoutes {
+    fn routes(ctx: &AppContext) -> AppRoutes {
         AppRoutes::empty() // controller routes below
             .add_route(controllers::report::routes())
             .add_route(controllers::runs::routes())
-            .add_route(controllers::items::routes())
+            .add_route(controllers::watchlist::routes())
+            .add_route(controllers::categories::routes())
             .add_route(controllers::schedules::routes())
             .add_route(controllers::configurations::routes())
             .add_route(controllers::artifacts::routes())
+            .add_route(controllers::api::watchlist_items::routes())
+            .add_route(controllers::api::categories::routes())
+            .add_route(controllers::api::schedules::routes())
+            .add_route(controllers::api::configurations::routes())
+            .add_route(controllers::api::runs::routes())
+            .add_route(controllers::mcp::routes(ctx))
     }
 
     async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {
@@ -70,15 +80,20 @@ impl Hooks for App {
     fn register_tasks(tasks: &mut Tasks) {
         tasks.register(tasks::link::Link);
         tasks.register(tasks::tick::Tick);
+        tasks.register(tasks::token::Token);
+        tasks.register(tasks::tokens::Tokens);
+        tasks.register(tasks::revoke::Revoke);
         // tasks-inject (do not remove)
     }
 
     async fn truncate(ctx: &AppContext) -> Result<()> {
         truncate_table(&ctx.db, artifacts::Entity).await?;
         truncate_table(&ctx.db, runs::Entity).await?;
-        truncate_table(&ctx.db, items::Entity).await?;
+        truncate_table(&ctx.db, watchlist_items::Entity).await?;
         truncate_table(&ctx.db, schedules::Entity).await?;
+        // The categories stay: the first two come with the schema.
         truncate_table(&ctx.db, configurations::Entity).await?;
+        truncate_table(&ctx.db, tokens::Entity).await?;
         truncate_table(&ctx.db, used_links::Entity).await?;
         truncate_table(&ctx.db, tool_errors::Entity).await?;
         Ok(())

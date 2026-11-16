@@ -20,7 +20,7 @@
     <li>Clone the repos to maintain.</li>
   </ol>
   <p>Then <a href="/configurations/new">write a configuration</a> and make it active,
-    <a href="/schedules">add a schedule</a>, and run it now.</p>
+    <a href="/schedules/new">add a schedule</a>, and run it now.</p>
 </section>
 {% endif %}
 
@@ -28,6 +28,7 @@
 <section>
   <h2><a href="/runs/{{ run.id }}">{{ run.operation }}</a> in <span class="mono">{{ run.repo }}</span>
     <small>{{ run.started_at }}</small></h2>
+  {% if run.operation == "other" %}<p class="mono muted">{{ run.command }}</p>{% endif %}
   <ul class="artifacts">
     {% for artifact in run.artifacts %}
     <li><a href="{{ artifact.href }}">{{ artifact.name }}</a>

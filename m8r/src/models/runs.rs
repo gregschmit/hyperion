@@ -1,7 +1,7 @@
 pub use super::_entities::runs::{ActiveModel, Column, Entity, Model};
 use loco_rs::prelude::*;
 
-use super::configurations::Operation;
+use super::schedules;
 
 pub type Runs = Entity;
 
@@ -64,32 +64,36 @@ impl Model {
             .ok_or_else(|| ModelError::EntityNotFound)
     }
 
-    /// Queue a run, unless one for the same operation and repo is already waiting.
+    /// Whether run `id` is in progress.
+    ///
+    /// # Errors
+    /// When the query fails.
+    pub async fn is_running(db: &DatabaseConnection, id: i64) -> ModelResult<bool> {
+        let run = Entity::find_by_id(id).one(db).await?;
+        Ok(run.is_some_and(|run| run.status == Status::Running.as_str()))
+    }
+
+    /// Queue a run of `schedule`, and give it back. If one already waits, that's the one.
     ///
     /// # Errors
     /// When a query fails.
-    pub async fn queue(
-        db: &DatabaseConnection,
-        operation: Operation,
-        repo: &str,
-    ) -> ModelResult<Option<Self>> {
+    pub async fn queue(db: &DatabaseConnection, schedule: &schedules::Model) -> ModelResult<Self> {
         let txn = db.begin().await?;
         let waiting = Entity::find()
             .filter(Column::Status.eq(Status::Queued.as_str()))
-            .filter(Column::Operation.eq(operation.as_str()))
-            .filter(Column::Repo.eq(repo))
+            .filter(Column::ScheduleId.eq(schedule.id))
             .one(&txn)
             .await?;
-        if waiting.is_some() {
-            return Ok(None);
+        if let Some(run) = waiting {
+            return Ok(run);
         }
         let mut run = ActiveModel::new();
-        run.operation = Set(operation.as_str().to_string());
-        run.repo = Set(repo.to_string());
+        run.schedule_id = Set(Some(schedule.id));
+        run.copy(schedule);
         run.status = Set(Status::Queued.as_str().to_string());
         let run = run.insert(&txn).await?;
         txn.commit().await?;
-        Ok(Some(run))
+        Ok(run)
     }
 
     /// The run that has waited the longest.
@@ -125,18 +129,31 @@ impl Model {
 }
 
 impl ActiveModel {
-    /// The run starts, with this prompt.
+    /// What the history keeps of the run's schedule, which can change or go.
+    fn copy(&mut self, schedule: &schedules::Model) {
+        self.operation = Set(schedule.operation.clone());
+        self.repo = Set(schedule.repo.clone());
+        self.command = Set(schedule.command.clone());
+    }
+
+    /// The run starts, with this prompt. It takes its schedule as the schedule is now.
     ///
     /// # Errors
     /// When the update fails.
-    pub async fn started(mut self, db: &DatabaseConnection, prompt: String) -> ModelResult<Model> {
+    pub async fn started(
+        mut self,
+        db: &DatabaseConnection,
+        schedule: &schedules::Model,
+        prompt: String,
+    ) -> ModelResult<Model> {
+        self.copy(schedule);
         self.status = Set(Status::Running.as_str().to_string());
         self.prompt = Set(prompt);
         self.started_at = Set(Some(chrono::Utc::now().into()));
         Ok(self.update(db).await?)
     }
 
-    /// The run is over: `output` is what the agent printed, and `error` is why m8r calls it
+    /// The run is over: `output` is what its command printed, and `error` is why m8r calls it
     /// failed, if it does.
     ///
     /// # Errors

@@ -78,8 +78,8 @@ which needs 1200-byte packets, so browsers use TCP at once. `mtu-test` still see
 m8r, in `m8r/`, runs coding agents on a schedule to maintain repos, with pages at
 `m8r.schmit.net`. `install` builds and starts it, and it runs nothing until it's configured:
 [m8r/README.md](m8r/README.md) says how to deploy and use it. Its agents run as the `m8r` user,
-which the firewall lets reach the internet and the router's DNS, but not the LAN, the guests, the
-rXg's network, or the router's other services.
+which the firewall lets reach the internet, the router's DNS and m8r's own pages, but not the LAN,
+the guests, the rXg's network, or the router's other services.
 
 ## Testing
 
