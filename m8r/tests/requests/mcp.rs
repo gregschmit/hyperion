@@ -5,7 +5,7 @@ use m8r::app::App;
 use serde_json::{json, Value};
 use serial_test::serial;
 
-use crate::support::{configure, token, watch, ISSUE, PR};
+use crate::support::{self, configure, token, watch, ISSUES, REQUESTS};
 
 /// Send one JSON-RPC message, as an MCP client does.
 async fn send(request: &TestServer, token: &str, message: &Value) -> axum_test::TestResponse {
@@ -109,7 +109,7 @@ async fn a_client_starts_with_no_session_and_reads_what_m8r_is() {
 async fn a_token_sees_the_tools_of_what_it_covers() {
     request::<App, _, _>(|request, ctx| async move {
         let duet = token(&ctx, "duet", "watchlist_items").await;
-        let brief = token(&ctx, "brief", "runs,categories").await;
+        let brief = token(&ctx, "brief", "runs,repos").await;
         let mac = token(&ctx, "mac", "all").await;
         let names = |tools: &[Value]| {
             let names = tools
@@ -132,10 +132,10 @@ async fn a_token_sees_the_tools_of_what_it_covers() {
         assert_eq!(
             names(&tools(&request, &brief).await),
             [
-                "list_categories",
-                "add_category",
-                "rename_category",
-                "remove_category",
+                "list_repos",
+                "add_repo",
+                "update_repo",
+                "remove_repo",
                 "list_runs",
                 "get_run",
             ]
@@ -162,22 +162,37 @@ async fn a_token_sees_the_tools_of_what_it_covers() {
             }
         }
 
-        // The schema offers the categories that there are now.
+        // An item's URL says the rest, so it's all that adding one needs. A list can be a
+        // category's or a repo's.
         let add = &for_duet[1]["inputSchema"];
-        assert_eq!(add["required"], json!(["url", "category"]));
-        assert_eq!(add["properties"]["category"]["enum"], json!([ISSUE, PR]));
+        assert_eq!(add["required"], json!(["url"]));
+        assert_eq!(add["additionalProperties"], json!(false));
+        assert_eq!(add["properties"].get("category"), None);
+        assert_eq!(add["properties"]["requested"]["type"], json!("boolean"));
         assert_eq!(
             add["properties"]["priority"]["enum"],
             json!(["medium", "high"])
         );
-        call(&request, &mac, "add_category", json!({ "name": "Epic" }))
-            .await
-            .unwrap();
-        let for_duet = tools(&request, &duet).await;
+        let list = &for_duet[0]["inputSchema"]["properties"];
+        assert_eq!(list["category"]["enum"], json!([ISSUES, REQUESTS]));
+        assert_eq!(list["repo_id"]["type"], json!("integer"));
+        // A schedule has a name, repos and times, and takes all the items, a category's, or
+        // none.
+        let schedule = all.iter().find(|tool| tool["name"] == "add_schedule");
+        let schedule = &schedule.unwrap()["inputSchema"];
         assert_eq!(
-            for_duet[1]["inputSchema"]["properties"]["category"]["enum"],
-            json!([ISSUE, PR, "Epic"])
+            schedule["required"],
+            json!(["name", "repos", "hron", "command"])
         );
+        assert_eq!(
+            schedule["properties"]["category"]["enum"],
+            json!(["", "all", ISSUES, REQUESTS])
+        );
+        assert_eq!(
+            schedule["properties"]["max_items"]["type"],
+            json!("integer")
+        );
+        assert_eq!(schedule["properties"]["repos"]["type"], json!("array"));
     })
     .await;
 }
@@ -187,12 +202,12 @@ async fn a_token_sees_the_tools_of_what_it_covers() {
 async fn duet_keeps_the_watchlist_with_its_tools() {
     request::<App, _, _>(|request, ctx| async move {
         let duet = token(&ctx, "duet", "watchlist_items").await;
-        watch(&ctx, "https://github.com/o/r/issues/1", ISSUE).await;
+        watch(&ctx, "https://github.com/o/r/issues/1").await;
+        let repo = support::repo(&ctx.db, "~/git/g/p", "https://git.example.com/g/p").await;
         let mr = "https://git.example.com/g/p/-/merge_requests/9";
 
-        // Someone asks for a review in a chat.
-        let asked = json!({ "url": mr, "category": PR, "review_requested": true,
-            "note": "Bob asked in chat" });
+        // Someone asks for a review in a chat. The URL says the repo and the category.
+        let asked = json!({ "url": mr, "requested": true, "note": "Bob asked in chat" });
         let added = call(&request, &duet, "add_watchlist_item", asked)
             .await
             .unwrap();
@@ -201,10 +216,12 @@ async fn duet_keeps_the_watchlist_with_its_tools() {
             json!({
                 "id": 2,
                 "url": mr,
-                "category": PR,
+                "repo_id": repo.id,
+                "repo": "~/git/g/p",
+                "category": REQUESTS,
                 "priority": "medium",
                 "note": "Bob asked in chat",
-                "review_requested": true,
+                "requested": true,
                 "title": "",
                 "checked_at": null,
             })
@@ -218,37 +235,50 @@ async fn duet_keeps_the_watchlist_with_its_tools() {
             (
                 &changed["priority"],
                 &changed["note"],
-                &changed["review_requested"]
+                &changed["requested"]
             ),
             (&json!("high"), &json!("Bob asked in chat"), &json!(true))
+        );
+        // Someone asks for the issue too.
+        let asked = json!({ "id": 1, "requested": true });
+        let issue = call(&request, &duet, "update_watchlist_item", asked)
+            .await
+            .unwrap();
+        assert_eq!(
+            (&issue["requested"], &issue["category"]),
+            (&json!(true), &json!(ISSUES))
         );
 
         let listed = call(&request, &duet, "list_watchlist_items", json!({}))
             .await
             .unwrap();
         assert_eq!(listed.as_array().unwrap().len(), 2);
-        let prs = json!({ "category": PR });
-        let listed = call(&request, &duet, "list_watchlist_items", prs)
-            .await
-            .unwrap();
-        assert_eq!(listed, json!([changed]));
+        // A category's items, or a repo's.
+        for filter in [
+            json!({ "category": REQUESTS }),
+            json!({ "repo_id": repo.id }),
+        ] {
+            let listed = call(&request, &duet, "list_watchlist_items", filter.clone()).await;
+            assert_eq!(listed, Ok(json!([changed])), "{filter}");
+        }
 
         // What the model got wrong, it can read and put right.
         for (name, arguments, why) in [
             (
-                "add_watchlist_item",
-                json!({ "url": mr, "category": "Epic" }),
-                "There's no category \"Epic\". The categories are: Issue, Pull/Merge Request.",
+                "list_watchlist_items",
+                json!({ "category": "Epic" }),
+                "There's no category \"Epic\". The categories are: issues, pull/merge requests.",
             ),
             (
                 "add_watchlist_item",
-                json!({ "url": "https://example.com/", "category": PR }),
+                json!({ "url": "https://example.com/" }),
                 "That isn't the URL of an issue or a PR/MR on GitHub or GitLab.",
             ),
             (
-                "update_watchlist_item",
-                json!({ "id": 1, "review_requested": true }),
-                "Only a PR/MR can have its review requested. That's an issue.",
+                "add_watchlist_item",
+                json!({ "url": "https://git.example.com/g/other/-/issues/1" }),
+                "m8r has no repo for https://git.example.com/g/other. Add that repo first: an \
+                 item is in one.",
             ),
             (
                 "remove_watchlist_item",
@@ -274,7 +304,7 @@ async fn duet_keeps_the_watchlist_with_its_tools() {
         assert_eq!(listed.as_array().unwrap().len(), 1);
 
         // A tool that its token doesn't cover is no tool at all.
-        for name in ["list_schedules", "remove_category", "no_such_tool"] {
+        for name in ["list_schedules", "add_repo", "no_such_tool"] {
             let params = json!({ "name": name, "arguments": {} });
             let answer = rpc(&request, &duet, "tools/call", params).await;
             assert_eq!(
@@ -296,44 +326,67 @@ async fn the_other_tools_do_what_the_api_does() {
         let here = here.to_string_lossy();
         configure(&ctx, "").await;
 
-        // Categories.
-        let epic = call(&request, &mac, "add_category", json!({ "name": "Epic" })).await;
-        assert_eq!(epic, Ok(json!({ "id": 3, "name": "Epic" })));
-        let renamed = json!({ "id": 3, "name": "Release" });
-        let release = call(&request, &mac, "rename_category", renamed).await;
-        assert_eq!(release, Ok(json!({ "id": 3, "name": "Release" })));
-        let listed = call(&request, &mac, "list_categories", json!({}))
+        // Repos: a clone that's there, and its project.
+        let (src, tests) = (format!("{here}/src"), format!("{here}/tests"));
+        let asked = json!({ "path": src, "url": "git@git.example.com:g/p.git" });
+        let repo = call(&request, &mac, "add_repo", asked).await;
+        let added = json!({ "id": 1, "path": src, "url": "https://git.example.com/g/p" });
+        assert_eq!(repo, Ok(added.clone()));
+        let again = call(&request, &mac, "add_repo", json!({ "path": src })).await;
+        assert_eq!(again, Err(format!("m8r already has that clone: {src}.")));
+        call(&request, &mac, "add_repo", json!({ "path": tests }))
             .await
             .unwrap();
-        assert_eq!(listed.as_array().unwrap().len(), 3);
+        let moved = json!({ "id": 2, "url": "https://github.com/o/r" });
+        let changed = call(&request, &mac, "update_repo", moved).await.unwrap();
+        assert_eq!(
+            (&changed["path"], &changed["url"]),
+            (&json!(tests), &json!("https://github.com/o/r"))
+        );
+        let listed = call(&request, &mac, "list_repos", json!({})).await;
+        assert_eq!(listed, Ok(json!([added, changed])));
 
-        // A schedule that takes that category, so the category stays.
-        let asked = json!({ "operation": "other", "category": "Release", "repos": [here],
-            "hron": ["every 12 hours", "every day at 09:00, 17:00"],
+        // A schedule that runs in the first repo, so that repo stays.
+        let asked = json!({ "name": "release notes", "category": "all", "max_items": 20,
+            "repos": [src], "hron": ["every 12 hours", "every day at 09:00, 17:00"],
             "command": "make release-notes" });
         let schedule = call(&request, &mac, "add_schedule", asked).await.unwrap();
         assert_eq!(
             (
                 &schedule["id"],
+                &schedule["name"],
                 &schedule["hron"],
                 &schedule["category"],
+                &schedule["max_items"],
                 &schedule["prompt"]
             ),
             (
                 &json!(1),
+                &json!("release notes"),
                 &json!([
                     "every 12 hours from 00:00 to 23:59",
                     "every day at 09:00, 17:00"
                 ]),
-                &json!("Release"),
+                &json!("all"),
+                &json!(20),
                 &json!("")
             )
         );
-        assert_eq!(schedule["repos"], json!([here]));
-        let in_use = call(&request, &mac, "remove_category", json!({ "id": 3 })).await;
+        assert_eq!(schedule["repos"], json!([src]));
+        let in_use = call(&request, &mac, "remove_repo", json!({ "id": 1 })).await;
         assert!(in_use
             .unwrap_err()
             .contains("by 0 watchlist items and 1 schedules"));
+        let gone = call(&request, &mac, "remove_repo", json!({ "id": 2 })).await;
+        assert_eq!(gone, Ok(json!({ "removed": 2 })));
+        let unknown = json!({ "id": 1, "repos": [tests] });
+        let refused = call(&request, &mac, "update_schedule", unknown).await;
+        assert_eq!(
+            refused,
+            Err(format!(
+                "\"{tests}\" isn't one of m8r's repos. Add it to the repos first."
+            ))
+        );
         let every = json!({ "id": 1, "category": "", "prompt": "{{ watchlist }}" });
         let changed = call(&request, &mac, "update_schedule", every)
             .await
@@ -342,16 +395,16 @@ async fn the_other_tools_do_what_the_api_does() {
             (
                 &changed["category"],
                 &changed["prompt"],
-                &changed["command"]
+                &changed["command"],
+                &changed["max_items"]
             ),
             (
                 &json!(""),
                 &json!("{{ watchlist }}"),
-                &json!("make release-notes")
+                &json!("make release-notes"),
+                &json!(20)
             )
         );
-        let gone = call(&request, &mac, "remove_category", json!({ "id": 3 })).await;
-        assert_eq!(gone, Ok(json!({ "removed": 3 })));
         let bad = json!({ "id": 1, "hron": "whenever" });
         assert!(call(&request, &mac, "update_schedule", bad).await.is_err());
         let listed = call(&request, &mac, "list_schedules", json!({}))
@@ -370,9 +423,16 @@ async fn the_other_tools_do_what_the_api_does() {
                 &run["id"],
                 &run["status"],
                 &run["schedule_id"],
+                &run["name"],
                 &run["repo"]
             ),
-            (&json!(1), &json!("queued"), &json!(1), &json!(here))
+            (
+                &json!(1),
+                &json!("queued"),
+                &json!(1),
+                &json!("release notes"),
+                &json!(src)
+            )
         );
         assert_eq!(run.get("prompt"), None);
         let listed = call(&request, &mac, "list_runs", json!({ "limit": 5 }))

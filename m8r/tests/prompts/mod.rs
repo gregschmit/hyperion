@@ -3,35 +3,68 @@
 use loco_rs::prelude::*;
 use m8r::{
     app::App,
-    models::watchlist_items,
+    models::{
+        repos,
+        schedules::Items,
+        watchlist_items::{self, Category},
+    },
     prompts::{Context, STARTER, VARIABLES},
 };
 use serial_test::serial;
 
-use crate::support::{category, configure, watch, ISSUE, PR};
+use crate::support::{self, configure};
 
-/// A watchlist of three: an issue, an urgent MR with a note, and a PR to review.
-async fn watchlist(ctx: &AppContext) {
-    watch(ctx, "https://github.com/o/r/issues/1", ISSUE).await;
-    for (url, priority, note, review_requested) in [
+const REQUESTS: Items = Items::Of(Category::Requests);
+const ISSUES: Items = Items::Of(Category::Issues);
+
+/// Two repos and a watchlist of five. In the first repo: an issue, an urgent MR with a note,
+/// an MR that someone asked for, and an urgent issue. In the second: one MR.
+async fn watchlist(ctx: &AppContext) -> (repos::Model, repos::Model) {
+    let one = support::repo(&ctx.db, "~/git/g/p", "https://git.example.com/g/p").await;
+    let two = support::repo(&ctx.db, "~/git/o/r", "https://github.com/o/r").await;
+    for (url, priority, note, requested) in [
+        (
+            "https://git.example.com/g/p/-/issues/1",
+            "medium",
+            "",
+            false,
+        ),
         (
             "https://git.example.com/g/p/-/merge_requests/2",
             "high",
             "Ship by <Friday>",
             false,
         ),
-        ("https://github.com/o/r/pull/3", "medium", "", true),
+        (
+            "https://git.example.com/g/p/-/merge_requests/3",
+            "medium",
+            "",
+            true,
+        ),
+        ("https://git.example.com/g/p/-/issues/4", "high", "", false),
+        ("https://github.com/o/r/pull/5", "medium", "Theirs", false),
     ] {
         let params = watchlist_items::Params {
             url: url.to_string(),
-            category: PR.to_string(),
             priority: priority.to_string(),
             note: note.to_string(),
-            review_requested,
+            requested,
         };
         let listed = watchlist_items::Model::create(&ctx.db, &params).await;
         listed.unwrap().unwrap();
     }
+    (one, two)
+}
+
+/// What a prompt gets in `repo`, for a schedule that takes `items`, and `most` of them.
+async fn context(
+    ctx: &AppContext,
+    repo: Option<&repos::Model>,
+    items: Items,
+    most: u32,
+) -> Context {
+    let loaded = Context::load(&ctx.db, repo, items, most, "/x").await;
+    loaded.unwrap()
 }
 
 #[tokio::test]
@@ -39,11 +72,10 @@ async fn watchlist(ctx: &AppContext) {
 async fn a_prompt_gets_each_part_where_it_says() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
-    watchlist(ctx).await;
+    let (repo, _) = watchlist(ctx).await;
     configure(ctx, "Write to the reviewers in plain words.\n").await;
-    let prs = category(ctx, PR).await;
 
-    let context = Context::load(&ctx.db, Some(&prs), "/data/artifacts/9")
+    let context = Context::load(&ctx.db, Some(&repo), REQUESTS, 0, "/data/artifacts/9")
         .await
         .unwrap();
     let prompt = context
@@ -66,17 +98,15 @@ async fn a_prompt_gets_each_part_where_it_says() {
         prompt.contains("\n## How to use m8r's watchlist\n"),
         "{prompt}"
     );
-    // Then yours. Then the category's items, the urgent one first, and nothing escaped: a
-    // prompt isn't HTML.
+    // Then yours. Then the repo's items of the category: the one that someone asked for
+    // first, then the urgent one. Nothing is escaped: a prompt isn't HTML.
     assert!(
         prompt.ends_with(
             "they are the developer's.\n\n\
              Write to the reviewers in plain words.\n\
              Follow these:\n\
-             - item 2 (Pull/Merge Request, high): \
-             https://git.example.com/g/p/-/merge_requests/2 Ship by <Friday>\n\
-             - item 3 (Pull/Merge Request, medium, review requested): \
-             https://github.com/o/r/pull/3\n\
+             - item 3 (medium, requested): https://git.example.com/g/p/-/merge_requests/3\n\
+             - item 2 (high): https://git.example.com/g/p/-/merge_requests/2 Ship by <Friday>\n\
              After."
         ),
         "{prompt}"
@@ -88,14 +118,13 @@ async fn a_prompt_gets_each_part_where_it_says() {
 async fn the_configurations_prompt_goes_in_as_it_was_written() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
-    watchlist(ctx).await;
+    let (repo, _) = watchlist(ctx).await;
     // It's plain text, and no template: what looks like a tag is text too, and so is what
     // Tera couldn't read.
     let written = "Use {{ watchlist }} and {{ m8r_prompt }}.\n\
                    {% for %} {{ nope }} ${{ github.sha }} <b>";
     configure(ctx, written).await;
-    let prs = category(ctx, PR).await;
-    let context = Context::load(&ctx.db, Some(&prs), "/x").await.unwrap();
+    let context = context(ctx, Some(&repo), REQUESTS, 0).await;
 
     assert_eq!(
         context.compile("[{{ config_prompt }}]").unwrap(),
@@ -105,47 +134,115 @@ async fn the_configurations_prompt_goes_in_as_it_was_written() {
 
 #[tokio::test]
 #[serial]
-async fn a_schedule_gets_the_items_of_its_category_and_none_without_one() {
+async fn a_run_gets_the_items_of_its_own_repo_that_its_schedule_takes() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
-    watchlist(ctx).await;
+    let (one, two) = watchlist(ctx).await;
+    let ids = "{% for item in watchlist_items %}{{ item.id }} {% endfor %}";
 
-    let issues = category(ctx, ISSUE).await;
-    let context = Context::load(&ctx.db, Some(&issues), "/x").await.unwrap();
+    // Every item of its repo: what someone asked for, then what's urgent, then the rest. No
+    // other repo's.
+    let all = context(ctx, Some(&one), Items::All, 0).await;
+    assert_eq!(all.compile(ids).unwrap(), "3 2 4 1 ");
     assert_eq!(
-        context.compile("{{ category }}:\n{{ watchlist }}").unwrap(),
-        "Issue:\n- item 1 (Issue, medium): https://github.com/o/r/issues/1"
+        all.compile("{{ category }} of {{ repo }} ({{ repo_url }})")
+            .unwrap(),
+        "all of ~/git/g/p (https://git.example.com/g/p)"
+    );
+    let other = context(ctx, Some(&two), Items::All, 0).await;
+    assert_eq!(
+        other.compile("{{ repo }}:\n{{ watchlist }}").unwrap(),
+        "~/git/o/r:\n- item 5 (medium): https://github.com/o/r/pull/5 Theirs"
+    );
+
+    // Or a category's.
+    let issues = context(ctx, Some(&one), ISSUES, 0).await;
+    assert_eq!(
+        issues.compile("{{ category }}:\n{{ watchlist }}").unwrap(),
+        "issues:\n\
+         - item 4 (high): https://git.example.com/g/p/-/issues/4\n\
+         - item 1 (medium): https://git.example.com/g/p/-/issues/1"
+    );
+    let requests = context(ctx, Some(&two), REQUESTS, 0).await;
+    assert_eq!(requests.compile(ids).unwrap(), "5 ");
+    assert_eq!(
+        context(ctx, Some(&two), ISSUES, 0)
+            .await
+            .compile(ids)
+            .unwrap(),
+        ""
     );
 
     // The items are there to write the lines another way.
     let own = "{% for item in watchlist_items %}{{ item.id }} {{ item.priority }} \
-               {{ item.category }} {{ item.review_requested }} {{ item.url }} {{ item.note }};\
+               {{ item.category }} {{ item.requested }} {{ item.url }} {{ item.note }};\
                {% endfor %}";
-    let prs = category(ctx, PR).await;
-    let context = Context::load(&ctx.db, Some(&prs), "/x").await.unwrap();
     assert_eq!(
-        context.compile(own).unwrap(),
-        "2 high Pull/Merge Request false https://git.example.com/g/p/-/merge_requests/2 \
-         Ship by <Friday>;3 medium Pull/Merge Request true https://github.com/o/r/pull/3 ;"
+        context(ctx, Some(&one), REQUESTS, 0)
+            .await
+            .compile(own)
+            .unwrap(),
+        "3 medium pull/merge requests true https://git.example.com/g/p/-/merge_requests/3 ;\
+         2 high pull/merge requests false https://git.example.com/g/p/-/merge_requests/2 \
+         Ship by <Friday>;"
     );
 
-    // A schedule with no category gets no items, whatever is on the watchlist.
-    let context = Context::load(&ctx.db, None, "/x").await.unwrap();
+    // A schedule that takes no items gets none, whatever is on the watchlist. And with no
+    // repo at hand, as on the page of a schedule that has none yet, there are none.
+    let none = context(ctx, Some(&one), Items::None, 0).await;
     assert_eq!(
-        context.compile("[{{ category }}] {{ watchlist }}").unwrap(),
+        none.compile("[{{ category }}] {{ watchlist }}").unwrap(),
         "[] (nothing)"
     );
-    assert_eq!(context.compile(own).unwrap(), "");
+    assert_eq!(none.compile(own).unwrap(), "");
+    let nowhere = context(ctx, None, Items::All, 0).await;
+    assert_eq!(
+        nowhere
+            .compile("[{{ repo }}{{ repo_url }}] {{ watchlist }}")
+            .unwrap(),
+        "[] (nothing)"
+    );
+}
 
-    // A category with nothing in it says so too.
-    let epics = m8r::models::categories::Params {
-        name: "Epic".to_string(),
-    };
-    let epics = m8r::models::categories::Model::create(&ctx.db, &epics).await;
-    let context = Context::load(&ctx.db, Some(&epics.unwrap().unwrap()), "/x")
-        .await
-        .unwrap();
-    assert_eq!(context.compile("{{ watchlist }}").unwrap(), "(nothing)");
+#[tokio::test]
+#[serial]
+async fn the_requested_items_are_first_and_have_a_list_of_their_own() {
+    let boot = boot_test::<App>().await.unwrap();
+    let ctx = &boot.app_context;
+    let (one, two) = watchlist(ctx).await;
+    let both = "{{ requested_watchlist }}\n--\n{{ watchlist }}";
+    let ids = "{% for item in requested_watchlist_items %}{{ item.id }}{% endfor %}/\
+               {% for item in watchlist_items %}{{ item.id }}{% endfor %}";
+
+    let all = context(ctx, Some(&one), Items::All, 0).await;
+    assert_eq!(
+        all.compile(both).unwrap(),
+        "- item 3 (medium, requested): https://git.example.com/g/p/-/merge_requests/3\n\
+         --\n\
+         - item 3 (medium, requested): https://git.example.com/g/p/-/merge_requests/3\n\
+         - item 2 (high): https://git.example.com/g/p/-/merge_requests/2 Ship by <Friday>\n\
+         - item 4 (high): https://git.example.com/g/p/-/issues/4\n\
+         - item 1 (medium): https://git.example.com/g/p/-/issues/1"
+    );
+    assert_eq!(all.compile(ids).unwrap(), "3/3241");
+
+    // A schedule's cutoff keeps the first items, so what someone asked for is in.
+    let two_at_most = context(ctx, Some(&one), Items::All, 2).await;
+    assert_eq!(two_at_most.compile(ids).unwrap(), "3/32");
+    let one_issue = context(ctx, Some(&one), ISSUES, 1).await;
+    assert_eq!(one_issue.compile(ids).unwrap(), "/4");
+    // Nobody asked for anything in the other repo, and a prompt can tell.
+    let other = context(ctx, Some(&two), Items::All, 0).await;
+    assert_eq!(
+        other.compile("{{ requested_watchlist }}").unwrap(),
+        "(nothing)"
+    );
+    assert_eq!(
+        other
+            .compile("{% if requested_watchlist_items %}first{% else %}none{% endif %}")
+            .unwrap(),
+        "none"
+    );
 }
 
 #[tokio::test]
@@ -153,31 +250,47 @@ async fn a_schedule_gets_the_items_of_its_category_and_none_without_one() {
 async fn m8rs_part_says_how_to_change_the_watchlist_and_holds_no_secret() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
-    let context = Context::load(&ctx.db, None, "/x").await.unwrap();
+    let (repo, _) = watchlist(ctx).await;
+    let context = context(ctx, Some(&repo), Items::All, 0).await;
 
     let part = context.compile("{{ m8r_prompt }}").unwrap();
 
     assert_eq!(part, context.m8r_prompt().trim_end());
-    // The address and the token are in the run's environment, by these names.
+    // The address and the token are in the run's environment, by these names. The list is
+    // the one of the run's own repo.
+    let list = format!(
+        r#"curl -sS "$M8R_URL/api/watchlist_items?repo_id={}" -H "Authorization: Bearer $M8R_TOKEN""#,
+        repo.id
+    );
     for request in [
-        r#"curl -sS "$M8R_URL/api/watchlist_items" -H "Authorization: Bearer $M8R_TOKEN""#,
+        list.as_str(),
+        r#"curl -sS "$M8R_URL/api/watchlist_items" -H "Authorization: Bearer $M8R_TOKEN" \"#,
         r#"curl -sS -X PATCH "$M8R_URL/api/watchlist_items/NUMBER" -H "Authorization: Bearer $M8R_TOKEN""#,
         r#"curl -sS -X DELETE "$M8R_URL/api/watchlist_items/NUMBER" -H "Authorization: Bearer $M8R_TOKEN""#,
     ] {
         assert!(part.contains(request), "{request}: {part}");
     }
+    // An item's URL says the rest, so that's all that adding one takes.
     assert!(
-        part.contains(r#"--json '{"review_requested": false}'"#),
+        part.contains(
+            r#"--json '{"url": "URL", "priority": "medium", "note": "Why the developer follows it"}'"#
+        ),
         "{part}"
     );
-    // It names the categories as they are now.
-    assert!(
-        part.contains("The categories are: Issue, Pull/Merge Request.\n"),
-        "{part}"
-    );
+    assert!(part.contains(r#"--json '{"requested": false}'"#), "{part}");
     assert!(part.ends_with("they are the developer's."), "{part}");
     // Nothing is left for a template to fill in.
-    assert!(!part.contains("{artifacts_dir}") && !part.contains("{categories}"));
+    assert!(!part.contains("{artifacts_dir}") && !part.contains("{of_repo}"));
+
+    // With no repo at hand, the list is the whole watchlist's.
+    let nowhere = self::context(ctx, None, Items::All, 0).await;
+    assert!(
+        nowhere
+            .m8r_prompt()
+            .contains(r#"curl -sS "$M8R_URL/api/watchlist_items" -H "Authorization"#),
+        "{}",
+        nowhere.m8r_prompt()
+    );
 }
 
 #[tokio::test]
@@ -186,7 +299,7 @@ async fn a_prompt_says_where_each_part_goes_or_goes_without_it() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
     configure(ctx, "Write in plain words.\n").await;
-    let context = Context::load(&ctx.db, None, "/x").await.unwrap();
+    let context = context(ctx, None, Items::All, 0).await;
 
     assert_eq!(context.compile("Just triage.").unwrap(), "Just triage.");
     assert_eq!(context.compile("").unwrap(), "");
@@ -220,7 +333,7 @@ async fn a_prompt_says_where_each_part_goes_or_goes_without_it() {
 async fn a_prompt_that_does_not_compile_says_why() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
-    let context = Context::load(&ctx.db, None, "/x").await.unwrap();
+    let context = context(ctx, None, Items::All, 0).await;
 
     let unknown = context.compile("{{ nope }}").unwrap_err();
     assert!(
@@ -238,8 +351,9 @@ async fn a_prompt_that_does_not_compile_says_why() {
 async fn every_variable_that_the_pages_name_is_one_that_compiles() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
-    watchlist(ctx).await;
-    let context = Context::load(&ctx.db, None, "/x").await.unwrap();
+    let (repo, _) = watchlist(ctx).await;
+    configure(ctx, "Yours.").await;
+    let context = context(ctx, Some(&repo), Items::All, 0).await;
 
     let names: Vec<_> = VARIABLES.iter().map(|(name, _)| *name).collect();
     assert_eq!(names[..2], ["{{ m8r_prompt }}", "{{ config_prompt }}"]);
@@ -248,6 +362,7 @@ async fn every_variable_that_the_pages_name_is_one_that_compiles() {
         let template = variable.replace('…', "{{ item.url }}");
         let compiled = context.compile(&template);
         assert!(compiled.is_ok(), "{variable}: {compiled:?}");
+        assert!(!compiled.unwrap().is_empty(), "{variable}");
         assert!(meaning.ends_with('.'), "{variable}");
     }
 }

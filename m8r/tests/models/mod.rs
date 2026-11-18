@@ -1,7 +1,7 @@
 mod artifacts;
-mod categories;
 mod configurations;
 mod errors;
+mod repos;
 mod runs;
 mod schedules;
 mod tokens;

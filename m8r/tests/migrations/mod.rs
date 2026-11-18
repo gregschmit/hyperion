@@ -1,15 +1,16 @@
-//! The way from an older database to this one: an update mustn't lose what's there.
+//! The way from an older database to this one: an update mustn't lose what it says it keeps.
 
 use std::{
     fs,
     time::{Duration, SystemTime},
 };
 
-use jiff::civil::date;
 use loco_rs::prelude::*;
-use m8r::{
-    models::{categories, configurations, errors, runs, schedules, tokens, watchlist_items},
-    prompts,
+use m8r::models::{
+    configurations, errors, repos,
+    runs::{self, Status},
+    schedules, tokens,
+    watchlist_items::{self, Filter},
 };
 use migration::{schema, Migrator, MigratorTrait};
 use sea_orm::{
@@ -28,262 +29,100 @@ async fn empty(name: &str) -> DatabaseConnection {
         .unwrap()
 }
 
+/// What a database of the third release holds: a schedule in a category, items, runs, an
+/// error of the schedule and one of a tool, and a token.
+const THIRD_RELEASE: &str = "
+    INSERT INTO configurations (name, active, prompt) VALUES ('Mine', TRUE, 'Be brief.');
+    INSERT INTO schedules (operation, repos, hron, command, prompt, category_id) VALUES
+      ('review', '~/git/rxg', 'every weekday at 06:00', 'claude -p', '{{ watchlist }}', 2);
+    INSERT INTO watchlist_items (url, category_id, review_requested) VALUES
+      ('https://git.example.com/rgnets/rxg/-/merge_requests/1', 2, TRUE),
+      ('https://git.example.com/rgnets/rxg/-/issues/2', 1, FALSE);
+    INSERT INTO runs (operation, repo, command, status, schedule_id) VALUES
+      ('review', '~/git/rxg', 'claude -p', 'failed', 1),
+      ('review', '~/git/rxg', 'claude -p', 'queued', 1);
+    INSERT INTO errors (subject, message, run_id) VALUES
+      ('schedule 1 in ~/git/rxg', 'Run 1 (review) failed: it broke', 1),
+      ('gh', 'm8r finds no such command.', NULL);
+    INSERT INTO tokens (name, digest, scope) VALUES ('duet', 'a', 'watchlist_items');";
+
 #[tokio::test]
-async fn a_database_of_the_first_release_keeps_working() {
-    let db = empty("first-release").await;
-    // The first release had the first migration alone: items, a prompt for each operation in
-    // the configuration, and schedules with a cron expression and no command.
-    Migrator::up(&db, Some(1)).await.unwrap();
-    db.execute_unprepared(
-        "INSERT INTO configurations (name, active, system_message, triage_prompt, review_prompt)
-         VALUES
-           ('Old', FALSE, 'An old one.', 'Old triage.', 'Old review.'),
-           ('First', TRUE,
-            'These have priority, as the items say:
-{% for item in items %}- {{ item.priority }}: {{ item.url }} {{ item.note }}
-{% else %}(none)
-{% endfor %}',
-            '{{ system_message }} Triage the new items.',
-            '{{ system_message }}
-Review them:{%- for item in items -%} {{ item.url }}{%- endfor %}');
-         INSERT INTO schedules (operation, repo, cron) VALUES
-           ('triage', '/home/m8r/git/rxg', '30 6 * * 1-5'),
-           ('review', '/home/m8r/git/rxg', '0 12 * * *'),
-           ('develop', '/home/m8r/git/infrastructure', '0 1 * * 6');
-         INSERT INTO items (url, priority, note, title) VALUES
-           ('https://github.com/o/r/pull/1', 'high', 'Soon', 'A pull request'),
-           ('https://github.com/o/r/issues/2', 'medium', '', ''),
-           ('https://git.example.com/g/p/-/merge_requests/3', 'medium', 'Alice asked', '');
-         INSERT INTO runs (operation, repo, status) VALUES
-           ('triage', '/home/m8r/git/rxg', 'ok'),
-           ('review', '/home/m8r/git/rxg', 'queued');",
-    )
-    .await
-    .unwrap();
+async fn an_update_keeps_the_history_and_starts_the_schedules_and_the_watchlist_new() {
+    let db = empty("third-release").await;
+    // The third release: a schedule had an operation, a category and its clones' paths, and
+    // an item had a category. Neither named a repo.
+    Migrator::up(&db, Some(3)).await.unwrap();
+    db.execute_unprepared(THIRD_RELEASE).await.unwrap();
 
     Migrator::up(&db, None).await.unwrap();
 
-    // The items are watchlist items, each in the category that its URL says. Nobody asked
-    // for a review.
-    let watchlist: Vec<_> = watchlist_items::Model::list(&db, None)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|(item, category)| {
-            assert!(!item.review_requested);
-            (
-                item.url,
-                category.name,
-                item.priority,
-                item.note,
-                item.title,
-            )
+    // m8r has no repo yet, so no schedule and no item: those are yours to add again.
+    assert!(repos::Model::list(&db).await.unwrap().is_empty());
+    assert!(schedules::Model::list(&db).await.unwrap().is_empty());
+    let all = watchlist_items::Model::list(&db, Filter::default()).await;
+    assert!(all.unwrap().is_empty());
+
+    // The rest is there. The history has each run, by the name that its schedule had, with no
+    // schedule and no repo.
+    let active = configurations::Model::active(&db).await.unwrap().unwrap();
+    assert_eq!(active.prompt, "Be brief.");
+    assert_eq!(tokens::Model::list(&db).await.unwrap().len(), 1);
+    let history = runs::Model::recent(&db, 10).await.unwrap();
+    let runs: Vec<_> = history
+        .iter()
+        .map(|run| {
+            assert_eq!((run.schedule_id, run.repo_id), (None, None));
+            (run.name.as_str(), run.repo.as_str(), run.status.as_str())
         })
         .collect();
-    let item = |url: &str, category: &str, priority: &str, note: &str, title: &str| {
-        (
-            url.to_string(),
-            category.to_string(),
-            priority.to_string(),
-            note.to_string(),
-            title.to_string(),
-        )
-    };
     assert_eq!(
-        watchlist,
+        runs,
         [
-            item("https://github.com/o/r/issues/2", "Issue", "medium", "", ""),
-            item(
-                "https://github.com/o/r/pull/1",
-                "Pull/Merge Request",
-                "high",
-                "Soon",
-                "A pull request"
-            ),
-            item(
-                "https://git.example.com/g/p/-/merge_requests/3",
-                "Pull/Merge Request",
-                "medium",
-                "Alice asked",
-                ""
-            ),
+            ("review", "~/git/rxg", "queued"),
+            ("review", "~/git/rxg", "failed")
         ]
     );
-    assert_eq!(categories::Model::list(&db).await.unwrap().len(), 2);
+    // The error of the schedule that's gone is over, and the list keeps it. The tool's stays.
+    let open = errors::Model::open(&db).await.unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].subject, "gh");
+    let kept = errors::Model::list(&db, 10).await.unwrap();
+    assert_eq!(kept.len(), 2);
+    assert!(kept[1].cleared_at.is_some());
 
-    // Each schedule has the command that every run had (the agent's, from the settings), the
-    // prompt that the active configuration had for its operation, and the category that fits
-    // its operation.
-    let agent = std::env::var("M8R_AGENT").unwrap_or_else(|_| "cat".to_string());
-    let schedules: Vec<_> = schedules::Model::list(&db).await.unwrap();
-    let by_operation = |operation: &str| {
-        let found = schedules.iter().find(|it| it.0.operation == operation);
-        found.unwrap().clone()
+    // And the new tables work with the old ones: a repo, an item in it, a schedule there, and
+    // a run of it beside the history.
+    let mut repo = repos::ActiveModel::new();
+    repo.path = Set("~/git/rxg".to_string());
+    repo.url = Set("https://git.example.com/rgnets/rxg".to_string());
+    let repo = repo.insert(&db).await.unwrap();
+    let item = watchlist_items::Params {
+        url: "https://git.example.com/rgnets/rxg/-/merge_requests/1".to_string(),
+        ..watchlist_items::Params::default()
     };
-    let (triage, issues) = by_operation("triage");
-    let (review, prs) = by_operation("review");
-    let (develop, developed) = by_operation("develop");
-    assert_eq!(triage.command, agent);
-    assert_eq!(triage.prompt, "{{ config_prompt }} Triage the new items.");
-    assert_eq!(develop.prompt, "");
-    let (issues, prs) = (issues.unwrap(), prs.unwrap());
-    assert_eq!(
-        (issues.name.as_str(), prs.name.as_str()),
-        ("Issue", "Pull/Merge Request")
-    );
-    assert_eq!(developed.unwrap().id, issues.id);
-    // Its cron expression still says when. 2026-11-16 is a Monday.
-    assert_eq!(triage.hron, "30 6 * * 1-5");
-    let monday = |hour, minute| {
-        date(2026, 11, 16)
-            .at(hour, minute, 0, 0)
-            .in_tz("America/Chicago")
-            .unwrap()
-    };
-    assert!(triage.is_due(&monday(6, 30)));
-    assert!(!triage.is_due(&monday(6, 31)));
-
-    // The templates loop over the list by its new name. What isn't a template's tag stays as
-    // it was written. What was the system message is the configuration's prompt.
-    let active = configurations::Model::active(&db).await.unwrap().unwrap();
-    assert!(active.prompt.starts_with(
-        "These have priority, as the items say:\n{% for item in watchlist_items %}- "
-    ));
-    assert!(
-        review.prompt.ends_with(
-            "Review them:{%- for item in watchlist_items -%} {{ item.url }}{%- endfor %}"
-        ),
-        "{}",
-        review.prompt
-    );
-    // A schedule's prompt compiles. The configuration's is plain text now, so it goes in as
-    // it was written, and its tags are text. A triage gets the issues, and a review the
-    // PRs/MRs.
-    let urls = "{% for item in watchlist_items %}{{ item.url }}{% endfor %}";
-    let context = prompts::Context::load(&db, Some(&issues), "/x")
-        .await
-        .unwrap();
-    assert_eq!(
-        context.compile(&triage.prompt).unwrap(),
-        format!("{} Triage the new items.", active.prompt)
-    );
-    assert_eq!(
-        context.compile(urls).unwrap(),
-        "https://github.com/o/r/issues/2"
-    );
-    let context = prompts::Context::load(&db, Some(&prs), "/x").await.unwrap();
-    assert_eq!(
-        context.compile(&review.prompt).unwrap(),
-        format!(
-            "{}\nReview them:https://github.com/o/r/pull/1\
-             https://git.example.com/g/p/-/merge_requests/3",
-            active.prompt
-        )
-    );
-
-    // The history has the command too. The run that waited has its schedule, so it starts.
-    let history = runs::Model::recent(&db, 10).await.unwrap();
-    assert!(history.iter().all(|run| run.command == agent));
-    let waiting = runs::Model::next(&db).await.unwrap().unwrap();
-    assert_eq!(waiting.schedule_id, Some(review.id));
-    let done = history.iter().find(|run| run.status == "ok").unwrap();
-    assert_eq!(done.schedule_id, None);
-
-    assert!(tokens::Model::list(&db).await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn a_database_of_the_second_release_keeps_working() {
-    let db = empty("second-release").await;
-    // The second release: a configuration held the system message, a prompt could name it
-    // and the skill, and what was wrong with a tool was in a table of its own.
-    Migrator::up(&db, Some(2)).await.unwrap();
-    db.execute_unprepared(
-        "INSERT INTO configurations (name, active, system_message) VALUES
-           ('Mine', TRUE, 'The words skill and system_message stay.
-{{ skill }}');
-         INSERT INTO schedules (operation, repo, hron, command, prompt, category_id) VALUES
-           ('review', '~/git/rxg', 'every day at 09:00', 'claude -p',
-            '{{ system_message }}
-
-{{skill}}
-
-The watchlist now:
-{{ watchlist }}
-{% if system_message %}Review.{% endif %}', 2),
-           ('other', '~/git/rxg', 'every 12 hours from 00:00 to 23:59', 'make docs', '', NULL);
-         INSERT INTO watchlist_items (url, category_id) VALUES ('https://github.com/o/r/pull/1', 2);
-         INSERT INTO runs (operation, repo, command, status, schedule_id)
-           VALUES ('review', '~/git/rxg', 'claude -p', 'ok', 1);
-         INSERT INTO tool_errors (tool, message) VALUES ('claude', 'It isn''t installed.');",
-    )
-    .await
-    .unwrap();
-
-    Migrator::up(&db, None).await.unwrap();
-
-    // The parts of a prompt have their new names, in the tags and nowhere else.
-    let active = configurations::Model::active(&db).await.unwrap().unwrap();
-    assert_eq!(
-        active.prompt,
-        "The words skill and system_message stay.\n{{ m8r_prompt }}"
-    );
-    let schedules = schedules::Model::list(&db).await.unwrap();
-    let (review, prs) = schedules
-        .iter()
-        .find(|it| it.0.operation == "review")
-        .unwrap()
-        .clone();
-    assert_eq!(
-        review.prompt,
-        "{{ config_prompt }}\n\n{{m8r_prompt}}\n\nThe watchlist now:\n{{ watchlist }}\n\
-         {% if config_prompt %}Review.{% endif %}"
-    );
-    // Its repo is the first of its repos, and the only one.
-    assert_eq!(review.repos().collect::<Vec<_>>(), ["~/git/rxg"]);
-    // And the prompt compiles: the configuration's part as it was written (it's plain text
-    // now, so its tag is text), then m8r's, then the items.
-    let context = prompts::Context::load(&db, prs.as_ref(), "/x")
-        .await
-        .unwrap();
-    let compiled = context.compile(&review.prompt).unwrap();
-    assert!(
-        compiled.starts_with(
-            "The words skill and system_message stay.\n{{ m8r_prompt }}\n\nYou are running in m8r"
-        ),
-        "{compiled}"
-    );
-    assert!(
-        compiled.ends_with(
-            "The watchlist now:\n\
-             - item 1 (Pull/Merge Request, medium): https://github.com/o/r/pull/1\nReview."
-        ),
-        "{compiled}"
-    );
-
-    // The history is there, and the list of errors starts empty.
-    assert_eq!(runs::Model::recent(&db, 10).await.unwrap().len(), 1);
-    assert!(errors::Model::list(&db, 10).await.unwrap().is_empty());
-
-    // This migration can be taken back, and run again.
-    Migrator::down(&db, Some(1)).await.unwrap();
-    let back = db
-        .query_one(
-            Query::select()
-                .column(Alias::new("system_message"))
-                .from(Alias::new("configurations")),
-        )
+    let (item, _) = watchlist_items::Model::create(&db, &item)
         .await
         .unwrap()
         .unwrap();
-    let text: String = back.try_get("", "system_message").unwrap();
-    assert_eq!(
-        text,
-        "The words skill and system_message stay.\n{{ skill }}"
-    );
-    Migrator::up(&db, None).await.unwrap();
-    let active = configurations::Model::active(&db).await.unwrap().unwrap();
-    assert!(active.prompt.ends_with("{{ m8r_prompt }}"));
+    assert_eq!((item.id, item.repo_id), (1, repo.id));
+    let mut review = schedules::ActiveModel::new();
+    review.name = Set("review".to_string());
+    review.hron = Set("every weekday at 06:00".to_string());
+    let review = review.insert(&db).await.unwrap();
+    let queued = runs::Model::queue(&db, &review, std::slice::from_ref(&repo)).await;
+    let run = queued.unwrap().remove(0).into_active_model();
+    let run = run
+        .finished(&db, Status::Ok, String::new(), String::new())
+        .await
+        .unwrap();
+    assert_eq!((run.id, run.repo_id), (3, Some(repo.id)));
+
+    // The schedules and the watchlist of before are gone, so there's no way back.
+    let back = Migrator::down(&db, Some(1)).await;
+    assert!(back
+        .unwrap_err()
+        .to_string()
+        .contains("can't be taken back"));
 }
 
 #[tokio::test]
@@ -298,21 +137,17 @@ async fn a_migration_runs_on_connections_that_know_the_schema_from_before() {
     let mut options = sea_orm::ConnectOptions::new(format!("sqlite://{}?mode=rwc", file.display()));
     options.min_connections(3).max_connections(3);
     let db = Database::connect(options).await.unwrap();
-    Migrator::up(&db, Some(2)).await.unwrap();
-    db.execute_unprepared(
-        "INSERT INTO configurations (name, active, system_message) VALUES ('Mine', TRUE, '{{ skill }}');
-         INSERT INTO schedules (operation, repo, hron, command, prompt)
-           VALUES ('review', '~/git/rxg', 'every day at 09:00', 'claude -p', '{{ system_message }}');",
-    )
-    .await
-    .unwrap();
+    Migrator::up(&db, Some(3)).await.unwrap();
+    db.execute_unprepared(THIRD_RELEASE).await.unwrap();
     // Every connection reads the schema as it is now.
     let look = || async {
-        let seen = Query::select()
-            .column(Alias::new("name"))
-            .from(Alias::new("configurations"))
-            .to_owned();
-        db.query_all(&seen).await.unwrap();
+        for table in ["schedules", "watchlist_items", "runs", "errors"] {
+            let seen = Query::select()
+                .column(Alias::new("id"))
+                .from(Alias::new(table))
+                .to_owned();
+            db.query_all(&seen).await.unwrap();
+        }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     };
     for _ in 0..3 {
@@ -321,67 +156,73 @@ async fn a_migration_runs_on_connections_that_know_the_schema_from_before() {
 
     Migrator::up(&db, None).await.unwrap();
 
-    let active = configurations::Model::active(&db).await.unwrap().unwrap();
-    assert_eq!(active.prompt, "{{ m8r_prompt }}");
-    let schedules = schedules::Model::list(&db).await.unwrap();
-    assert_eq!(schedules[0].0.prompt, "{{ config_prompt }}");
+    // Whichever connection answers, it reads what the migration made.
+    let read = || async {
+        assert!(schedules::Model::list(&db).await.unwrap().is_empty());
+        let items = watchlist_items::Model::list(&db, Filter::default()).await;
+        assert!(items.unwrap().is_empty());
+        let history = runs::Model::recent(&db, 10).await.unwrap();
+        assert_eq!(history[0].name, "review");
+        assert_eq!(errors::Model::open(&db).await.unwrap().len(), 1);
+    };
+    for _ in 0..3 {
+        tokio::join!(read(), read(), read());
+    }
 }
 
 #[tokio::test]
 async fn a_migration_that_fails_changes_nothing() {
     let db = empty("fails").await;
-    Migrator::up(&db, Some(2)).await.unwrap();
-    // Something is in the way of the last step: a table of that name, with other columns.
-    db.execute_unprepared(
-        "INSERT INTO configurations (name, active, system_message) VALUES ('Mine', TRUE, '{{ skill }}');
-         CREATE TABLE errors (id integer PRIMARY KEY);",
-    )
-    .await
-    .unwrap();
+    Migrator::up(&db, Some(3)).await.unwrap();
+    // Something is in the way of a late step: a table of that name, with other columns.
+    db.execute_unprepared(THIRD_RELEASE).await.unwrap();
+    db.execute_unprepared("CREATE TABLE schedule_repos (id integer PRIMARY KEY)")
+        .await
+        .unwrap();
 
     assert!(Migrator::up(&db, None).await.is_err());
 
-    // The database is still the second release's, whole: the m8r that runs goes on with it.
-    let system_message = Query::select()
-        .column(Alias::new("system_message"))
-        .from(Alias::new("configurations"))
-        .to_owned();
-    let kept = db.query_one(&system_message).await.unwrap().unwrap();
-    let text: String = kept.try_get("", "system_message").unwrap();
-    assert_eq!(text, "{{ skill }}");
-    let tool_errors = Query::select()
-        .column(Alias::new("tool"))
-        .from(Alias::new("tool_errors"))
-        .to_owned();
-    assert!(db.query_all(&tool_errors).await.is_ok());
+    // The database is still the third release's, whole: the m8r that runs goes on with it.
+    let old = |table: &'static str, column: &'static str| {
+        Query::select()
+            .column(Alias::new(column))
+            .from(Alias::new(table))
+            .to_owned()
+    };
+    for (table, column, rows) in [
+        ("schedules", "operation", 1),
+        ("watchlist_items", "review_requested", 2),
+        ("categories", "name", 2),
+        ("runs", "operation", 2),
+    ] {
+        let kept = db.query_all(&old(table, column)).await;
+        assert_eq!(kept.unwrap().len(), rows, "{table}.{column}");
+    }
+    assert!(db.query_all(&old("repos", "path")).await.is_err());
+    assert_eq!(errors::Model::open(&db).await.unwrap().len(), 2);
 
     // With that out of the way, the same migration goes through.
-    db.execute_unprepared("DROP TABLE errors").await.unwrap();
+    db.execute_unprepared("DROP TABLE schedule_repos")
+        .await
+        .unwrap();
     Migrator::up(&db, None).await.unwrap();
-    let active = configurations::Model::active(&db).await.unwrap().unwrap();
-    assert_eq!(active.prompt, "{{ m8r_prompt }}");
+    assert!(repos::Model::list(&db).await.unwrap().is_empty());
+    assert_eq!(runs::Model::recent(&db, 10).await.unwrap().len(), 2);
 }
 
 #[tokio::test]
-async fn a_new_database_starts_with_the_two_categories() {
+async fn a_new_database_starts_with_no_repos() {
     let db = empty("new").await;
     Migrator::up(&db, None).await.unwrap();
 
-    let names: Vec<_> = categories::Model::list(&db)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|category| category.name)
-        .collect();
-    assert_eq!(names, ["Issue", "Pull/Merge Request"]);
-
-    // The migration that moved the prompts says that it can't be taken back.
-    let back = Migrator::down(&db, Some(2)).await;
+    assert!(repos::Model::list(&db).await.unwrap().is_empty());
+    assert!(schedules::Model::list(&db).await.unwrap().is_empty());
+    // The latest migration says that it can't be taken back.
+    let back = Migrator::down(&db, Some(1)).await;
     assert!(back
         .unwrap_err()
         .to_string()
         .contains("can't be taken back"));
-    assert_eq!(categories::Model::list(&db).await.unwrap().len(), 2);
 }
 
 #[tokio::test]

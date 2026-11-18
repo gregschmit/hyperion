@@ -64,9 +64,9 @@ settings:
   url: '<%= get_env(name="HOST") %>'
   # The shell that starts the tools, as a login shell, so they get the environment you set up.
   shell: '<%= get_env(name="SHELL", default="/bin/sh") %>'
-  # The agent's command, which a new schedule for triage, review or develop starts with. Each
-  # schedule then keeps a command of its own, and a run pipes its prompt to that one. Nobody is
-  # there to approve a tool call, so the agent skips the asking.
+  # The agent's command, which a new schedule starts with. Each schedule then keeps a command
+  # of its own, and a run pipes its prompt to that one. Nobody is there to approve a tool call,
+  # so the agent skips the asking.
   agent: '<%= get_env(name="M8R_AGENT", default="claude -p --dangerously-skip-permissions") %>'
   # Minutes before a run is killed.
   run_limit: 120

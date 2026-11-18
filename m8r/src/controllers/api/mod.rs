@@ -7,8 +7,8 @@ use serde_json::Value;
 
 use crate::models::Checked;
 
-pub mod categories;
 pub mod configurations;
+pub mod repos;
 pub mod runs;
 pub mod schedules;
 pub mod watchlist_items;

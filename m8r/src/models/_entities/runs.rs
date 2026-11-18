@@ -10,7 +10,7 @@ pub struct Model {
     pub updated_at: DateTimeWithTimeZone,
     #[sea_orm(primary_key)]
     pub id: i64,
-    pub operation: String,
+    pub name: String,
     pub repo: String,
     pub status: String,
     #[sea_orm(column_type = "Text")]
@@ -23,6 +23,7 @@ pub struct Model {
     pub finished_at: Option<DateTimeWithTimeZone>,
     pub command: String,
     pub schedule_id: Option<i64>,
+    pub repo_id: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -31,6 +32,14 @@ pub enum Relation {
     Artifacts,
     #[sea_orm(has_many = "super::errors::Entity")]
     Errors,
+    #[sea_orm(
+        belongs_to = "super::repos::Entity",
+        from = "Column::RepoId",
+        to = "super::repos::Column::Id",
+        on_update = "NoAction",
+        on_delete = "SetNull"
+    )]
+    Repos,
     #[sea_orm(
         belongs_to = "super::schedules::Entity",
         from = "Column::ScheduleId",
@@ -50,6 +59,12 @@ impl Related<super::artifacts::Entity> for Entity {
 impl Related<super::errors::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Errors.def()
+    }
+}
+
+impl Related<super::repos::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Repos.def()
     }
 }
 

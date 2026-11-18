@@ -5,11 +5,11 @@
 <p class="muted">A schedule's runs start together, one in each of its repos. The schedules take
   turns: the one that has waited the longest goes first, and a tick starts it within a minute.</p>
 <table>
-  <tr><th>Run</th><th>Operation</th><th>Repo and command</th><th>Status</th><th>Queued</th><th>Started</th><th>Finished</th><th>Artifacts</th></tr>
+  <tr><th>Run</th><th>Schedule</th><th>Repo and command</th><th>Status</th><th>Queued</th><th>Started</th><th>Finished</th><th>Artifacts</th></tr>
   {% for run in runs %}
   <tr>
     <td><a href="/runs/{{ run.id }}">{{ run.id }}</a></td>
-    <td>{{ run.operation }}</td>
+    <td>{{ run.name }}</td>
     <td class="mono">{{ run.repo }}<br><small>{{ run.command }}</small></td>
     <td><span class="status {{ run.status }}">{{ run.status }}</span></td>
     <td>{{ run.queued_at }}</td>

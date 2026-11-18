@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use loco_rs::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::{categories, errors, Checked};
+use super::{errors, repos, Checked};
 use crate::tools;
 
 pub type WatchlistItems = Entity;
@@ -40,6 +40,47 @@ impl Priority {
     }
 }
 
+/// What an item is: an issue, or a PR/MR. Its URL says which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    Issues,
+    Requests,
+}
+
+impl Category {
+    pub const ALL: [Self; 2] = [Self::Issues, Self::Requests];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Issues => "issues",
+            Self::Requests => "pull/merge requests",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|category| category.as_str() == name)
+    }
+
+    /// The category that `name` names, or with no name, none. Or why not: the API and the MCP
+    /// tools say that back.
+    ///
+    /// # Errors
+    /// A message that names the categories.
+    pub fn named(name: Option<&str>) -> Checked<Option<Self>> {
+        let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
+            return Ok(None);
+        };
+        let names = Self::ALL.map(Self::as_str).join(", ");
+        Self::parse(name)
+            .map(Some)
+            .ok_or_else(|| format!("There's no category \"{name}\". The categories are: {names}."))
+    }
+}
+
 /// Where an item's issue or PR/MR lives, read from its URL. The forge is the source of truth
 /// for the rest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,8 +92,10 @@ pub struct Forge {
     pub endpoint: String,
     /// A short name for it, such as `rgnets/rxg!4521`.
     pub label: String,
-    /// It's a PR/MR, which someone can ask you to review. An issue isn't.
-    pub reviewable: bool,
+    /// Its project's own URL, such as `https://git.example.com/group/project`, which says
+    /// which repo the item is in (see `repos::project_url`).
+    pub project: String,
+    pub category: Category,
 }
 
 /// What the forge says about an item's issue or PR/MR.
@@ -77,6 +120,7 @@ impl Forge {
             .or_else(|| url.trim().strip_prefix("http://"))?;
         let rest = rest.split(['?', '#']).next()?;
         let (host, path) = rest.split_once('/')?;
+        let host = host.to_ascii_lowercase();
         let plain = |text: &str| {
             !text.is_empty()
                 && text
@@ -99,13 +143,18 @@ impl Forge {
             if !plain(owner) || !plain(repo) || !["issues", "pull"].contains(&kind) {
                 return None;
             }
+            let category = match kind {
+                "pull" => Category::Requests,
+                _ => Category::Issues,
+            };
             // GitHub's issues API answers for pull requests too.
             return Some(Self {
                 tool: "gh",
-                host: host.to_string(),
                 endpoint: format!("repos/{owner}/{repo}/issues/{number}"),
                 label: format!("{owner}/{repo}#{number}"),
-                reviewable: kind == "pull",
+                project: format!("https://{host}/{owner}/{repo}"),
+                category,
+                host,
             });
         }
 
@@ -120,18 +169,17 @@ impl Forge {
         if project.len() < 2 || !project.iter().all(|part| plain(part)) {
             return None;
         }
-        let reviewable = segments[at] == "merge_requests";
-        let (kind, mark) = if reviewable {
-            ("merge_requests", '!')
-        } else {
-            ("issues", '#')
+        let (category, kind, mark) = match segments[at] {
+            "merge_requests" => (Category::Requests, "merge_requests", '!'),
+            _ => (Category::Issues, "issues", '#'),
         };
         Some(Self {
             tool: "glab",
-            host: host.to_string(),
             endpoint: format!("projects/{}/{kind}/{number}", project.join("%2F")),
             label: format!("{}{mark}{number}", project.join("/")),
-            reviewable,
+            project: format!("https://{host}/{}", project.join("/")),
+            category,
+            host,
         })
     }
 
@@ -163,39 +211,37 @@ impl Forge {
     }
 }
 
-/// What the watchlist's forms and the API send.
+/// What the watchlist's forms and the API send. The URL says the rest: which repo the item is
+/// in, and whether it's an issue or a PR/MR.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Params {
     pub url: String,
-    /// The category's name.
-    pub category: String,
     /// Medium, unless it says high.
     pub priority: String,
     pub note: String,
-    /// A checkbox, which a form sends only when it's checked.
-    pub review_requested: bool,
+    /// Someone asked you for it: a review, if it's a PR/MR. A checkbox, which a form sends
+    /// only when it's checked.
+    pub requested: bool,
 }
 
 /// What changes on an item: only what's there.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Changes {
-    pub category: Option<String>,
     pub priority: Option<String>,
     pub note: Option<String>,
-    pub review_requested: Option<bool>,
+    pub requested: Option<bool>,
 }
 
 impl Params {
     /// The item as it is, with `changes`.
     #[must_use]
-    pub fn changed((item, category): &Listed, changes: Changes) -> Self {
+    pub fn changed(item: &Model, changes: Changes) -> Self {
         Self {
             url: item.url.clone(),
-            category: changes.category.unwrap_or_else(|| category.name.clone()),
             priority: changes.priority.unwrap_or_else(|| item.priority.clone()),
             note: changes.note.unwrap_or_else(|| item.note.clone()),
-            review_requested: changes.review_requested.unwrap_or(item.review_requested),
+            requested: changes.requested.unwrap_or(item.requested),
         }
     }
 
@@ -206,35 +252,40 @@ impl Params {
         self.priority.trim()
     }
 
-    /// Why these can't be saved, if they can't.
-    fn problem(&self) -> Option<String> {
+    /// Where the URL says the item is, and the repo that it's in. Or why these can't be
+    /// saved: an item is in a repo that m8r has.
+    async fn checked<C: ConnectionTrait>(
+        &self,
+        db: &C,
+    ) -> ModelResult<Checked<(Forge, repos::Model)>> {
         if Priority::parse(self.priority()).is_none() {
-            return Some("The priority is medium or high.".to_string());
+            return Ok(Err("The priority is medium or high.".to_string()));
         }
         let Some(forge) = Forge::parse(&self.url) else {
-            return Some(
+            return Ok(Err(
                 "That isn't the URL of an issue or a PR/MR on GitHub or GitLab.".to_string(),
-            );
+            ));
         };
-        if self.review_requested && !forge.reviewable {
-            return Some(
-                "Only a PR/MR can have its review requested. That's an issue.".to_string(),
-            );
-        }
-        None
-    }
-
-    /// The category that these name, or why they can't be saved.
-    async fn checked<C: ConnectionTrait>(&self, db: &C) -> ModelResult<Checked<categories::Model>> {
-        if let Some(problem) = self.problem() {
-            return Ok(Err(problem));
-        }
-        categories::Model::named(db, &self.category).await
+        let repos = repos::Entity::find().all(db).await?;
+        let Some(repo) = repos.into_iter().find(|repo| repo.is(&forge.project)) else {
+            return Ok(Err(format!(
+                "m8r has no repo for {}. Add that repo first: an item is in one.",
+                forge.project
+            )));
+        };
+        Ok(Ok((forge, repo)))
     }
 }
 
-/// An item and its category: what the pages, the API and the prompts show.
-pub type Listed = (Model, categories::Model);
+/// Which items a list holds: all of them, or only a repo's, or only a category's.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Filter {
+    pub repo_id: Option<i64>,
+    pub category: Option<Category>,
+}
+
+/// An item and its repo: what the pages, the API and the MCP tools show.
+pub type Listed = (Model, repos::Model);
 
 /// Why a forge's items couldn't all be checked.
 enum Failure {
@@ -261,31 +312,58 @@ impl ActiveModelBehavior for ActiveModel {
 }
 
 impl Model {
-    /// The watchlist, or with `category_id`, that category's part of it. Category by category,
-    /// the urgent items first.
+    /// The watchlist, or the part of it that `filter` names. Repo by repo, and in each, the
+    /// requested items first, then the urgent ones.
     ///
     /// # Errors
     /// When the query fails.
-    pub async fn list(
-        db: &DatabaseConnection,
-        category_id: Option<i64>,
-    ) -> ModelResult<Vec<Listed>> {
-        let mut items = Entity::find().find_also_related(categories::Entity);
-        if let Some(category_id) = category_id {
-            items = items.filter(Column::CategoryId.eq(category_id));
+    pub async fn list(db: &DatabaseConnection, filter: Filter) -> ModelResult<Vec<Listed>> {
+        let mut items = Entity::find().find_also_related(repos::Entity);
+        if let Some(repo_id) = filter.repo_id {
+            items = items.filter(Column::RepoId.eq(repo_id));
+        }
+        if let Some(category) = filter.category {
+            items = items.filter(Column::Category.eq(category.as_str()));
         }
         let items = items
-            .order_by_asc(Column::CategoryId)
+            .order_by_asc(repos::Column::Path)
+            .order_by_desc(Column::Requested)
             // "high" sorts before "medium".
             .order_by_asc(Column::Priority)
             .order_by_asc(Column::Id)
             .all(db)
             .await?;
-        // Every item has a category: the database sees to it.
+        // Every item has a repo: the database sees to it.
         Ok(items
             .into_iter()
-            .filter_map(|(item, category)| Some((item, category?)))
+            .filter_map(|(item, repo)| Some((item, repo?)))
             .collect())
+    }
+
+    /// The items that a run in repo `repo_id` gets: the repo's, of `category` or of both. The
+    /// requested ones come first, then the urgent ones, and `most` cuts the list there (0:
+    /// all of them).
+    ///
+    /// # Errors
+    /// When the query fails.
+    pub async fn of_repo(
+        db: &DatabaseConnection,
+        repo_id: i64,
+        category: Option<Category>,
+        most: u64,
+    ) -> ModelResult<Vec<Self>> {
+        let mut items = Entity::find().filter(Column::RepoId.eq(repo_id));
+        if let Some(category) = category {
+            items = items.filter(Column::Category.eq(category.as_str()));
+        }
+        let items = items
+            .order_by_desc(Column::Requested)
+            .order_by_asc(Column::Priority)
+            .order_by_asc(Column::Id);
+        Ok(match most {
+            0 => items.all(db).await?,
+            most => items.limit(most).all(db).await?,
+        })
     }
 
     /// # Errors
@@ -295,38 +373,40 @@ impl Model {
             .one(db)
             .await?
             .ok_or_else(|| ModelError::EntityNotFound)?;
-        let category = categories::Model::find(db, item.category_id).await?;
-        Ok((item, category))
+        let repo = repos::Model::find(db, item.repo_id).await?;
+        Ok((item, repo))
     }
 
     /// Put an issue or a PR/MR on the watchlist. One that's already there gets the new
-    /// category, priority, note and review request.
+    /// priority, note and request.
     ///
     /// # Errors
     /// When a query fails.
     pub async fn create(db: &DatabaseConnection, params: &Params) -> ModelResult<Checked<Listed>> {
         let url = params.url.trim();
         let txn = db.begin().await?;
-        let category = match params.checked(&txn).await? {
-            Ok(category) => category,
+        let (forge, repo) = match params.checked(&txn).await? {
+            Ok(checked) => checked,
             Err(problem) => return Ok(Err(problem)),
         };
         let listed = Entity::find().filter(Column::Url.eq(url)).one(&txn).await?;
-        let item = if let Some(item) = listed {
-            let mut item = item.into_active_model();
-            item.set(params, &category);
-            item.update(&txn).await?
-        } else {
-            let mut item = ActiveModel::new();
-            item.url = Set(url.to_string());
-            item.set(params, &category);
+        let is_new = listed.is_none();
+        let mut item = listed.map_or_else(ActiveModel::new, IntoActiveModel::into_active_model);
+        item.url = Set(url.to_string());
+        item.repo_id = Set(repo.id);
+        item.category = Set(forge.category.as_str().to_string());
+        item.set(params);
+        let item = if is_new {
             item.insert(&txn).await?
+        } else {
+            item.update(&txn).await?
         };
         txn.commit().await?;
-        Ok(Ok((item, category)))
+        Ok(Ok((item, repo)))
     }
 
-    /// Change the item: `params` are all that it has from you.
+    /// Change the item: `params` are all that it has from you. Its URL stays, and so do its
+    /// repo and its category, which the URL says.
     ///
     /// # Errors
     /// When a query fails.
@@ -334,14 +414,13 @@ impl Model {
         self,
         db: &DatabaseConnection,
         params: &Params,
-    ) -> ModelResult<Checked<Listed>> {
-        let category = match params.checked(db).await? {
-            Ok(category) => category,
-            Err(problem) => return Ok(Err(problem)),
-        };
+    ) -> ModelResult<Checked<Self>> {
+        if Priority::parse(params.priority()).is_none() {
+            return Ok(Err("The priority is medium or high.".to_string()));
+        }
         let mut item = self.into_active_model();
-        item.set(params, &category);
-        Ok(Ok((item.update(db).await?, category)))
+        item.set(params);
+        Ok(Ok(item.update(db).await?))
     }
 
     /// Change item `id`: only what `changes` has.
@@ -353,9 +432,9 @@ impl Model {
         id: i64,
         changes: Changes,
     ) -> ModelResult<Checked<Listed>> {
-        let listed = Self::find(db, id).await?;
-        let params = Params::changed(&listed, changes);
-        listed.0.revised(db, &params).await
+        let (item, repo) = Self::find(db, id).await?;
+        let params = Params::changed(&item, changes);
+        Ok(item.revised(db, &params).await?.map(|item| (item, repo)))
     }
 
     /// Take item `id` off the watchlist.
@@ -371,12 +450,6 @@ impl Model {
     #[must_use]
     pub fn label(&self) -> String {
         Forge::parse(&self.url).map_or_else(|| self.url.clone(), |forge| forge.label)
-    }
-
-    /// It's a PR/MR, which someone can ask you to review. An issue isn't.
-    #[must_use]
-    pub fn reviewable(&self) -> bool {
-        Forge::parse(&self.url).is_some_and(|forge| forge.reviewable)
     }
 
     /// Ask the forges about the items that are due, through `gh` and `glab`. An item whose
@@ -497,11 +570,10 @@ impl Model {
 }
 
 impl ActiveModel {
-    fn set(&mut self, params: &Params, category: &categories::Model) {
-        self.category_id = Set(category.id);
+    fn set(&mut self, params: &Params) {
         self.priority = Set(params.priority().to_string());
         self.note = Set(params.note.trim().to_string());
-        self.review_requested = Set(params.review_requested);
+        self.requested = Set(params.requested);
     }
 
     /// Record what the forge said.

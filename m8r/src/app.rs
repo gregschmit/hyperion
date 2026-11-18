@@ -16,7 +16,8 @@ use std::path::Path;
 use crate::{
     controllers, initializers,
     models::{
-        artifacts, configurations, errors, runs, schedules, tokens, used_links, watchlist_items,
+        artifacts, configurations, errors, repos, runs, schedule_repos, schedules, tokens,
+        used_links, watchlist_items,
     },
     tasks,
 };
@@ -68,13 +69,13 @@ impl Hooks for App {
             .add_route(controllers::report::routes())
             .add_route(controllers::runs::routes())
             .add_route(controllers::watchlist::routes())
-            .add_route(controllers::categories::routes())
             .add_route(controllers::schedules::routes())
+            .add_route(controllers::repos::routes())
             .add_route(controllers::configurations::routes())
             .add_route(controllers::errors::routes())
             .add_route(controllers::artifacts::routes())
             .add_route(controllers::api::watchlist_items::routes())
-            .add_route(controllers::api::categories::routes())
+            .add_route(controllers::api::repos::routes())
             .add_route(controllers::api::schedules::routes())
             .add_route(controllers::api::configurations::routes())
             .add_route(controllers::api::runs::routes())
@@ -99,8 +100,10 @@ impl Hooks for App {
         truncate_table(&ctx.db, artifacts::Entity).await?;
         truncate_table(&ctx.db, runs::Entity).await?;
         truncate_table(&ctx.db, watchlist_items::Entity).await?;
+        truncate_table(&ctx.db, schedule_repos::Entity).await?;
         truncate_table(&ctx.db, schedules::Entity).await?;
-        // The categories stay: the first two come with the schema.
+        // Last of these: a repo that has items or schedules stays.
+        truncate_table(&ctx.db, repos::Entity).await?;
         truncate_table(&ctx.db, configurations::Entity).await?;
         truncate_table(&ctx.db, tokens::Entity).await?;
         truncate_table(&ctx.db, used_links::Entity).await?;

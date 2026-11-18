@@ -1,7 +1,4 @@
-use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
-};
+use std::collections::HashSet;
 
 pub use super::_entities::schedules::{ActiveModel, Column, Entity, Model};
 use hron::Schedule;
@@ -9,7 +6,7 @@ use jiff::Zoned;
 use loco_rs::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{categories, errors, runs, Checked};
+use super::{errors, repos, runs, schedule_repos, watchlist_items::Category, Checked};
 use crate::prompts;
 
 pub type Schedules = Entity;
@@ -19,49 +16,43 @@ const INTERVAL_UNITS: [&str; 8] = [
     "min", "mins", "minute", "minutes", "hour", "hours", "hr", "hrs",
 ];
 
-/// What a schedule is for. It names the schedule's runs, and it gives a new schedule its
-/// command. Other is for anything else.
+/// Which of its repo's watchlist items a schedule's runs get.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Operation {
-    Triage,
-    Review,
-    Develop,
-    Other,
+pub enum Items {
+    None,
+    All,
+    Of(Category),
 }
 
-impl Operation {
-    pub const ALL: [Self; 4] = [Self::Triage, Self::Review, Self::Develop, Self::Other];
+impl Items {
+    pub const CHOICES: [Self; 4] = [
+        Self::None,
+        Self::All,
+        Self::Of(Category::Issues),
+        Self::Of(Category::Requests),
+    ];
 
+    /// As a schedule keeps it: blank for none, `all`, or a category's name.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Triage => "triage",
-            Self::Review => "review",
-            Self::Develop => "develop",
-            Self::Other => "other",
-        }
-    }
-
-    /// The command that a new schedule for this operation starts with: the agent's, which
-    /// reads the prompt. Other has none.
-    #[must_use]
-    pub const fn default_command(self, agent: &str) -> &str {
-        match self {
-            Self::Other => "",
-            Self::Triage | Self::Review | Self::Develop => agent,
+            Self::None => "",
+            Self::All => "all",
+            Self::Of(category) => category.as_str(),
         }
     }
 
     #[must_use]
-    pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::CHOICES
             .into_iter()
-            .find(|operation| operation.as_str() == name)
+            .find(|items| items.as_str() == text.trim())
     }
 }
 
-/// A list as text, one to a line. A form sends it so, and a schedule keeps it so. The API may
-/// send an array. Not commas: an hron or cron expression has its own.
+/// A list as text, one to a line: a schedule's times, as its form sends them and as it keeps
+/// them, and the paths of its repos. The API may send an array. Not commas: an hron or cron
+/// expression has its own.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct Lines(String);
@@ -103,11 +94,16 @@ fn lines(text: &str) -> impl Iterator<Item = &str> {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Params {
-    pub operation: String,
-    /// The name of the category whose watchlist items the runs get. Blank: no items.
+    /// What the schedule is called: what it's for, in your words.
+    pub name: String,
+    /// Which of its repo's watchlist items a run gets: `all`, or a category's name. Blank: no
+    /// items.
     pub category: String,
-    /// The clones that the runs start in, one run in each: paths from the home of m8r's user,
-    /// such as `~/git/group/project`, or full paths.
+    /// How many items a run gets at most: the first ones, and the requested ones are first.
+    /// 0: all of them.
+    pub max_items: u32,
+    /// The repos that the runs start in, one run in each: the paths of their clones, as m8r
+    /// has them.
     pub repos: Lines,
     /// When it runs: hron expressions, or five-field cron expressions. It runs at each one's
     /// times.
@@ -119,26 +115,26 @@ pub struct Params {
 /// What changes on a schedule: only what's there.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Changes {
-    pub operation: Option<String>,
+    pub name: Option<String>,
     pub category: Option<String>,
+    pub max_items: Option<u32>,
     pub repos: Option<Lines>,
     pub hron: Option<Lines>,
     pub command: Option<String>,
     pub prompt: Option<String>,
 }
 
-/// A schedule and its category, if it has one: what the pages and the API show.
-pub type Listed = (Model, Option<categories::Model>);
+/// A schedule and its repos: what the pages and the API show.
+pub type Listed = (Model, Vec<repos::Model>);
 
 impl Params {
-    /// A new schedule's form: the first operation with its command, and the prompt that names
+    /// A new schedule's form: the agent's command, every item, and the prompt that names
     /// m8r's parts.
     #[must_use]
     pub fn starter(agent: &str) -> Self {
-        let operation = Operation::Triage;
         Self {
-            operation: operation.as_str().to_string(),
-            command: operation.default_command(agent).to_string(),
+            category: Items::All.as_str().to_string(),
+            command: agent.to_string(),
             prompt: prompts::STARTER.to_string(),
             ..Self::default()
         }
@@ -146,19 +142,17 @@ impl Params {
 
     /// The schedule as it is, with `changes`.
     #[must_use]
-    pub fn changed((schedule, category): &Listed, changes: Changes) -> Self {
-        let category = category
-            .as_ref()
-            .map(|it| it.name.clone())
-            .unwrap_or_default();
+    pub fn changed((schedule, repos): &Listed, changes: Changes) -> Self {
+        let paths: Vec<&str> = repos.iter().map(|repo| repo.path.as_str()).collect();
         Self {
-            operation: changes
-                .operation
-                .unwrap_or_else(|| schedule.operation.clone()),
-            category: changes.category.unwrap_or(category),
+            name: changes.name.unwrap_or_else(|| schedule.name.clone()),
+            category: changes
+                .category
+                .unwrap_or_else(|| schedule.category.clone()),
+            max_items: changes.max_items.unwrap_or_else(|| schedule.most()),
             repos: changes
                 .repos
-                .unwrap_or_else(|| schedule.repos.as_str().into()),
+                .unwrap_or_else(|| paths.join("\n").as_str().into()),
             hron: changes
                 .hron
                 .unwrap_or_else(|| schedule.hron.as_str().into()),
@@ -169,22 +163,18 @@ impl Params {
 
     /// Why these can't be saved, if they can't.
     fn problem(&self) -> Option<String> {
-        if Operation::parse(&self.operation).is_none() {
-            return Some("The operation is triage, review, develop or other.".to_string());
+        if self.name.trim().is_empty() {
+            return Some("Give the schedule a name.".to_string());
         }
-        let mut repos = self.repos.iter().peekable();
-        if repos.peek().is_none() {
+        if Items::parse(&self.category).is_none() {
             return Some(
-                "Say which repo the schedule runs in: a clone in the home of m8r's user, such \
-                 as ~/git/group/project."
+                "A schedule's runs get all the watchlist items of their repo, the issues or the \
+                 pull/merge requests. Blank: no items."
                     .to_string(),
             );
         }
-        if let Some(repo) = repos.find(|repo| !repo_dir(repo).is_dir()) {
-            return Some(format!(
-                "A repo must be a clone in the home of m8r's user, such as \
-                 ~/git/group/project, and \"{repo}\" isn't a directory there."
-            ));
+        if self.repos.iter().next().is_none() {
+            return Some("Say which repos the schedule runs in.".to_string());
         }
         if self.command.trim().is_empty() {
             return Some("Say which command the schedule runs.".to_string());
@@ -196,49 +186,54 @@ impl Params {
         times.find_map(|time| parse(time).err())
     }
 
-    /// The category that these name, if they name one, or why they can't be saved. The prompt
-    /// must compile with what a run would get now.
+    /// The repos that these name, or why they can't be saved for schedule `id` (none: a new
+    /// one). A repo is one that m8r has, and the prompt must compile with what a run would get
+    /// now.
     async fn checked(
         &self,
         db: &DatabaseConnection,
-    ) -> ModelResult<Checked<Option<categories::Model>>> {
+        id: Option<i64>,
+    ) -> ModelResult<Checked<Vec<repos::Model>>> {
         if let Some(problem) = self.problem() {
             return Ok(Err(problem));
         }
-        let category = if self.category.trim().is_empty() {
-            None
-        } else {
-            match categories::Model::named(db, &self.category).await? {
-                Ok(category) => Some(category),
-                Err(problem) => return Ok(Err(problem)),
+        let name = self.name.trim();
+        let named = Entity::find().filter(Column::Name.eq(name)).one(db).await?;
+        if named.is_some_and(|other| Some(other.id) != id) {
+            return Ok(Err(format!("There's already a schedule \"{name}\".")));
+        }
+        // Each repo once, however its path is written: two runs mustn't work in one clone.
+        let mut repos: Vec<repos::Model> = Vec::new();
+        for path in self.repos.iter() {
+            let Some(repo) = repos::Model::at(db, path).await? else {
+                return Ok(Err(format!(
+                    "\"{path}\" isn't one of m8r's repos. Add it to the repos first."
+                )));
+            };
+            if repos.iter().all(|known| known.id != repo.id) {
+                repos.push(repo);
             }
-        };
-        let context =
-            prompts::Context::load(db, category.as_ref(), prompts::SAMPLE_ARTIFACTS_DIR).await?;
-        Ok(context.compile(&self.prompt).map(|_| category))
+        }
+        // By path, as a list has them.
+        repos.sort_by(|one, other| one.path.cmp(&other.path));
+        let context = self.context(db, repos.first()).await?;
+        Ok(context.compile(&self.prompt).map(|_| repos))
     }
-}
 
-/// The directory of `repo`, one of a schedule's, as the user wrote it: from the home of the
-/// user that m8r runs as, unless it's a full path.
-#[must_use]
-pub fn repo_dir(repo: &str) -> PathBuf {
-    match std::env::home_dir() {
-        Some(home) => from_home(repo, &home),
-        None => PathBuf::from(repo),
+    /// What a prompt of these would get now, in `repo`: that repo's items, and a sample
+    /// artifact directory. The pages show a prompt compiled with it.
+    ///
+    /// # Errors
+    /// When a query fails.
+    pub async fn context(
+        &self,
+        db: &DatabaseConnection,
+        repo: Option<&repos::Model>,
+    ) -> ModelResult<prompts::Context> {
+        let items = Items::parse(&self.category).unwrap_or(Items::None);
+        let dir = prompts::SAMPLE_ARTIFACTS_DIR;
+        prompts::Context::load(db, repo, items, self.max_items, dir).await
     }
-}
-
-/// `repo` from `home`: `~/git/rxg` and `git/rxg` are both in it. A full path stays.
-#[must_use]
-pub fn from_home(repo: &str, home: &Path) -> PathBuf {
-    let repo = repo.trim();
-    let inside = repo
-        .strip_prefix("~/")
-        .or_else(|| (repo == "~").then_some(""))
-        .unwrap_or(repo);
-    // Joining a full path gives that path.
-    home.join(inside)
 }
 
 /// Read one of a schedule's times: an hron expression such as `every weekday at 06:00`, or a
@@ -307,38 +302,59 @@ impl ActiveModelBehavior for ActiveModel {
 }
 
 impl Model {
+    /// Every schedule with its repos, by name.
+    ///
     /// # Errors
     /// When the query fails.
     pub async fn list(db: &DatabaseConnection) -> ModelResult<Vec<Listed>> {
-        Ok(Entity::find()
-            .find_also_related(categories::Entity)
-            .order_by_asc(Column::Repos)
-            .order_by_asc(Column::Operation)
-            .order_by_asc(Column::Id)
+        let mut schedules = Entity::find()
+            .find_with_related(repos::Entity)
             .all(db)
-            .await?)
+            .await?;
+        schedules.sort_by(|(one, _), (other, _)| one.name.cmp(&other.name));
+        for (_, repos) in &mut schedules {
+            repos.sort_by(|one, other| one.path.cmp(&other.path));
+        }
+        Ok(schedules)
     }
 
     /// # Errors
     /// `ModelError::EntityNotFound` when there's no such schedule.
     pub async fn find(db: &DatabaseConnection, id: i64) -> ModelResult<Listed> {
-        Entity::find_by_id(id)
-            .find_also_related(categories::Entity)
+        let schedule = Entity::find_by_id(id)
             .one(db)
             .await?
-            .ok_or_else(|| ModelError::EntityNotFound)
+            .ok_or_else(|| ModelError::EntityNotFound)?;
+        let repos = schedule.repos(db).await?;
+        Ok((schedule, repos))
+    }
+
+    /// The repos that the schedule's runs start in: one run in each, side by side.
+    ///
+    /// # Errors
+    /// When the query fails.
+    pub async fn repos(&self, db: &DatabaseConnection) -> ModelResult<Vec<repos::Model>> {
+        Ok(self
+            .find_related(repos::Entity)
+            .order_by_asc(repos::Column::Path)
+            .all(db)
+            .await?)
     }
 
     /// # Errors
     /// When a query fails.
     pub async fn create(db: &DatabaseConnection, params: &Params) -> ModelResult<Checked<Listed>> {
-        let category = match params.checked(db).await? {
-            Ok(category) => category,
+        let repos = match params.checked(db, None).await? {
+            Ok(repos) => repos,
             Err(problem) => return Ok(Err(problem)),
         };
+        let txn = db.begin().await?;
         let mut schedule = ActiveModel::new();
-        schedule.set(params, category.as_ref());
-        Ok(Ok((schedule.insert(db).await?, category)))
+        schedule.set(params);
+        let schedule = schedule.insert(&txn).await?;
+        schedule.run_in(&txn, &repos).await?;
+        txn.commit().await?;
+        Ok(Ok((schedule, repos)))
     }
 
     /// Change the schedule: `params` are all that it has from you.
@@ -350,18 +366,22 @@ impl Model {
         db: &DatabaseConnection,
         params: &Params,
     ) -> ModelResult<Checked<Listed>> {
-        let category = match params.checked(db).await? {
-            Ok(category) => category,
+        let repos = match params.checked(db, Some(self.id)).await? {
+            Ok(repos) => repos,
             Err(problem) => return Ok(Err(problem)),
         };
+        let txn = db.begin().await?;
         let mut schedule = self.into_active_model();
-        schedule.set(params, category.as_ref());
-        let schedule = schedule.update(db).await?;
+        schedule.set(params);
+        let schedule = schedule.update(&txn).await?;
+        schedule.run_in(&txn, &repos).await?;
+        txn.commit().await?;
         // A repo that left the schedule leaves nothing behind: no run that waits to start
         // there, and no error that only a run there could clear.
-        runs::Model::unqueue(db, &schedule).await?;
-        errors::Model::clear_schedule(db, schedule.id, schedule.repos()).await?;
-        Ok(Ok((schedule, category)))
+        runs::Model::unqueue(db, schedule.id, &repos).await?;
+        let paths = repos.iter().map(|repo| repo.path.as_str());
+        errors::Model::clear_schedule(db, schedule.id, paths).await?;
+        Ok(Ok((schedule, repos)))
     }
 
     /// Change schedule `id`: only what `changes` has.
@@ -388,9 +408,32 @@ impl Model {
         errors::Model::clear_schedule(db, id, []).await
     }
 
-    /// The clones that the schedule's runs start in: one run in each, side by side.
-    pub fn repos(&self) -> impl Iterator<Item = &str> {
-        lines(&self.repos)
+    /// Make `repos` the ones that the schedule runs in.
+    async fn run_in<C: ConnectionTrait>(&self, db: &C, repos: &[repos::Model]) -> ModelResult<()> {
+        schedule_repos::Entity::delete_many()
+            .filter(schedule_repos::Column::ScheduleId.eq(self.id))
+            .exec(db)
+            .await?;
+        for repo in repos {
+            let row = schedule_repos::ActiveModel {
+                schedule_id: Set(self.id),
+                repo_id: Set(repo.id),
+            };
+            row.insert(db).await?;
+        }
+        Ok(())
+    }
+
+    /// Which of its repo's watchlist items a run of the schedule gets.
+    #[must_use]
+    pub fn items(&self) -> Items {
+        Items::parse(&self.category).unwrap_or(Items::None)
+    }
+
+    /// How many items a run gets at most. 0: all of them.
+    #[must_use]
+    pub fn most(&self) -> u32 {
+        u32::try_from(self.max_items).unwrap_or_default()
     }
 
     /// When the schedule runs: each of these is an hron or a cron expression.
@@ -418,17 +461,10 @@ impl Model {
 }
 
 impl ActiveModel {
-    fn set(&mut self, params: &Params, category: Option<&categories::Model>) {
-        self.operation = Set(params.operation.clone());
-        self.category_id = Set(category.map(|it| it.id));
-        // Each clone once, however it's written: two runs mustn't work in one clone.
-        let mut seen = HashSet::new();
-        let repos: Vec<&str> = params
-            .repos
-            .iter()
-            .filter(|repo| seen.insert(repo_dir(repo)))
-            .collect();
-        self.repos = Set(repos.join("\n"));
+    fn set(&mut self, params: &Params) {
+        self.name = Set(params.name.trim().to_string());
+        self.category = Set(params.category.trim().to_string());
+        self.max_items = Set(i64::from(params.max_items));
         // As hron writes them, so the pages show how m8r read them.
         let mut seen = HashSet::new();
         let times: Vec<String> = params

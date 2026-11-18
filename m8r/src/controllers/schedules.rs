@@ -1,18 +1,57 @@
 #![allow(clippy::missing_errors_doc)]
 use loco_rs::prelude::*;
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
     models::{
-        categories, runs,
-        schedules::{self, Operation, Params},
+        repos, runs,
+        schedules::{self, Items, Params},
     },
     prompts,
     settings::Settings,
     views,
 };
 
-/// When each operation runs, where, with which command, and with which prompt.
+/// What a schedule's form sends. A repo's checkbox sends `repos` once, so a form can send it
+/// several times, and its number is text.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct Sent {
+    name: String,
+    category: String,
+    max_items: String,
+    repos: Vec<String>,
+    hron: String,
+    command: String,
+    prompt: String,
+}
+
+impl Sent {
+    /// What was sent, as a schedule takes it, and what's wrong with the number, if it isn't
+    /// one.
+    fn params(self) -> (Params, Option<String>) {
+        let most = match self.max_items.trim() {
+            "" => Ok(0),
+            text => text.parse(),
+        };
+        let problem = most
+            .is_err()
+            .then(|| "The most items is a whole number, or 0 for all of them.".to_string());
+        let params = Params {
+            name: self.name,
+            category: self.category,
+            max_items: most.unwrap_or_default(),
+            repos: self.repos.join("\n").as_str().into(),
+            hron: self.hron.as_str().into(),
+            command: self.command,
+            prompt: self.prompt,
+        };
+        (params, problem)
+    }
+}
+
+/// When each schedule runs, where, with which command, and with which prompt.
 #[debug_handler]
 pub async fn index(
     ViewEngine(v): ViewEngine<TeraView>,
@@ -28,7 +67,7 @@ pub async fn index(
 }
 
 /// The form for a new schedule (no `id`) or a saved one, with the prompt compiled as the
-/// next run would get it.
+/// next run would get it in the first of its repos.
 async fn form(
     v: &TeraView,
     ctx: &AppContext,
@@ -36,34 +75,44 @@ async fn form(
     form: &Params,
     problem: Option<String>,
 ) -> Result<Response> {
-    let settings = Settings::from_context(ctx)?;
-    // The page fills in an operation's command when you choose the operation.
-    let operations: Vec<Value> = Operation::ALL
-        .into_iter()
-        .map(|operation| {
-            json!({
-                "name": operation.as_str(),
-                "command": operation.default_command(&settings.agent),
-            })
+    let known = repos::Model::list(&ctx.db).await?;
+    let chosen: Vec<&repos::Model> = form
+        .repos
+        .iter()
+        .filter_map(|path| known.iter().find(|repo| repo.is_at(path)))
+        .collect();
+    let repos: Vec<Value> = known
+        .iter()
+        .map(|repo| {
+            let checked = chosen.iter().any(|it| it.id == repo.id);
+            json!({ "path": repo.path, "checked": checked })
         })
         .collect();
-    let categories = categories::Model::list(&ctx.db).await?;
+    let choices: Vec<Value> = Items::CHOICES
+        .into_iter()
+        .map(|items| {
+            let name = match items {
+                Items::None => "no items",
+                _ => items.as_str(),
+            };
+            json!({ "value": items.as_str(), "name": name })
+        })
+        .collect();
     let variables: Vec<Value> = prompts::VARIABLES
         .into_iter()
         .map(|(name, meaning)| json!({ "name": name, "meaning": meaning }))
         .collect();
-    // With the watchlist as it is now, and the category that the form names, if it's one.
-    let category = categories.iter().find(|it| it.name == form.category.trim());
-    let compiled = prompts::Context::load(&ctx.db, category, prompts::SAMPLE_ARTIFACTS_DIR)
-        .await?
-        .compile(&form.prompt);
+    // With the watchlist as it is now, in the first repo that the form names.
+    let shown = chosen.first().copied();
+    let compiled = form.context(&ctx.db, shown).await?.compile(&form.prompt);
     let data = json!({
         "is_new": id.is_none(),
         "id": id.unwrap_or_default(),
         "form": form,
-        "operations": operations,
-        "categories": categories.iter().map(views::category).collect::<Vec<_>>(),
+        "repos": repos,
+        "choices": choices,
         "variables": variables,
+        "compiled_in": shown.map(|repo| repo.path.as_str()).unwrap_or_default(),
         "compiles": compiled.is_ok(),
         "compiled": compiled.unwrap_or_else(|problem| problem),
         "has_problem": problem.is_some(),
@@ -85,8 +134,12 @@ pub async fn new(
 pub async fn create(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
-    Form(params): Form<Params>,
+    axum_extra::extract::Form(sent): axum_extra::extract::Form<Sent>,
 ) -> Result<Response> {
+    let (params, problem) = sent.params();
+    if problem.is_some() {
+        return form(&v, &ctx, None, &params, problem).await;
+    }
     match schedules::Model::create(&ctx.db, &params).await? {
         Ok(_) => format::redirect("/schedules"),
         Err(problem) => form(&v, &ctx, None, &params, Some(problem)).await,
@@ -109,9 +162,13 @@ pub async fn update(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
     Path(id): Path<i64>,
-    Form(params): Form<Params>,
+    axum_extra::extract::Form(sent): axum_extra::extract::Form<Sent>,
 ) -> Result<Response> {
     let (schedule, _) = schedules::Model::find(&ctx.db, id).await?;
+    let (params, problem) = sent.params();
+    if problem.is_some() {
+        return form(&v, &ctx, Some(id), &params, problem).await;
+    }
     match schedule.revised(&ctx.db, &params).await? {
         Ok(_) => format::redirect(&format!("/schedules/{id}")),
         Err(problem) => form(&v, &ctx, Some(id), &params, Some(problem)).await,
@@ -128,8 +185,8 @@ pub async fn remove(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Resul
 /// tick starts them.
 #[debug_handler]
 pub async fn run(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Result<Response> {
-    let (schedule, _) = schedules::Model::find(&ctx.db, id).await?;
-    runs::Model::queue(&ctx.db, &schedule).await?;
+    let (schedule, repos) = schedules::Model::find(&ctx.db, id).await?;
+    runs::Model::queue(&ctx.db, &schedule, &repos).await?;
     format::redirect("/runs")
 }
 

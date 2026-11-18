@@ -4,10 +4,7 @@ use serde::Deserialize;
 
 use super::saved;
 use crate::{
-    models::{
-        categories,
-        watchlist_items::{Changes, Model, Params},
-    },
+    models::watchlist_items::{self, Category, Changes, Model, Params},
     views::api::watchlist_item,
 };
 
@@ -15,18 +12,21 @@ use crate::{
 pub struct Filter {
     /// A category's name: only its items.
     pub category: Option<String>,
+    /// A repo's id: only its items.
+    pub repo_id: Option<i64>,
 }
 
 #[debug_handler]
 pub async fn list(State(ctx): State<AppContext>, Query(filter): Query<Filter>) -> Result<Response> {
-    let category = match filter.category {
-        None => None,
-        Some(name) => match categories::Model::named(&ctx.db, &name).await? {
-            Ok(category) => Some(category.id),
-            Err(problem) => return bad_request(problem),
-        },
+    let category = match Category::named(filter.category.as_deref()) {
+        Ok(category) => category,
+        Err(problem) => return bad_request(problem),
     };
-    let items = Model::list(&ctx.db, category).await?;
+    let filter = watchlist_items::Filter {
+        repo_id: filter.repo_id,
+        category,
+    };
+    let items = Model::list(&ctx.db, filter).await?;
     format::json(items.iter().map(watchlist_item).collect::<Vec<_>>())
 }
 

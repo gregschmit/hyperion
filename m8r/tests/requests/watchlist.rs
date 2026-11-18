@@ -1,7 +1,7 @@
-use m8r::models::{categories, watchlist_items};
+use m8r::models::watchlist_items::{self, Filter};
 use serial_test::serial;
 
-use crate::support::{location, schedule, schedule_params, signed_in, Sandbox, ISSUE, PR};
+use crate::support::{self, location, signed_in, watch};
 
 const MR_URL: &str = "https://git.example.com/g/p/-/merge_requests/4521";
 const ISSUE_URL: &str = "https://github.com/o/r/issues/1";
@@ -11,19 +11,17 @@ const ISSUE_URL: &str = "https://github.com/o/r/issues/1";
 async fn the_watchlist_is_added_to_changed_and_removed_from() {
     signed_in(|request, ctx| async move {
         let page = request.get("/watchlist").await.text();
-        assert!(page.contains("Nothing is on the watchlist."), "{page}");
-        // The form offers the categories that every m8r starts with.
-        assert!(page.contains(r#"<option value="Issue">Issue</option>"#));
-        assert!(page.contains(r#"<option value="Pull/Merge Request">Pull/Merge Request</option>"#));
+        assert!(page.contains("Nothing here."), "{page}");
+        // An item's URL says what it is and where it is, so the form asks for neither.
+        assert!(!page.contains(r#"name="category""#), "{page}");
 
         // Not an issue or a PR/MR: the form comes back with what was typed.
         let res = request
             .post("/watchlist")
             .form(&[
                 ("url", "https://example.com/x"),
-                ("category", PR),
                 ("priority", "high"),
-                ("review_requested", "true"),
+                ("requested", "true"),
                 ("note", "why"),
             ])
             .await;
@@ -31,26 +29,34 @@ async fn the_watchlist_is_added_to_changed_and_removed_from() {
         let page = res.text();
         assert!(page.contains("isn&#39;t the URL of an issue"), "{page}");
         assert!(page.contains(r#"value="https://example.com/x""#), "{page}");
+        assert!(page.contains(r#"<option value="high" selected>"#), "{page}");
         assert!(
-            page.contains(r#"<option value="Pull/Merge Request" selected>"#),
+            page.contains(r#"name="requested" value="true" checked"#),
             "{page}"
         );
-        assert!(
-            page.contains(r#"name="review_requested" value="true" checked"#),
-            "{page}"
-        );
-        let listed = |db| async move { watchlist_items::Model::list(db, None).await.unwrap() };
+        let listed = |db| async move {
+            let listed = watchlist_items::Model::list(db, Filter::default()).await;
+            listed.unwrap()
+        };
         assert!(listed(&ctx.db).await.is_empty());
 
-        let res = request
-            .post("/watchlist")
-            .form(&[
-                ("url", MR_URL),
-                ("category", PR),
-                ("priority", "medium"),
-                ("note", "Alice asked"),
-            ])
-            .await;
+        // An item is in a repo, and m8r has none for this one yet.
+        let mr = [
+            ("url", MR_URL),
+            ("priority", "medium"),
+            ("note", "Alice asked"),
+        ];
+        let res = request.post("/watchlist").form(&mr).await;
+        assert_eq!(res.status_code(), 200);
+        let page = res.text();
+        assert!(
+            page.contains("m8r has no repo for https://git.example.com/g/p. Add that repo first"),
+            "{page}"
+        );
+        assert!(listed(&ctx.db).await.is_empty());
+
+        support::repo(&ctx.db, "~/git/g/p", "https://git.example.com/g/p").await;
+        let res = request.post("/watchlist").form(&mr).await;
         assert_eq!(res.status_code(), 303);
         assert_eq!(location(&res), "/watchlist");
         let page = request.get("/watchlist").await.text();
@@ -60,30 +66,35 @@ async fn the_watchlist_is_added_to_changed_and_removed_from() {
             ),
             "{page}"
         );
+        // The page says what the URL says: what the item is, and which repo it's in.
+        assert!(
+            page.contains("</a><br><small>pull/merge requests</small>"),
+            "{page}"
+        );
+        assert!(
+            page.contains(r#"<td class="mono">~/git/g/p</td>"#),
+            "{page}"
+        );
         assert!(page.contains("not checked yet"), "{page}");
 
-        // A row's form changes the category, the priority and the note.
+        // A row's form changes the priority and the note.
         let res = request
             .post("/watchlist/1")
-            .form(&[
-                ("category", ISSUE),
-                ("priority", "high"),
-                ("note", "Now urgent"),
-            ])
+            .form(&[("priority", "high"), ("note", "Now urgent")])
             .await;
         assert_eq!(location(&res), "/watchlist");
-        let (item, category) = watchlist_items::Model::find(&ctx.db, 1).await.unwrap();
+        let (item, repo) = watchlist_items::Model::find(&ctx.db, 1).await.unwrap();
         assert_eq!(
             (
                 item.priority.as_str(),
                 item.note.as_str(),
-                category.name.as_str()
+                repo.path.as_str()
             ),
-            ("high", "Now urgent", ISSUE)
+            ("high", "Now urgent", "~/git/g/p")
         );
         let res = request
             .post("/watchlist/1")
-            .form(&[("category", ISSUE), ("priority", "low"), ("note", "")])
+            .form(&[("priority", "low"), ("note", "")])
             .await;
         assert_eq!(res.status_code(), 200);
         let page = res.text();
@@ -98,69 +109,49 @@ async fn the_watchlist_is_added_to_changed_and_removed_from() {
 
 #[tokio::test]
 #[serial]
-async fn a_review_request_is_a_checkbox_on_a_pr_or_mr() {
+async fn a_request_is_a_checkbox_on_an_item() {
     signed_in(|request, ctx| async move {
+        support::repo(&ctx.db, "~/git/g/p", "https://git.example.com/g/p").await;
+        support::repo(&ctx.db, "~/git/o/r", "https://github.com/o/r").await;
         let requested = |id| {
             let db = ctx.db.clone();
             async move {
                 let (item, _) = watchlist_items::Model::find(&db, id).await.unwrap();
-                item.review_requested
+                item.requested
             }
         };
-
-        // Nobody reviews an issue.
-        let res = request
-            .post("/watchlist")
-            .form(&[
-                ("url", ISSUE_URL),
-                ("category", ISSUE),
-                ("priority", "medium"),
-                ("review_requested", "true"),
-                ("note", ""),
-            ])
-            .await;
-        assert_eq!(res.status_code(), 200);
-        let page = res.text();
-        assert!(page.contains("Only a PR/MR"), "{page}");
 
         let res = request
             .post("/watchlist")
             .form(&[
                 ("url", MR_URL),
-                ("category", PR),
                 ("priority", "medium"),
-                ("review_requested", "true"),
+                ("requested", "true"),
                 ("note", ""),
             ])
             .await;
         assert_eq!(res.status_code(), 303);
+        // Someone can ask you for an issue too. This one, nobody asked for.
         let res = request
             .post("/watchlist")
-            .form(&[
-                ("url", ISSUE_URL),
-                ("category", ISSUE),
-                ("priority", "medium"),
-                ("note", ""),
-            ])
+            .form(&[("url", ISSUE_URL), ("priority", "medium"), ("note", "")])
             .await;
         assert_eq!(res.status_code(), 303);
 
-        // The MR's row has the checkbox, checked. The issue's row has none.
+        // Each row has the checkbox: the MR's is checked, and the issue's isn't.
         let page = request.get("/watchlist").await.text();
         assert!(
-            page.contains(r#"name="review_requested" value="true" form="item-1" checked"#),
+            page.contains(r#"name="requested" value="true" form="item-1" checked"#),
             "{page}"
         );
-        assert!(!page.contains(r#"value="true" form="item-2""#), "{page}");
+        assert!(
+            page.contains(r#"name="requested" value="true" form="item-2"> requested"#),
+            "{page}"
+        );
 
         // A row saved without the checkbox turns the request off, and with it, on again.
-        let off = [("category", PR), ("priority", "medium"), ("note", "")];
-        let on = [
-            ("category", PR),
-            ("priority", "medium"),
-            ("note", ""),
-            ("review_requested", "true"),
-        ];
+        let off = [("priority", "medium"), ("note", "")];
+        let on = [("priority", "medium"), ("note", ""), ("requested", "true")];
         assert_eq!(
             request.post("/watchlist/1").form(&off).await.status_code(),
             303
@@ -168,7 +159,7 @@ async fn a_review_request_is_a_checkbox_on_a_pr_or_mr() {
         assert!(!requested(1).await);
         let page = request.get("/watchlist").await.text();
         assert!(
-            page.contains(r#"name="review_requested" value="true" form="item-1"> requested"#),
+            page.contains(r#"name="requested" value="true" form="item-1"> requested"#),
             "{page}"
         );
         assert_eq!(
@@ -176,107 +167,79 @@ async fn a_review_request_is_a_checkbox_on_a_pr_or_mr() {
             303
         );
         assert!(requested(1).await);
-
-        let res = request.post("/watchlist/2").form(&on).await;
-        assert!(res.text().contains("Only a PR/MR"));
-        assert!(!requested(2).await);
+        assert_eq!(
+            request.post("/watchlist/2").form(&on).await.status_code(),
+            303
+        );
+        assert!(requested(2).await);
     })
     .await;
 }
 
 #[tokio::test]
 #[serial]
-async fn categories_are_added_renamed_and_removed_on_the_watchlists_page() {
+async fn the_watchlist_shows_all_of_it_or_a_categorys_or_a_repos_part() {
     signed_in(|request, ctx| async move {
-        let names = |db| async move {
-            let categories = categories::Model::list(db).await.unwrap();
-            categories.into_iter().map(|it| it.name).collect::<Vec<_>>()
+        let one = support::repo(&ctx.db, "~/git/g/p", "https://git.example.com/g/p").await;
+        let two = support::repo(&ctx.db, "~/git/o/r", "https://github.com/o/r").await;
+        watch(&ctx, MR_URL).await;
+        watch(&ctx, "https://git.example.com/g/p/-/issues/7").await;
+        watch(&ctx, ISSUE_URL).await;
+        // Which of the three the page at `path` lists, and the page.
+        let shown = |path: String| {
+            let request = &request;
+            async move {
+                let page = request.get(&path).await.text();
+                let has = |label: &str| page.contains(&format!(">{label}</a>"));
+                ((has("g/p!4521"), has("g/p#7"), has("o/r#1")), page)
+            }
         };
-        assert_eq!(names(&ctx.db).await, [ISSUE, PR]);
 
-        let res = request
-            .post("/categories")
-            .form(&[("name", " Epic ")])
-            .await;
-        assert_eq!(location(&res), "/watchlist");
-        let page = request.get("/watchlist").await.text();
-        assert!(
-            page.contains(r#"name="name" value="Epic" form="category-3""#),
-            "{page}"
-        );
-
-        // A name is there once, has something in it, and fits in 255 characters.
-        for (name, problem) in [
-            ("Epic", "There&#39;s already a category"),
-            ("  ", "Give the category a name."),
-            (&"x".repeat(256), "can have 255 characters"),
+        // A tab for all of them, and one for each category. The one that's shown says so.
+        let (all, page) = shown("/watchlist".to_string()).await;
+        assert_eq!(all, (true, true, true));
+        for tab in [
+            r#"<a href="/watchlist" aria-current="page">all</a>"#,
+            r#"<a href="/watchlist?category=issues">issues</a>"#,
+            r#"<a href="/watchlist?category=pull%2Fmerge%20requests">pull/merge requests</a>"#,
         ] {
-            let res = request.post("/categories").form(&[("name", name)]).await;
-            assert_eq!(res.status_code(), 200);
-            let page = res.text();
-            assert!(page.contains(problem), "{name}: {page}");
+            assert!(page.contains(tab), "{tab}: {page}");
         }
-        assert!(request
-            .post("/categories")
-            .form(&[("name", &"x".repeat(255))])
-            .await
-            .status_code()
-            .is_redirection());
-
-        let res = request
-            .post("/categories/3")
-            .form(&[("name", "Release")])
-            .await;
-        assert_eq!(location(&res), "/watchlist");
-        // Its own name is no other category's.
-        let res = request
-            .post("/categories/3")
-            .form(&[("name", "Release")])
-            .await;
-        assert_eq!(res.status_code(), 303);
-        let res = request.post("/categories/3").form(&[("name", ISSUE)]).await;
-        assert!(res.text().contains("There&#39;s already a category"));
-        assert_eq!(names(&ctx.db).await[2], "Release");
-
-        // A category that an item or a schedule uses stays.
-        request
-            .post("/watchlist")
-            .form(&[
-                ("url", ISSUE_URL),
-                ("category", "Release"),
-                ("priority", "medium"),
-            ])
-            .await;
-        let res = request.post("/categories/3/remove").await;
-        assert_eq!(res.status_code(), 200);
-        let page = res.text();
+        let (issues, page) = shown("/watchlist?category=issues".to_string()).await;
+        assert_eq!(issues, (false, true, true));
         assert!(
-            page.contains("is in use: by 1 watchlist items and 0 schedules"),
+            page.contains(r#"<a href="/watchlist?category=issues" aria-current="page">issues</a>"#),
             "{page}"
         );
-        request.post("/watchlist/1/remove").await;
+        let requests = "/watchlist?category=pull%2Fmerge%20requests".to_string();
+        assert_eq!(shown(requests).await.0, (true, false, false));
 
-        let sandbox = Sandbox::new("categories-in-use");
-        let params = m8r::models::schedules::Params {
-            category: "Release".to_string(),
-            ..schedule_params(&sandbox.repo(), "")
-        };
-        let used = schedule(&ctx, &params).await;
-        let res = request.post("/categories/3/remove").await;
-        assert!(res.text().contains("by 0 watchlist items and 1 schedules"));
-        request
-            .post(&format!("/schedules/{}/remove", used.id))
-            .await;
+        // A repo's part, with the tabs for that repo. The two go together.
+        let (of_one, page) = shown(format!("/watchlist?repo_id={}", one.id)).await;
+        assert_eq!(of_one, (true, true, false));
+        let tab = format!(
+            r#"<a href="/watchlist?category=issues&amp;repo_id={}">"#,
+            one.id
+        );
+        assert!(page.contains(&tab), "{page}");
+        let chosen = format!(r#"<option value="{}" selected>~/git/g/p</option>"#, one.id);
+        assert!(page.contains(&chosen), "{page}");
+        let both = format!("/watchlist?category=issues&repo_id={}", two.id);
+        let (of_both, page) = shown(both).await;
+        assert_eq!(of_both, (false, false, true));
+        // The form that chooses the repo keeps the category.
+        assert!(
+            page.contains(r#"<input type="hidden" name="category" value="issues">"#),
+            "{page}"
+        );
 
-        assert_eq!(
-            location(&request.post("/categories/3/remove").await),
-            "/watchlist"
-        );
-        assert_eq!(names(&ctx.db).await.len(), 3);
-        assert_eq!(
-            request.post("/categories/3/remove").await.status_code(),
-            404
-        );
+        // What the page can't read shows everything.
+        let (anything, _) = shown("/watchlist?category=Epic&repo_id=x".to_string()).await;
+        assert_eq!(anything, (true, true, true));
+        // A repo's page leads here.
+        let page = request.get("/repos").await.text();
+        let link = format!(r#"<a href="/watchlist?repo_id={}">2 items</a>"#, one.id);
+        assert!(page.contains(&link), "{page}");
     })
     .await;
 }

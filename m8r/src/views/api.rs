@@ -3,26 +3,29 @@
 use loco_rs::prelude::*;
 use serde_json::{json, Value};
 
-use crate::models::{artifacts, categories, configurations, runs, schedules, watchlist_items};
+use crate::models::{artifacts, configurations, repos, runs, schedules, watchlist_items};
 
 fn time(at: Option<&DateTimeWithTimeZone>) -> Option<String> {
     at.map(DateTimeWithTimeZone::to_rfc3339)
 }
 
 #[must_use]
-pub fn category(category: &categories::Model) -> Value {
-    json!({ "id": category.id, "name": category.name })
+pub fn repo(repo: &repos::Model) -> Value {
+    json!({ "id": repo.id, "path": repo.path, "url": repo.url })
 }
 
 #[must_use]
-pub fn watchlist_item((item, category): &watchlist_items::Listed) -> Value {
+pub fn watchlist_item((item, repo): &watchlist_items::Listed) -> Value {
     json!({
         "id": item.id,
         "url": item.url,
-        "category": category.name,
+        "repo_id": repo.id,
+        // The path of the repo's clone.
+        "repo": repo.path,
+        "category": item.category,
         "priority": item.priority,
         "note": item.note,
-        "review_requested": item.review_requested,
+        "requested": item.requested,
         // The forge's title, once m8r has asked for it.
         "title": item.title,
         "checked_at": time(item.checked_at.as_ref()),
@@ -30,15 +33,17 @@ pub fn watchlist_item((item, category): &watchlist_items::Listed) -> Value {
 }
 
 #[must_use]
-pub fn schedule((schedule, category): &schedules::Listed) -> Value {
+pub fn schedule((schedule, repos): &schedules::Listed) -> Value {
     let next = schedule
         .next(&jiff::Zoned::now())
         .map(|at| at.timestamp().to_string());
     json!({
         "id": schedule.id,
-        "operation": schedule.operation,
-        "category": category.as_ref().map(|it| it.name.as_str()).unwrap_or_default(),
-        "repos": schedule.repos().collect::<Vec<_>>(),
+        "name": schedule.name,
+        "category": schedule.category,
+        "max_items": schedule.max_items,
+        // The paths of the repos' clones.
+        "repos": repos.iter().map(|repo| repo.path.as_str()).collect::<Vec<_>>(),
         "hron": schedule.times().collect::<Vec<_>>(),
         "command": schedule.command,
         "prompt": schedule.prompt,
@@ -80,7 +85,8 @@ pub fn run(run: &runs::Model, artifacts: &[artifacts::Model], pages: &str) -> Va
     json!({
         "id": run.id,
         "schedule_id": run.schedule_id,
-        "operation": run.operation,
+        "name": run.name,
+        "repo_id": run.repo_id,
         "repo": run.repo,
         "command": run.command,
         "status": run.status,

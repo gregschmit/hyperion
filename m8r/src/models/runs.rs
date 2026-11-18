@@ -1,7 +1,7 @@
 pub use super::_entities::runs::{ActiveModel, Column, Entity, Model};
 use loco_rs::prelude::*;
 
-use super::{errors, schedules};
+use super::{errors, repos, schedule_repos, schedules};
 
 pub type Runs = Entity;
 
@@ -55,7 +55,7 @@ impl Model {
             .await?)
     }
 
-    /// The latest run of schedule `schedule_id` in `repo` that ran and is over. What it
+    /// The latest run of schedule `schedule_id` in repo `repo_id` that ran and is over. What it
     /// reported is what the schedule has to show for that repo, until its next run there is
     /// over.
     ///
@@ -64,11 +64,11 @@ impl Model {
     pub async fn latest_of(
         db: &DatabaseConnection,
         schedule_id: i64,
-        repo: &str,
+        repo_id: i64,
     ) -> ModelResult<Option<Self>> {
         Ok(Entity::find()
             .filter(Column::ScheduleId.eq(schedule_id))
-            .filter(Column::Repo.eq(repo))
+            .filter(Column::RepoId.eq(repo_id))
             .filter(Column::Status.is_in([Status::Ok.as_str(), Status::Failed.as_str()]))
             // A run that couldn't start reported nothing, and takes nothing's place.
             .filter(Column::StartedAt.is_not_null())
@@ -95,22 +95,23 @@ impl Model {
         Ok(run.is_some_and(|run| run.status == Status::Running.as_str()))
     }
 
-    /// Queue a run of `schedule` in each of its repos, and give them back. Where one already
-    /// waits, that's the one.
+    /// Queue a run of `schedule` in each of `repos`, which are its own, and give them back.
+    /// Where one already waits, that's the one.
     ///
     /// # Errors
     /// When a query fails.
     pub async fn queue(
         db: &DatabaseConnection,
         schedule: &schedules::Model,
+        repos: &[repos::Model],
     ) -> ModelResult<Vec<Self>> {
         let txn = db.begin().await?;
         let mut runs = Vec::new();
-        for repo in schedule.repos() {
+        for repo in repos {
             let waiting = Entity::find()
                 .filter(Column::Status.eq(Status::Queued.as_str()))
                 .filter(Column::ScheduleId.eq(schedule.id))
-                .filter(Column::Repo.eq(repo))
+                .filter(Column::RepoId.eq(repo.id))
                 .one(&txn)
                 .await?;
             if let Some(run) = waiting {
@@ -119,8 +120,7 @@ impl Model {
             }
             let mut run = ActiveModel::new();
             run.schedule_id = Set(Some(schedule.id));
-            run.repo = Set(repo.to_string());
-            run.copy(schedule);
+            run.copy(schedule, repo);
             run.status = Set(Status::Queued.as_str().to_string());
             runs.push(run.insert(&txn).await?);
         }
@@ -128,15 +128,25 @@ impl Model {
         Ok(runs)
     }
 
-    /// Drop the queued runs of `schedule` in repos that it doesn't have any more.
+    /// Drop the queued runs of schedule `schedule_id` in repos that aren't among `kept`: the
+    /// schedule doesn't run there any more.
     ///
     /// # Errors
     /// When the query fails.
-    pub async fn unqueue(db: &DatabaseConnection, schedule: &schedules::Model) -> ModelResult<()> {
+    pub async fn unqueue(
+        db: &DatabaseConnection,
+        schedule_id: i64,
+        kept: &[repos::Model],
+    ) -> ModelResult<()> {
+        let kept = kept.iter().map(|repo| repo.id);
         Entity::delete_many()
             .filter(Column::Status.eq(Status::Queued.as_str()))
-            .filter(Column::ScheduleId.eq(schedule.id))
-            .filter(Column::Repo.is_not_in(schedule.repos()))
+            .filter(Column::ScheduleId.eq(schedule_id))
+            .filter(
+                Condition::any()
+                    .add(Column::RepoId.is_null())
+                    .add(Column::RepoId.is_not_in(kept)),
+            )
             .exec(db)
             .await?;
         Ok(())
@@ -196,14 +206,16 @@ impl Model {
 }
 
 impl ActiveModel {
-    /// What the history keeps of the run's schedule, which can change or go. The run's repo is
-    /// its own from the start: the one of the schedule's that it was queued for.
-    fn copy(&mut self, schedule: &schedules::Model) {
-        self.operation = Set(schedule.operation.clone());
+    /// What the history keeps of the run's schedule and of its repo, which can change or go:
+    /// the schedule's name and command, and the path of the repo's clone.
+    fn copy(&mut self, schedule: &schedules::Model, repo: &repos::Model) {
+        self.name = Set(schedule.name.clone());
         self.command = Set(schedule.command.clone());
+        self.repo_id = Set(Some(repo.id));
+        self.repo = Set(repo.path.clone());
     }
 
-    /// The run starts, with this prompt. It takes its schedule as the schedule is now.
+    /// The run starts, with this prompt. It takes its schedule and its repo as they are now.
     ///
     /// # Errors
     /// When the update fails.
@@ -211,9 +223,10 @@ impl ActiveModel {
         mut self,
         db: &DatabaseConnection,
         schedule: &schedules::Model,
+        repo: &repos::Model,
         prompt: String,
     ) -> ModelResult<Model> {
-        self.copy(schedule);
+        self.copy(schedule, repo);
         self.status = Set(Status::Running.as_str().to_string());
         self.prompt = Set(prompt);
         self.started_at = Set(Some(chrono::Utc::now().into()));
@@ -238,18 +251,21 @@ impl ActiveModel {
         self.error = Set(error);
         self.finished_at = Set(Some(chrono::Utc::now().into()));
         let run = self.update(db).await?;
-        // An error needs a later run that can clear it. A run whose schedule is gone has none,
-        // and neither has one whose schedule dropped its repo while it ran.
-        let schedule = match run.schedule_id {
-            Some(id) => schedules::Entity::find_by_id(id).one(db).await?,
-            None => None,
-        };
-        let Some(schedule) = schedule.filter(|it| it.repos().any(|repo| repo == run.repo)) else {
+        // An error needs a later run that can clear it. A run whose schedule or repo is gone
+        // has none, and neither has one whose schedule left its repo while it ran.
+        let (Some(schedule_id), Some(repo_id)) = (run.schedule_id, run.repo_id) else {
             return Ok(run);
         };
-        let subject = errors::schedule(schedule.id, &run.repo);
+        let still = schedule_repos::Entity::find_by_id((schedule_id, repo_id))
+            .one(db)
+            .await?;
+        if still.is_none() {
+            return Ok(run);
+        }
+        let repo = repos::Model::find(db, repo_id).await?;
+        let subject = errors::schedule(schedule_id, &repo.path);
         if status == Status::Failed {
-            let message = format!("Run {} ({}) failed: {}", run.id, run.operation, run.error);
+            let message = format!("Run {} ({}) failed: {}", run.id, run.name, run.error);
             errors::Model::raise(db, &subject, &message, Some(run.id)).await?;
         } else {
             errors::Model::clear(db, &subject).await?;

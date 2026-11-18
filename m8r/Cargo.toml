@@ -44,6 +44,9 @@ tera = { version = "2.1" }
 hron = { version = "2.2", default-features = false }
 jiff = { version = "0.2" }
 sha2 = "0.10"
+# An access link's token is short: what it says, and a part of its HMAC, as base64.
+hmac = "0.12"
+base64 = "0.22"
 rmcp = { version = "3.10", default-features = false, features = ["server", "transport-streamable-http-server"] }
 
 [[bin]]

@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use loco_rs::{
     prelude::IntoActiveModel,
     testing::{
@@ -41,7 +42,15 @@ async fn nothing_answers_without_a_session() {
 async fn an_access_link_starts_a_session_any_number_of_times() {
     request_with_config::<App, _, _>(keeps_cookies(), |request, ctx| async move {
         let link = link_path(&ctx, 60, false);
-        assert!(link.starts_with("/?token="), "{link}");
+        // The token is short enough to read: 39 characters that an address takes as they are.
+        let token = link.strip_prefix("/?token=").unwrap();
+        assert_eq!(token.len(), 39, "{link}");
+        assert!(
+            token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "{link}"
+        );
 
         let res = request.get(&link).await;
         assert_eq!(res.status_code(), 303);
@@ -82,7 +91,7 @@ async fn a_single_use_link_works_one_time() {
 #[serial]
 async fn a_link_that_expired_or_was_never_good_is_refused() {
     request::<App, _, _>(|request, ctx| async move {
-        // Past the signer's leeway for clocks that disagree.
+        // A link's time is in whole seconds, so wait one out.
         let expired = link_path(&ctx, 0, false);
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         for link in [expired.as_str(), "/?token=nonsense", "/?token="] {
@@ -91,10 +100,30 @@ async fn a_link_that_expired_or_was_never_good_is_refused() {
             assert!(res.maybe_header("set-cookie").is_none(), "{link}");
         }
 
-        // A token signed with another secret.
-        let good = link_path(&ctx, 60, false);
+        // A token that m8r's secret didn't seal.
+        let good = link_path(&ctx, 60, true);
         let forged = format!("{}x", &good[..good.len() - 1]);
         assert_eq!(request.get(&forged).await.status_code(), 401);
+        // A token that someone changed, to work more than once or for longer: its first byte
+        // says whether it works one time, and the next four say until when. The seal no
+        // longer fits what it says.
+        let token = good.strip_prefix("/?token=").unwrap();
+        let sealed = URL_SAFE_NO_PAD.decode(token).unwrap();
+        assert_eq!((sealed.len(), sealed[0]), (29, 1));
+        for (at, value) in [(0, 0), (1, 0xff), (28, sealed[28] ^ 1)] {
+            let mut changed = sealed.clone();
+            changed[at] = value;
+            let forged = format!("/?token={}", URL_SAFE_NO_PAD.encode(&changed));
+            assert_eq!(request.get(&forged).await.status_code(), 401, "byte {at}");
+        }
+        // Too short and too long are no tokens either.
+        for cut in [&sealed[..28], &[sealed.as_slice(), &[0]].concat()[..]] {
+            let forged = format!("/?token={}", URL_SAFE_NO_PAD.encode(cut));
+            assert_eq!(request.get(&forged).await.status_code(), 401);
+        }
+        // The one that m8r made still works, one time.
+        assert_eq!(request.get(&good).await.status_code(), 303);
+        assert_eq!(request.get(&good).await.status_code(), 401);
     })
     .await;
 }
@@ -102,12 +131,12 @@ async fn a_link_that_expired_or_was_never_good_is_refused() {
 #[tokio::test]
 #[serial]
 async fn a_session_can_change_things() {
-    signed_in(|request, _ctx| async move {
+    signed_in(|request, ctx| async move {
+        crate::support::repo(&ctx.db, "~/git/o/r", "https://github.com/o/r").await;
         let res = request
             .post("/watchlist")
             .form(&[
                 ("url", "https://github.com/o/r/issues/1"),
-                ("category", "Issue"),
                 ("priority", "high"),
                 ("note", ""),
             ])
@@ -190,7 +219,7 @@ async fn a_token_opens_no_page() {
 async fn a_token_covers_what_its_scope_names() {
     request::<App, _, _>(|request, ctx| async move {
         let duet = token(&ctx, "duet", "watchlist_items").await;
-        let both = token(&ctx, "both", "runs,categories").await;
+        let both = token(&ctx, "both", "runs,repos").await;
         let mac = token(&ctx, "mac", "all").await;
         let status = |path: &'static str, token: String| {
             let request = &request;
@@ -201,7 +230,7 @@ async fn a_token_covers_what_its_scope_names() {
         };
         for (path, covered_by_duet, covered_by_both) in [
             ("/api/watchlist_items", true, false),
-            ("/api/categories", false, true),
+            ("/api/repos", false, true),
             ("/api/schedules", false, false),
             ("/api/configurations", false, false),
             ("/api/runs", false, true),

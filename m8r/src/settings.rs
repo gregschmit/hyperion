@@ -10,8 +10,8 @@ pub struct Settings {
     pub url: String,
     /// The shell that starts the tools, as a login shell.
     pub shell: String,
-    /// The agent's command, which a new schedule for triage, review or develop starts with. A
-    /// run pipes its prompt to its schedule's own command.
+    /// The agent's command, which a new schedule starts with. A run pipes its prompt to its
+    /// schedule's own command.
     pub agent: String,
     /// Minutes before a run is killed.
     pub run_limit: u64,

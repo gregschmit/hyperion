@@ -1,9 +1,9 @@
 //! Nothing answers without a session or a token.
 //!
 //! The pages want a session, and the only way to get one is an access link. A link carries a
-//! JWT that says when it stops working. Opening it starts a session (Loco's signed cookie,
-//! which the server stops accepting after `auth.session.max_age`), and redirects to the same
-//! page without the token.
+//! short signed token that says when it stops working. Opening it starts a session (Loco's
+//! signed cookie, which the server stops accepting after `auth.session.max_age`), and
+//! redirects to the same page without the token.
 //!
 //! The API (`/api`) and the MCP endpoint (`/mcp`) want a token in the `Authorization` header,
 //! and never take a session: another site can make a browser send a cookie, but not a header.
@@ -17,7 +17,9 @@ use axum::{
     response::{Html, IntoResponse, Redirect, Response},
     Json, Router as AxumRouter,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Utc};
+use hmac::{Hmac, Mac};
 use loco_rs::prelude::Session;
 use loco_rs::{
     app::{AppContext, Initializer},
@@ -25,6 +27,7 @@ use loco_rs::{
     hash, Error, Result,
 };
 use serde_json::{json, Map, Value};
+use sha2::Sha256;
 
 use crate::{
     models::{runs, tokens, used_links},
@@ -70,19 +73,79 @@ impl Initializer for AccessInitializer {
     }
 }
 
+/// What an access link's token says: whether the link works one time, when it stops working,
+/// and a name of its own, by which `used_links` knows a one-time link that was used.
+#[derive(Debug, PartialEq, Eq)]
+struct Link {
+    once: bool,
+    /// In seconds since 1970.
+    expires: u32,
+    name: [u8; Link::NAME],
+}
+
+impl Link {
+    const NAME: usize = 8;
+    /// The bytes that say the three things above.
+    const FACTS: usize = 1 + 4 + Self::NAME;
+    /// How much of the facts' HMAC-SHA256 a token carries. Half of it is plenty to keep
+    /// anyone without the secret from making one, and it keeps a link short.
+    const SEAL: usize = 16;
+
+    /// The token: the facts and their seal, as text that fits in an address. 29 bytes, so 39
+    /// characters, where a JWT of the same has some 250.
+    fn token(&self, secret: &str) -> Option<String> {
+        let mut bytes = vec![u8::from(self.once)];
+        bytes.extend(self.expires.to_be_bytes());
+        bytes.extend(self.name);
+        let seal = Self::seal(secret, &bytes)?.finalize().into_bytes();
+        bytes.extend(&seal[..Self::SEAL]);
+        Some(URL_SAFE_NO_PAD.encode(bytes))
+    }
+
+    /// Read a token that m8r made with this secret. Any other text is none.
+    fn read(secret: &str, token: &str) -> Option<Self> {
+        let bytes = URL_SAFE_NO_PAD.decode(token).ok()?;
+        if bytes.len() != Self::FACTS + Self::SEAL {
+            return None;
+        }
+        let (facts, seal) = bytes.split_at(Self::FACTS);
+        // In constant time: the answer mustn't say how much of a guess was right.
+        Self::seal(secret, facts)?
+            .verify_truncated_left(seal)
+            .ok()?;
+        Some(Self {
+            once: facts[0] == 1,
+            expires: u32::from_be_bytes(facts[1..5].try_into().ok()?),
+            name: facts[5..].try_into().ok()?,
+        })
+    }
+
+    /// The HMAC of a link's facts under m8r's secret. Its first words keep it apart from
+    /// anything else that the secret signs.
+    fn seal(secret: &str, facts: &[u8]) -> Option<Hmac<Sha256>> {
+        let mut seal = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
+        seal.update(b"m8r access link\n");
+        seal.update(facts);
+        Some(seal)
+    }
+}
+
 /// Make an access link that works for `seconds`, any number of times or just `once`.
 ///
 /// # Errors
-/// When the JWT settings are missing, or the secret isn't base64.
+/// When the JWT settings, which hold m8r's secret, are missing.
 pub fn link(ctx: &AppContext, seconds: u64, once: bool) -> Result<String> {
-    let expires = Utc::now().timestamp() + i64::try_from(seconds).unwrap_or(i64::MAX);
-    let mut claims = Map::new();
-    claims.insert("use".to_string(), json!("link"));
-    claims.insert("once".to_string(), json!(once));
-    claims.insert("expires".to_string(), json!(expires));
-    let token = JWT::new(&ctx.config.get_jwt_config()?.secret)
-        .generate_token(seconds, hash::random_string(20), claims)
-        .map_err(|err| Error::string(&err.to_string()))?;
+    let now = u64::try_from(Utc::now().timestamp()).unwrap_or_default();
+    let mut name = [0; Link::NAME];
+    name.copy_from_slice(hash::random_string(Link::NAME).as_bytes());
+    let link = Link {
+        once,
+        expires: u32::try_from(now.saturating_add(seconds)).unwrap_or(u32::MAX),
+        name,
+    };
+    let token = link
+        .token(&ctx.config.get_jwt_config()?.secret)
+        .ok_or_else(|| Error::string("m8r couldn't sign the link"))?;
     let url = Settings::from_context(ctx)?.url;
     Ok(format!("{}/?{TOKEN}={token}", url.trim_end_matches('/')))
 }
@@ -241,21 +304,14 @@ fn refuse_token(status: StatusCode, why: &str) -> Response {
 async fn redeem(ctx: &AppContext, token: &str) -> std::result::Result<(), String> {
     let expired = "That access link has expired, or was never good.";
     let secret = &ctx.config.get_jwt_config().map_err(|_| expired)?.secret;
-    let claims = JWT::new(secret)
-        .validate(token)
-        .map_err(|_| expired)?
-        .claims;
-    if claims.claims.get("use").and_then(Value::as_str) != Some("link") {
+    let link = Link::read(secret, token).ok_or(expired)?;
+    let expires = DateTime::<Utc>::from_timestamp(link.expires.into(), 0).ok_or(expired)?;
+    if Utc::now() > expires {
         return Err(expired.to_string());
     }
-    if claims.claims.get("once").and_then(Value::as_bool) == Some(true) {
-        let expires = claims
-            .claims
-            .get("expires")
-            .and_then(Value::as_i64)
-            .and_then(|at| DateTime::<Utc>::from_timestamp(at, 0))
-            .ok_or(expired)?;
-        let fresh = used_links::Model::spend(&ctx.db, &claims.pid, expires)
+    if link.once {
+        let name = String::from_utf8_lossy(&link.name);
+        let fresh = used_links::Model::spend(&ctx.db, &name, expires)
             .await
             .map_err(|_| "m8r couldn't check that access link.")?;
         if !fresh {

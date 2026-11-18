@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Run {{ run.id }} · m8r{% endblock title %}
 {% block content %}
-<h1>Run {{ run.id }}: {{ run.operation }} in <span class="mono">{{ run.repo }}</span></h1>
+<h1>Run {{ run.id }}: {{ run.name }} in <span class="mono">{{ run.repo }}</span></h1>
 <p><span class="status {{ run.status }}">{{ run.status }}</span>
   <span class="muted">· queued {{ run.queued_at }}{% if run.started_at %} · started {{ run.started_at }}{% endif %}{% if run.finished_at %} · finished {{ run.finished_at }}{% endif %}</span></p>
 

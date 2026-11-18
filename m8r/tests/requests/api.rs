@@ -5,7 +5,7 @@ use m8r::{app::App, models::artifacts};
 use serde_json::{json, Value};
 use serial_test::serial;
 
-use crate::support::{queue, start, token, ISSUE, PR};
+use crate::support::{self, queue, start, token, ISSUES, REQUESTS};
 
 const PR_URL: &str = "https://github.com/o/r/pull/7";
 const ISSUE_URL: &str = "https://github.com/o/r/issues/8";
@@ -42,64 +42,74 @@ fn not_found() -> (u16, Value) {
 #[tokio::test]
 #[serial]
 async fn watchlist_items_are_listed_added_changed_and_removed() {
-    with_token(|request, _ctx, token| async move {
+    with_token(|request, ctx, token| async move {
         let items = "/api/watchlist_items";
         let res = request.get(items).authorization_bearer(&token).await;
         assert_eq!(answer(&res), (200, json!([])));
+        let repo = support::repo(&ctx.db, "~/git/o/r", "https://github.com/o/r").await;
+        let other = support::repo(&ctx.db, "~/git/g/p", "https://git.example.com/g/p").await;
 
-        // As m8r's prompt adds one: the category by its name.
+        // As m8r's prompt adds one: its URL says which repo it's in, and what it is.
         let res = request
             .post(items)
             .authorization_bearer(&token)
-            .json(&json!({ "url": PR_URL, "category": PR, "priority": "high",
-                "note": "Ships on Friday", "review_requested": true }))
+            .json(
+                &json!({ "url": PR_URL, "priority": "high", "note": "Ships on Friday",
+                "requested": true }),
+            )
             .await;
         let added = json!({
             "id": 1,
             "url": PR_URL,
-            "category": PR,
+            "repo_id": repo.id,
+            "repo": "~/git/o/r",
+            "category": REQUESTS,
             "priority": "high",
             "note": "Ships on Friday",
-            "review_requested": true,
+            "requested": true,
             "title": "",
             "checked_at": null,
         });
         assert_eq!(answer(&res), (200, added.clone()));
-        // The URL and the category are all that an item needs.
+        // The URL is all that an item needs. A category that's sent says nothing: the URL does.
         let res = request
             .post(items)
             .authorization_bearer(&token)
-            .json(&json!({ "url": ISSUE_URL, "category": ISSUE }))
+            .json(&json!({ "url": ISSUE_URL, "category": "Epic" }))
             .await;
         let (status, issue) = answer(&res);
         assert_eq!(status, 200);
         assert_eq!(
             (
                 &issue["id"],
+                &issue["category"],
                 &issue["priority"],
                 &issue["note"],
-                &issue["review_requested"]
+                &issue["requested"]
             ),
-            (&json!(2), &json!("medium"), &json!(""), &json!(false))
+            (
+                &json!(2),
+                &json!(ISSUES),
+                &json!("medium"),
+                &json!(""),
+                &json!(false)
+            )
         );
 
         // What can't be saved comes back with the reason.
         for (body, why) in [
             (
-                json!({ "url": ISSUE_URL, "category": "Epic" }),
-                "There's no category \"Epic\". The categories are: Issue, Pull/Merge Request.",
-            ),
-            (
-                json!({ "url": ISSUE_URL }),
-                "Choose a category. The categories are: Issue, Pull/Merge Request.",
-            ),
-            (
-                json!({ "url": "https://example.com/", "category": ISSUE }),
+                json!({ "url": "https://example.com/" }),
                 "That isn't the URL of an issue or a PR/MR on GitHub or GitLab.",
             ),
             (
-                json!({ "url": ISSUE_URL, "category": ISSUE, "review_requested": true }),
-                "Only a PR/MR can have its review requested. That's an issue.",
+                json!({ "url": "https://github.com/o/unknown/issues/1" }),
+                "m8r has no repo for https://github.com/o/unknown. Add that repo first: an item \
+                 is in one.",
+            ),
+            (
+                json!({ "url": ISSUE_URL, "priority": "low" }),
+                "The priority is medium or high.",
             ),
         ] {
             let res = request
@@ -114,7 +124,7 @@ async fn watchlist_items_are_listed_added_changed_and_removed() {
         let res = request
             .post(items)
             .authorization_bearer(&token)
-            .json(&json!({ "url": PR_URL, "category": PR, "review_requested": true }))
+            .json(&json!({ "url": PR_URL, "requested": true }))
             .await;
         let (_, again) = answer(&res);
         assert_eq!(
@@ -126,17 +136,13 @@ async fn watchlist_items_are_listed_added_changed_and_removed() {
         let res = request
             .patch(&format!("{items}/1"))
             .authorization_bearer(&token)
-            .json(&json!({ "review_requested": false }))
+            .json(&json!({ "requested": false }))
             .await;
         let (status, changed) = answer(&res);
         assert_eq!(status, 200);
         assert_eq!(
-            (
-                &changed["review_requested"],
-                &changed["category"],
-                &changed["url"]
-            ),
-            (&json!(false), &json!(PR), &json!(PR_URL))
+            (&changed["requested"], &changed["category"], &changed["url"]),
+            (&json!(false), &json!(REQUESTS), &json!(PR_URL))
         );
         let res = request
             .patch(&format!("{items}/1"))
@@ -149,20 +155,44 @@ async fn watchlist_items_are_listed_added_changed_and_removed() {
             .get(&format!("{items}/1"))
             .authorization_bearer(&token)
             .await;
-        assert_eq!(answer(&res), (200, changed));
-        // One category's items.
+        assert_eq!(answer(&res), (200, changed.clone()));
+        // One category's items, one repo's, or both.
         let res = request
             .get(items)
-            .add_query_param("category", ISSUE)
+            .add_query_param("category", ISSUES)
             .authorization_bearer(&token)
             .await;
         assert_eq!(answer(&res), (200, json!([issue])));
         let res = request
             .get(items)
+            .add_query_param("repo_id", repo.id)
+            .authorization_bearer(&token)
+            .await;
+        assert_eq!(answer(&res), (200, json!([changed, issue])));
+        let res = request
+            .get(items)
+            .add_query_param("repo_id", other.id)
+            .authorization_bearer(&token)
+            .await;
+        assert_eq!(answer(&res), (200, json!([])));
+        let res = request
+            .get(items)
+            .add_query_param("repo_id", repo.id)
+            .add_query_param("category", REQUESTS)
+            .authorization_bearer(&token)
+            .await;
+        assert_eq!(answer(&res), (200, json!([changed])));
+        let res = request
+            .get(items)
             .add_query_param("category", "Epic")
             .authorization_bearer(&token)
             .await;
-        assert_eq!(res.status_code(), 400);
+        assert_eq!(
+            answer(&res),
+            bad_request(
+                "There's no category \"Epic\". The categories are: issues, pull/merge requests."
+            )
+        );
 
         let res = request
             .delete(&format!("{items}/1"))
@@ -194,75 +224,107 @@ async fn watchlist_items_are_listed_added_changed_and_removed() {
 
 #[tokio::test]
 #[serial]
-async fn categories_are_listed_added_renamed_and_removed() {
+async fn repos_are_listed_added_changed_and_removed() {
     with_token(|request, _ctx, token| async move {
-        let categories = "/api/categories";
-        let res = request.get(categories).authorization_bearer(&token).await;
+        let repos = "/api/repos";
+        let here = std::env::current_dir().unwrap();
+        let here = here.to_string_lossy();
+        let (src, tests) = (format!("{here}/src"), format!("{here}/tests"));
+        let res = request.get(repos).authorization_bearer(&token).await;
+        assert_eq!(answer(&res), (200, json!([])));
+
+        // A clone that's there, and its project, however that's written.
+        let res = request
+            .post(repos)
+            .authorization_bearer(&token)
+            .json(&json!({ "path": tests, "url": "git@github.com:o/r.git" }))
+            .await;
+        let added = json!({ "id": 1, "path": tests, "url": "https://github.com/o/r" });
+        assert_eq!(answer(&res), (200, added.clone()));
+        // With no URL, the clone's origin says the project. This one is no clone, so it has
+        // none.
+        let res = request
+            .post(repos)
+            .authorization_bearer(&token)
+            .json(&json!({ "path": src }))
+            .await;
         assert_eq!(
             answer(&res),
+            (200, json!({ "id": 2, "path": src, "url": "" }))
+        );
+
+        for (body, why) in [
             (
-                200,
-                json!([{ "id": 1, "name": ISSUE }, { "id": 2, "name": PR }])
-            )
-        );
+                json!({ "path": src }),
+                format!("m8r already has that clone: {src}."),
+            ),
+            (
+                json!({ "path": format!("{here}/no-such-clone") }),
+                format!(
+                    "A repo is a clone in the home of m8r's user, such as ~/git/group/project, \
+                     and \"{here}/no-such-clone\" isn't a directory there."
+                ),
+            ),
+            (
+                json!({ "path": format!("{here}/migration"), "url": "https://github.com/O/R/" }),
+                format!(
+                    "https://github.com/O/R is the project of the repo {tests}, and a project \
+                     has one repo."
+                ),
+            ),
+        ] {
+            let res = request
+                .post(repos)
+                .authorization_bearer(&token)
+                .json(&body)
+                .await;
+            assert_eq!(answer(&res), bad_request(&why), "{body}");
+        }
 
+        // A change names only what changes. The list goes by the clones' paths.
         let res = request
-            .post(categories)
+            .patch(&format!("{repos}/2"))
             .authorization_bearer(&token)
-            .json(&json!({ "name": "Epic" }))
+            .json(&json!({ "url": "https://git.example.com/g/p" }))
             .await;
-        assert_eq!(answer(&res), (200, json!({ "id": 3, "name": "Epic" })));
+        let changed = json!({ "id": 2, "path": src, "url": "https://git.example.com/g/p" });
+        assert_eq!(answer(&res), (200, changed.clone()));
         let res = request
-            .post(categories)
+            .get(&format!("{repos}/2"))
             .authorization_bearer(&token)
-            .json(&json!({ "name": "Epic" }))
             .await;
-        assert_eq!(
-            answer(&res),
-            bad_request("There's already a category \"Epic\".")
-        );
+        assert_eq!(answer(&res), (200, changed.clone()));
+        let res = request.get(repos).authorization_bearer(&token).await;
+        assert_eq!(answer(&res), (200, json!([changed, added])));
 
-        let res = request
-            .patch(&format!("{categories}/3"))
-            .authorization_bearer(&token)
-            .json(&json!({ "name": "Release" }))
-            .await;
-        assert_eq!(answer(&res), (200, json!({ "id": 3, "name": "Release" })));
-        let res = request
-            .get(&format!("{categories}/3"))
-            .authorization_bearer(&token)
-            .await;
-        assert_eq!(answer(&res), (200, json!({ "id": 3, "name": "Release" })));
-
-        // A category that an item is in stays.
+        // A repo that an item is in stays.
         request
             .post("/api/watchlist_items")
             .authorization_bearer(&token)
-            .json(&json!({ "url": ISSUE_URL, "category": "Release" }))
+            .json(&json!({ "url": ISSUE_URL }))
             .await;
         let res = request
-            .delete(&format!("{categories}/3"))
+            .delete(&format!("{repos}/1"))
             .authorization_bearer(&token)
             .await;
         assert_eq!(
             answer(&res),
-            bad_request(
-                "\"Release\" is in use: by 1 watchlist items and 0 schedules. Give them another \
-                 category first."
-            )
+            bad_request(&format!(
+                "\"{tests}\" is in use: by 1 watchlist items and 0 schedules. Take them off it \
+                 first."
+            ))
         );
         request
-            .patch("/api/watchlist_items/1")
+            .delete("/api/watchlist_items/1")
             .authorization_bearer(&token)
-            .json(&json!({ "category": ISSUE }))
             .await;
         let res = request
-            .delete(&format!("{categories}/3"))
+            .delete(&format!("{repos}/1"))
             .authorization_bearer(&token)
             .await;
         assert_eq!(answer(&res), (200, json!({})));
         let res = request
-            .delete(&format!("{categories}/3"))
+            .delete(&format!("{repos}/1"))
             .authorization_bearer(&token)
             .await;
         assert_eq!(answer(&res), not_found());
@@ -273,19 +335,22 @@ async fn categories_are_listed_added_renamed_and_removed() {
 #[tokio::test]
 #[serial]
 async fn schedules_are_listed_added_changed_run_and_removed() {
-    with_token(|request, _ctx, token| async move {
+    with_token(|request, ctx, token| async move {
         let schedules = "/api/schedules";
         let here = std::env::current_dir().unwrap();
         let here = here.to_string_lossy();
-        // Its repos and its times are lists.
+        // Its repos are ones that m8r has, by their clones' paths. They and its times are
+        // lists.
         let (src, tests) = (format!("{here}/src"), format!("{here}/tests"));
+        let in_src = support::repo(&ctx.db, &src, "").await;
+        let in_tests = support::repo(&ctx.db, &tests, "").await;
         let res = request
             .post(schedules)
             .authorization_bearer(&token)
             .json(
-                &json!({ "operation": "review", "category": PR, "repos": [src, tests],
-                "hron": ["0 6 * * 1-5", "every saturday at 10:00"], "command": "claude -p",
-                "prompt": "{{ config_prompt }}\n\n{{ watchlist }}" }),
+                &json!({ "name": "review", "category": REQUESTS, "max_items": 50,
+                "repos": [tests, src], "hron": ["0 6 * * 1-5", "every saturday at 10:00"],
+                "command": "claude -p", "prompt": "{{ config_prompt }}\n\n{{ watchlist }}" }),
             )
             .await;
         let (status, added) = answer(&res);
@@ -297,8 +362,9 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
             added,
             json!({
                 "id": 1,
-                "operation": "review",
-                "category": PR,
+                "name": "review",
+                "category": REQUESTS,
+                "max_items": 50,
                 "repos": [src, tests],
                 "hron": ["every weekday at 06:00", "every saturday at 10:00"],
                 "command": "claude -p",
@@ -314,21 +380,33 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
             .await;
         assert_eq!(answer(&res), (200, added));
 
-        let res = request
-            .post(schedules)
-            .authorization_bearer(&token)
-            .json(
-                &json!({ "operation": "review", "repos": [here], "hron": ["every day at 6am"],
+        for (body, why) in [
+            (
+                json!({ "name": "triage", "repos": [src], "hron": ["every day at 6am"],
                 "command": "claude -p" }),
-            )
-            .await;
-        assert_eq!(
-            answer(&res),
-            bad_request("error: unknown keyword 'am'\n  every day at 6am\n                ^^")
-        );
+                "error: unknown keyword 'am'\n  every day at 6am\n                ^^".to_string(),
+            ),
+            (
+                json!({ "name": "review", "repos": [src], "hron": ["every day at 6:00"],
+                "command": "claude -p" }),
+                "There's already a schedule \"review\".".to_string(),
+            ),
+            (
+                json!({ "name": "triage", "repos": [here], "hron": ["every day at 6:00"],
+                "command": "claude -p" }),
+                format!("\"{here}\" isn't one of m8r's repos. Add it to the repos first."),
+            ),
+        ] {
+            let res = request
+                .post(schedules)
+                .authorization_bearer(&token)
+                .json(&body)
+                .await;
+            assert_eq!(answer(&res), bad_request(&why), "{body}");
+        }
 
-        // A change names only what changes. A blank category is none. A list of one can be
-        // text, and so can a longer one, with a line for each.
+        // A change names only what changes. A blank category is no items. A list of one can
+        // be text, and so can a longer one, with a line for each.
         let res = request
             .patch(&format!("{schedules}/1"))
             .authorization_bearer(&token)
@@ -340,12 +418,14 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
             (
                 &changed["hron"],
                 &changed["category"],
+                &changed["max_items"],
                 &changed["command"],
                 &changed["repos"]
             ),
             (
                 &json!(["every 12 hours from 00:00 to 23:59"]),
                 &json!(""),
+                &json!(50),
                 &json!("claude -p"),
                 &json!([src, tests])
             )
@@ -353,16 +433,28 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
         let res = request
             .patch(&format!("{schedules}/1"))
             .authorization_bearer(&token)
+            .json(&json!({ "repos": tests, "max_items": 0, "name": "evenings" }))
+            .await;
+        let (_, changed) = answer(&res);
+        assert_eq!(
+            (&changed["repos"], &changed["max_items"], &changed["name"]),
+            (&json!([tests]), &json!(0), &json!("evenings"))
+        );
+        let res = request
+            .patch(&format!("{schedules}/1"))
+            .authorization_bearer(&token)
             .json(&json!({ "repos": format!("{tests}\n{src}") }))
             .await;
-        assert_eq!(res.json::<Value>()["repos"], json!([tests, src]));
+        assert_eq!(res.json::<Value>()["repos"], json!([src, tests]));
         let res = request
             .patch(&format!("{schedules}/1"))
             .authorization_bearer(&token)
             .json(&json!({ "repos": [] }))
             .await;
-        let why = res.json::<Value>()["description"].to_string();
-        assert!(why.contains("Say which repo the schedule runs in"), "{why}");
+        assert_eq!(
+            answer(&res),
+            bad_request("Say which repos the schedule runs in.")
+        );
         let res = request
             .patch(&format!("{schedules}/1"))
             .authorization_bearer(&token)
@@ -389,18 +481,37 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
                 (
                     &run["id"],
                     &run["schedule_id"],
+                    &run["name"],
+                    &run["repo_id"],
                     &run["repo"],
                     &run["status"],
                     &run["command"],
                 )
             })
             .collect();
-        let (one, queued_status, command) = (json!(1), json!("queued"), json!("claude -p"));
+        let (one, name) = (json!(1), json!("evenings"));
+        let (queued_status, command) = (json!("queued"), json!("claude -p"));
         assert_eq!(
             queued,
             [
-                (&json!(1), &one, &json!(tests), &queued_status, &command),
-                (&json!(2), &one, &json!(src), &queued_status, &command),
+                (
+                    &json!(1),
+                    &one,
+                    &name,
+                    &json!(in_src.id),
+                    &json!(src),
+                    &queued_status,
+                    &command
+                ),
+                (
+                    &json!(2),
+                    &one,
+                    &name,
+                    &json!(in_tests.id),
+                    &json!(tests),
+                    &queued_status,
+                    &command
+                ),
             ]
         );
         let res = request
@@ -408,6 +519,19 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
             .authorization_bearer(&token)
             .await;
         assert_eq!(answer(&res), (200, runs));
+
+        // A repo that a schedule runs in stays.
+        let res = request
+            .delete(&format!("/api/repos/{}", in_src.id))
+            .authorization_bearer(&token)
+            .await;
+        assert_eq!(
+            answer(&res),
+            bad_request(&format!(
+                "\"{src}\" is in use: by 0 watchlist items and 1 schedules. Take them off it \
+                 first."
+            ))
+        );
 
         let res = request
             .delete(&format!("{schedules}/1"))

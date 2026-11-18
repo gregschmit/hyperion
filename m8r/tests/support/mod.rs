@@ -10,14 +10,17 @@ use std::{
 use loco_rs::{app::AppContext, prelude::*, TestServer};
 use m8r::{
     initializers::access,
-    models::{categories, configurations, runs, schedules, tokens, watchlist_items},
+    models::{
+        configurations, repos, runs, schedule_repos, schedules, tokens,
+        watchlist_items::{self, Forge},
+    },
     settings::Settings,
 };
 use serde_json::{json, Value};
 
-/// The categories that every m8r starts with.
-pub const ISSUE: &str = "Issue";
-pub const PR: &str = "Pull/Merge Request";
+/// The categories: an item's URL says which one it's in.
+pub const ISSUES: &str = "issues";
+pub const REQUESTS: &str = "pull/merge requests";
 
 /// Open an access link, so the server's later requests carry a session. The server must save
 /// cookies (`RequestConfigBuilder::save_cookies`).
@@ -42,11 +45,34 @@ pub async fn token(ctx: &AppContext, name: &str, scope: &str) -> String {
     made.unwrap().unwrap()
 }
 
-/// Put what's at `url` on the watchlist, in `category`.
-pub async fn watch(ctx: &AppContext, url: &str, category: &str) -> watchlist_items::Model {
+/// The repo whose clone is at `path`, with the project at `url` (blank: none). It skips its
+/// form's checks, so the clone needn't be there. One that's there already stays as it is.
+pub async fn repo(db: &DatabaseConnection, path: &str, url: &str) -> repos::Model {
+    let found = repos::Entity::find()
+        .filter(repos::Column::Path.eq(path))
+        .one(db)
+        .await
+        .unwrap();
+    if let Some(repo) = found {
+        return repo;
+    }
+    let mut repo = repos::ActiveModel::new();
+    repo.path = Set(path.to_string());
+    repo.url = Set(url.to_string());
+    repo.insert(db).await.unwrap()
+}
+
+/// Put what's at `url` on the watchlist. If m8r has no repo for its project, it gets one
+/// first, whose clone isn't there: `/clones/<host>/<project>`.
+pub async fn watch(ctx: &AppContext, url: &str) -> watchlist_items::Model {
+    let project = Forge::parse(url).unwrap().project;
+    let known = repos::Model::of_project(&ctx.db, &project).await.unwrap();
+    if known.is_none() {
+        let path = project.replace("https://", "/clones/");
+        repo(&ctx.db, &path, &project).await;
+    }
     let params = watchlist_items::Params {
         url: url.to_string(),
-        category: category.to_string(),
         ..watchlist_items::Params::default()
     };
     let listed = watchlist_items::Model::create(&ctx.db, &params).await;
@@ -64,11 +90,11 @@ pub async fn configure(ctx: &AppContext, prompt: &str) -> configurations::Model 
     configuration.activated(&ctx.db).await.unwrap()
 }
 
-/// What a schedule needs, for a test to change: a triage in `repo`, on weekdays, with `cat`
-/// for a command, which prints the prompt back.
+/// What a schedule needs, for a test to change: one called `triage` in the clone at `repo`, on
+/// weekdays, with `cat` for a command, which prints the prompt back. It takes no items.
 pub fn schedule_params(repo: &Path, prompt: &str) -> schedules::Params {
     schedules::Params {
-        operation: "triage".to_string(),
+        name: "triage".to_string(),
         repos: (&*repo.to_string_lossy()).into(),
         hron: "every weekday at 06:00".into(),
         command: "cat".to_string(),
@@ -77,42 +103,57 @@ pub fn schedule_params(repo: &Path, prompt: &str) -> schedules::Params {
     }
 }
 
+/// Make the schedule. Each of its repos that m8r doesn't have yet gets a row first, with no
+/// project.
 pub async fn schedule(ctx: &AppContext, params: &schedules::Params) -> schedules::Model {
+    for path in params.repos.iter() {
+        if repos::Model::at(&ctx.db, path).await.unwrap().is_none() {
+            repo(&ctx.db, path, "").await;
+        }
+    }
     let made = schedules::Model::create(&ctx.db, params).await;
     made.unwrap().unwrap().0
 }
 
-/// Queue a run of a schedule that's made for it: `operation` in `repo`, with `command`. The
-/// schedule skips its form's checks, so the repo needn't be there.
-pub async fn queue(
-    db: &DatabaseConnection,
-    operation: &str,
-    repo: &str,
-    command: &str,
-) -> runs::Model {
-    let schedule = unchecked(db, operation, repo, command).await;
+/// Queue a run of a schedule that's made for it: `name` in `repo`, with `command`. The
+/// schedule skips its form's checks, so the repo's clone needn't be there.
+pub async fn queue(db: &DatabaseConnection, name: &str, repo: &str, command: &str) -> runs::Model {
+    let schedule = unchecked(db, name, repo, command).await;
     queue_one(db, &schedule).await
 }
 
-/// A schedule that skips its form's checks: `operation` in `repos`, one to a line, with
-/// `command`.
+/// A schedule that skips its form's checks: `name` in `repos`, the paths of their clones, one
+/// to a line, with `command`.
 pub async fn unchecked(
     db: &DatabaseConnection,
-    operation: &str,
+    name: &str,
     repos: &str,
     command: &str,
 ) -> schedules::Model {
     let mut schedule = schedules::ActiveModel::new();
-    schedule.operation = Set(operation.to_string());
-    schedule.repos = Set(repos.to_string());
+    schedule.name = Set(name.to_string());
     schedule.hron = Set("every day at 06:00".to_string());
     schedule.command = Set(command.to_string());
-    schedule.insert(db).await.unwrap()
+    let schedule = schedule.insert(db).await.unwrap();
+    for path in repos.lines() {
+        let row = schedule_repos::ActiveModel {
+            schedule_id: Set(schedule.id),
+            repo_id: Set(repo(db, path, "").await.id),
+        };
+        row.insert(db).await.unwrap();
+    }
+    schedule
+}
+
+/// Queue the runs of a schedule: one for each of its repos.
+pub async fn queue_all(db: &DatabaseConnection, schedule: &schedules::Model) -> Vec<runs::Model> {
+    let repos = schedule.repos(db).await.unwrap();
+    runs::Model::queue(db, schedule, &repos).await.unwrap()
 }
 
 /// Queue the run of a schedule that has one repo.
 pub async fn queue_one(db: &DatabaseConnection, schedule: &schedules::Model) -> runs::Model {
-    let mut queued = runs::Model::queue(db, schedule).await.unwrap();
+    let mut queued = queue_all(db, schedule).await;
     assert_eq!(queued.len(), 1);
     queued.remove(0)
 }
@@ -122,15 +163,11 @@ pub async fn start(db: &DatabaseConnection, run: runs::Model, prompt: &str) -> r
     let (schedule, _) = schedules::Model::find(db, run.schedule_id.unwrap())
         .await
         .unwrap();
+    let repo = repos::Model::find(db, run.repo_id.unwrap()).await.unwrap();
     let run = run.into_active_model();
-    run.started(db, &schedule, prompt.to_string())
+    run.started(db, &schedule, &repo, prompt.to_string())
         .await
         .unwrap()
-}
-
-pub async fn category(ctx: &AppContext, name: &str) -> categories::Model {
-    let found = categories::Model::named(&ctx.db, name).await;
-    found.unwrap().unwrap()
 }
 
 /// A directory of stand-in tools, and a shell that finds only them. So a test doesn't depend

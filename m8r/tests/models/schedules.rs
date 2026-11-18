@@ -7,17 +7,18 @@ use m8r::{
     models::{
         errors,
         runs::{self, Status},
-        schedules::{self, parse, Changes, Operation, Params},
+        schedules::{self, parse, Changes, Items, Params},
+        watchlist_items::Category,
     },
     prompts,
 };
 use serial_test::serial;
 
-use crate::support::{configure, start, watch, ISSUE, PR};
+use crate::support::{self, configure, queue_all, start, watch, ISSUES, REQUESTS};
 
-fn params(operation: &str, repo: &str, hron: &str) -> Params {
+fn params(name: &str, repo: &str, hron: &str) -> Params {
     Params {
-        operation: operation.to_string(),
+        name: name.to_string(),
         repos: repo.into(),
         hron: hron.into(),
         command: "claude -p".to_string(),
@@ -30,6 +31,11 @@ fn here() -> String {
         .unwrap()
         .to_string_lossy()
         .into_owned()
+}
+
+/// The clone that the tests run in, as one of m8r's repos, and its path.
+async fn repo_here(db: &DatabaseConnection) -> String {
+    support::repo(db, &here(), "").await.path
 }
 
 /// How m8r reads `text`, in hron's own words.
@@ -105,30 +111,9 @@ fn a_time_that_m8r_cannot_read_says_where_it_went_wrong() {
     }
 }
 
-#[test]
-fn a_repo_is_a_path_from_the_home_of_m8rs_user() {
-    let home = Path::new("/home/m8r");
-    for (repo, dir) in [
-        ("~/git/rgnets/rxg", "/home/m8r/git/rgnets/rxg"),
-        (" ~/git/rgnets/rxg ", "/home/m8r/git/rgnets/rxg"),
-        ("git/rgnets/rxg", "/home/m8r/git/rgnets/rxg"),
-        ("~", "/home/m8r"),
-        // A full path is that path.
-        ("/srv/clones/rxg", "/srv/clones/rxg"),
-        // Another user's home is no shorthand of m8r's.
-        ("~gns/git/rxg", "/home/m8r/~gns/git/rxg"),
-    ] {
-        assert_eq!(schedules::from_home(repo, home), Path::new(dir), "{repo}");
-    }
-
-    // The home is the one of the user that m8r runs as.
-    let home = std::env::home_dir().unwrap();
-    assert_eq!(schedules::repo_dir("~/git/x"), home.join("git/x"));
-}
-
 #[tokio::test]
 #[serial]
-async fn a_schedule_takes_a_clone_by_its_path_from_home() {
+async fn a_schedule_names_a_repo_by_its_clones_path_however_it_is_written() {
     let boot = boot_test::<App>().await.unwrap();
     let db = &boot.app_context.db;
     // A clone that's there, written from the home directory.
@@ -141,114 +126,156 @@ async fn a_schedule_takes_a_clone_by_its_path_from_home() {
         // The tests don't run under the home directory here, so there's no such clone.
         return;
     };
-    let repo = format!("~/{}", inside.display());
+    let repo = support::repo(db, &format!("~/{}", inside.display()), "").await;
 
-    let made = schedules::Model::create(db, &params("triage", &repo, "every day at 9:00")).await;
-    let (schedule, _) = made.unwrap().unwrap();
-
-    // It's kept as it was written.
-    assert_eq!(schedule.repos, repo);
-    assert_eq!(schedules::repo_dir(&schedule.repos), home.join(inside));
+    // The schedule names it by its full path, and it's that repo.
+    let made = schedules::Model::create(db, &params("triage", &here(), "every day at 9:00")).await;
+    let (schedule, repos) = made.unwrap().unwrap();
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0].id, repo.id);
+    assert_eq!(schedule.repos(db).await.unwrap()[0].path, repo.path);
 }
 
 #[test]
-fn a_new_schedule_starts_with_its_operations_command_and_m8rs_parts_in_its_prompt() {
+fn a_new_schedule_starts_with_the_agents_command_and_m8rs_parts_in_its_prompt() {
     let starter = Params::starter("claude -p --model opus");
-    assert_eq!(starter.operation, "triage");
+    assert_eq!(starter.name, "");
     assert_eq!(starter.command, "claude -p --model opus");
     assert_eq!(starter.prompt, prompts::STARTER);
-    assert!(starter.category.is_empty());
+    // Its prompt names the watchlist, so it starts with every item, and with no cutoff.
+    assert_eq!((starter.category.as_str(), starter.max_items), ("all", 0));
+}
 
-    // For other, you write the command.
-    assert_eq!(Operation::Review.default_command("claude -p"), "claude -p");
-    assert_eq!(Operation::Other.default_command("claude -p"), "");
-    assert_eq!(Operation::parse("other"), Some(Operation::Other));
-    assert_eq!(Operation::parse("deploy"), None);
+#[test]
+fn a_schedule_takes_all_items_a_categorys_or_none() {
+    assert_eq!(
+        Items::CHOICES.map(Items::as_str),
+        ["", "all", "issues", "pull/merge requests"]
+    );
+    assert_eq!(Items::parse(" "), Some(Items::None));
+    assert_eq!(Items::parse("all"), Some(Items::All));
+    assert_eq!(
+        Items::parse("pull/merge requests"),
+        Some(Items::Of(Category::Requests))
+    );
+    assert_eq!(Items::parse("Issue"), None);
 }
 
 #[tokio::test]
 #[serial]
-async fn a_schedule_needs_an_operation_a_clone_a_time_and_a_command() {
+async fn a_schedule_needs_a_name_a_repo_a_time_and_a_command() {
     let boot = boot_test::<App>().await.unwrap();
     let db = &boot.app_context.db;
+    let here = repo_here(db).await;
     let saved = |params: Params| async move {
         let made = schedules::Model::create(db, &params).await;
-        made.unwrap()
-            .map(|(schedule, category)| (schedule, category.map(|it| it.name)))
+        made.unwrap().map(|(schedule, _)| schedule)
     };
 
-    assert!(saved(params("triage", &here(), "0 6 * * 1-5"))
-        .await
-        .is_ok());
-    assert!(saved(params("other", &here(), "every 12 hours"))
+    assert!(saved(params("triage", &here, "0 6 * * 1-5")).await.is_ok());
+    assert!(saved(params("nightly docs", &here, "every 12 hours"))
         .await
         .is_ok());
 
-    assert!(saved(params("deploy", &here(), "0 6 * * 1-5"))
-        .await
-        .is_err());
-    assert!(saved(params("triage", "/no/such/clone", "0 6 * * 1-5"))
-        .await
-        .is_err());
-    assert!(saved(params("triage", "no/such/clone", "0 6 * * 1-5"))
-        .await
-        .is_err());
+    // A name is what you call it, and it's the only one of that name.
     assert_eq!(
-        saved(params("triage", " ", "0 6 * * 1-5"))
-            .await
-            .unwrap_err(),
-        "Say which repo the schedule runs in: a clone in the home of m8r's user, such as \
-         ~/git/group/project."
+        saved(params(" ", &here, "0 6 * * 1-5")).await.unwrap_err(),
+        "Give the schedule a name."
     );
     assert_eq!(
-        saved(params("triage", "no/such/clone", "0 6 * * 1-5"))
+        saved(params(" triage ", &here, "0 6 * * 1-5"))
             .await
             .unwrap_err(),
-        "A repo must be a clone in the home of m8r's user, such as ~/git/group/project, and \
-         \"no/such/clone\" isn't a directory there."
+        "There's already a schedule \"triage\"."
     );
-    assert!(saved(params("triage", &here(), "at six")).await.is_err());
+
+    // A repo is one that m8r has.
     assert_eq!(
-        saved(params("triage", &here(), " \n")).await.unwrap_err(),
+        saved(params("deploy", " ", "0 6 * * 1-5"))
+            .await
+            .unwrap_err(),
+        "Say which repos the schedule runs in."
+    );
+    assert_eq!(
+        saved(params("deploy", "/no/such/clone", "0 6 * * 1-5"))
+            .await
+            .unwrap_err(),
+        "\"/no/such/clone\" isn't one of m8r's repos. Add it to the repos first."
+    );
+    // A clone that's there isn't a repo until you add it.
+    let unknown = format!("{here}/src");
+    assert!(saved(params("deploy", &unknown, "0 6 * * 1-5"))
+        .await
+        .unwrap_err()
+        .ends_with("isn't one of m8r's repos. Add it to the repos first."));
+
+    assert!(saved(params("deploy", &here, "at six")).await.is_err());
+    assert_eq!(
+        saved(params("deploy", &here, " \n")).await.unwrap_err(),
         "Say when the schedule runs, such as every weekday at 06:00."
     );
     let no_command = Params {
         command: "  ".to_string(),
-        ..params("triage", &here(), "0 6 * * 1-5")
+        ..params("deploy", &here, "0 6 * * 1-5")
     };
     assert_eq!(
         saved(no_command).await.unwrap_err(),
         "Say which command the schedule runs."
     );
 
-    // Its category is one that's there, or none: then its runs get no items.
-    let review = |category: &str| Params {
+    // It takes every item of its repo, a category's, or none: then its runs get no items.
+    // And it can take only the first ones.
+    let review = |name: &str, category: &str, most: u32| Params {
         category: category.to_string(),
-        ..params("review", &here(), "every day at 9:00")
+        max_items: most,
+        ..params(name, &here, "every day at 9:00")
     };
-    let (schedule, category) = saved(review(PR)).await.unwrap();
-    assert!(schedule.category_id.is_some());
-    assert_eq!(category.as_deref(), Some(PR));
-    let (schedule, category) = saved(review(" ")).await.unwrap();
-    assert_eq!((schedule.category_id, category), (None, None));
+    let schedule = saved(review("review", REQUESTS, 50)).await.unwrap();
+    assert_eq!(schedule.items(), Items::Of(Category::Requests));
     assert_eq!(
-        saved(review("Epic")).await.unwrap_err(),
-        "There's no category \"Epic\". The categories are: Issue, Pull/Merge Request."
+        (schedule.category.as_str(), schedule.most()),
+        (REQUESTS, 50)
     );
+    let schedule = saved(review("everything", " all ", 0)).await.unwrap();
+    assert_eq!((schedule.items(), schedule.most()), (Items::All, 0));
+    let schedule = saved(review("nothing", " ", 0)).await.unwrap();
+    assert_eq!(schedule.items(), Items::None);
+    assert!(saved(review("epics", "Epic", 0))
+        .await
+        .unwrap_err()
+        .starts_with("A schedule's runs get all the watchlist items of their repo"));
 
     // Its prompt compiles with what a run would get.
-    let prompted = |prompt: &str| Params {
+    let prompted = |name: &str, prompt: &str| Params {
         prompt: prompt.to_string(),
-        ..params("triage", &here(), "every day at 9:00")
+        ..params(name, &here, "every day at 9:00")
     };
-    assert!(saved(prompted(prompts::STARTER)).await.is_ok());
-    assert!(saved(prompted("")).await.is_ok());
-    let broken = saved(prompted("{{ items }}")).await.unwrap_err();
+    assert!(saved(prompted("starter", prompts::STARTER)).await.is_ok());
+    assert!(saved(prompted("blank", "")).await.is_ok());
+    let broken = saved(prompted("broken", "{{ items }}")).await.unwrap_err();
     assert!(
         broken.starts_with("The prompt doesn't compile."),
         "{broken}"
     );
-    assert_eq!(schedules::Model::list(db).await.unwrap().len(), 6);
+    let names: Vec<String> = schedules::Model::list(db)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(schedule, _)| schedule.name)
+        .collect();
+    // By name.
+    assert_eq!(
+        names,
+        [
+            "blank",
+            "everything",
+            "nightly docs",
+            "nothing",
+            "review",
+            "starter",
+            "triage"
+        ]
+    );
 }
 
 #[tokio::test]
@@ -256,10 +283,12 @@ async fn a_schedule_needs_an_operation_a_clone_a_time_and_a_command() {
 async fn a_change_to_a_schedule_keeps_what_it_does_not_name() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
-    watch(ctx, "https://github.com/o/r/issues/1", ISSUE).await;
+    let here = repo_here(&ctx.db).await;
+    watch(ctx, "https://github.com/o/r/issues/1").await;
     let asked = Params {
         prompt: "{{ config_prompt }}".to_string(),
-        ..params("triage", &here(), "every day at 9:00")
+        max_items: 5,
+        ..params("triage", &here, "every day at 9:00")
     };
     let (schedule, _) = schedules::Model::create(&ctx.db, &asked)
         .await
@@ -268,33 +297,47 @@ async fn a_change_to_a_schedule_keeps_what_it_does_not_name() {
 
     // A change keeps what it doesn't name.
     let moved = Changes {
-        category: Some(ISSUE.to_string()),
+        category: Some(ISSUES.to_string()),
         hron: Some("0 7 * * *".into()),
         ..Changes::default()
     };
-    let (changed, category) = schedules::Model::change(&ctx.db, schedule.id, moved)
+    let (changed, repos) = schedules::Model::change(&ctx.db, schedule.id, moved)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(category.unwrap().name, ISSUE);
+    assert_eq!(changed.category, ISSUES);
     assert_eq!(
         (
+            changed.name.as_str(),
             changed.hron.as_str(),
             changed.command.as_str(),
-            changed.prompt.as_str()
+            changed.prompt.as_str(),
+            changed.most(),
         ),
-        ("every day at 07:00", "claude -p", "{{ config_prompt }}")
+        (
+            "triage",
+            "every day at 07:00",
+            "claude -p",
+            "{{ config_prompt }}",
+            5
+        )
     );
-    // And blank takes the category away again.
+    assert_eq!(repos[0].path, here);
+    // And blank takes the items away again. A new name is fine, and its own name is too.
     let every = Changes {
+        name: Some("mornings".to_string()),
         category: Some(String::new()),
+        max_items: Some(0),
         ..Changes::default()
     };
-    let (changed, category) = schedules::Model::change(&ctx.db, schedule.id, every)
+    let (changed, _) = schedules::Model::change(&ctx.db, schedule.id, every)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!((changed.category_id, category), (None, None));
+    assert_eq!(
+        (changed.name.as_str(), changed.items(), changed.most()),
+        ("mornings", Items::None, 0)
+    );
 
     // The active configuration's prompt is plain text: whatever it holds, a prompt that
     // places it compiles.
@@ -311,7 +354,8 @@ async fn a_change_to_a_schedule_keeps_what_it_does_not_name() {
 #[serial]
 async fn a_schedule_is_due_for_the_whole_minute_of_its_time_on_the_servers_clock() {
     let boot = boot_test::<App>().await.unwrap();
-    let mut asked = params("review", &here(), "30  6 * * 1-5");
+    let here = repo_here(&boot.app_context.db).await;
+    let mut asked = params("review", &here, "30  6 * * 1-5");
     asked.command = " claude -p --model opus ".to_string();
     let (schedule, _) = schedules::Model::create(&boot.app_context.db, &asked)
         .await
@@ -339,7 +383,8 @@ async fn a_schedule_is_due_for_the_whole_minute_of_its_time_on_the_servers_clock
 #[serial]
 async fn a_schedule_can_name_a_time_zone_of_its_own() {
     let boot = boot_test::<App>().await.unwrap();
-    let asked = params("triage", &here(), "every day at 09:00 in America/New_York");
+    let here = repo_here(&boot.app_context.db).await;
+    let asked = params("triage", &here, "every day at 09:00 in America/New_York");
     let (schedule, _) = schedules::Model::create(&boot.app_context.db, &asked)
         .await
         .unwrap()
@@ -360,11 +405,12 @@ async fn a_schedule_can_name_a_time_zone_of_its_own() {
 async fn a_schedule_runs_at_each_of_its_times() {
     let boot = boot_test::<App>().await.unwrap();
     let db = &boot.app_context.db;
+    let here = repo_here(db).await;
     // One to a line, as a form sends them: a browser ends a line with a return too. A line can
     // be cron, and one that says the same as another counts once.
     let asked = params(
         "triage",
-        &here(),
+        &here,
         "every weekday at 6:00, 15:30\r\n\r\n 0 12 * * 6 \r\nEvery weekday at 06:00, 15:30",
     );
     let (schedule, _) = schedules::Model::create(db, &asked).await.unwrap().unwrap();
@@ -398,7 +444,7 @@ async fn a_schedule_runs_at_each_of_its_times() {
     );
 
     // One line that m8r can't read keeps the schedule from being saved, and hron says which.
-    let bad = params("triage", &here(), "every day at 9:00\nevery day at 6am");
+    let bad = params("evenings", &here, "every day at 9:00\nevery day at 6am");
     let problem = schedules::Model::create(db, &bad).await.unwrap();
     assert_eq!(
         problem.unwrap_err(),
@@ -412,32 +458,39 @@ async fn a_schedule_keeps_each_of_its_repos_once() {
     let boot = boot_test::<App>().await.unwrap();
     let db = &boot.app_context.db;
     let here = here();
-    // Two clones, and the first one again, written another way.
+    let (src, tests) = (format!("{here}/src"), format!("{here}/tests"));
+    for path in [&tests, &src] {
+        support::repo(db, path, "").await;
+    }
+    // Two repos, and the first one again, written another way.
     let asked = params(
         "triage",
-        &format!(" {here}/src \r\n\r\n{here}/tests\r\n{here}/src/"),
+        &format!(" {src} \r\n\r\n{tests}\r\n{src}/"),
         "every day at 9:00",
     );
-    let (schedule, _) = schedules::Model::create(db, &asked).await.unwrap().unwrap();
-    assert_eq!(schedule.repos, format!("{here}/src\n{here}/tests"));
+    let (schedule, repos) = schedules::Model::create(db, &asked).await.unwrap().unwrap();
+    let paths = |repos: Vec<m8r::models::repos::Model>| -> Vec<String> {
+        repos.into_iter().map(|repo| repo.path).collect()
+    };
+    assert_eq!(paths(repos), [src.as_str(), tests.as_str()]);
     assert_eq!(
-        schedule.repos().collect::<Vec<_>>(),
-        [format!("{here}/src"), format!("{here}/tests")]
+        paths(schedule.repos(db).await.unwrap()),
+        [src.as_str(), tests.as_str()]
     );
+    // The list has them too.
+    let listed = schedules::Model::list(db).await.unwrap();
+    assert_eq!(paths(listed[0].1.clone()), [src.as_str(), tests.as_str()]);
 
-    // Each one must be there.
+    // Each one must be a repo of m8r's.
     let asked = params(
-        "triage",
-        &format!("{here}/src\n{here}/no-such-clone"),
+        "review",
+        &format!("{src}\n{here}/migration"),
         "every day at 9:00",
     );
     let problem = schedules::Model::create(db, &asked).await.unwrap();
     assert_eq!(
         problem.unwrap_err(),
-        format!(
-            "A repo must be a clone in the home of m8r's user, such as ~/git/group/project, and \
-             \"{here}/no-such-clone\" isn't a directory there."
-        )
+        format!("\"{here}/migration\" isn't one of m8r's repos. Add it to the repos first.")
     );
 }
 
@@ -447,6 +500,9 @@ async fn a_repo_that_leaves_a_schedule_leaves_nothing_behind() {
     let boot = boot_test::<App>().await.unwrap();
     let db = &boot.app_context.db;
     let (src, tests) = (format!("{}/src", here()), format!("{}/tests", here()));
+    for path in [&src, &tests] {
+        support::repo(db, path, "").await;
+    }
     let asked = params("triage", &format!("{src}\n{tests}"), "every day at 9:00");
     let (schedule, _) = schedules::Model::create(db, &asked).await.unwrap().unwrap();
     let open = || async move {
@@ -467,15 +523,15 @@ async fn a_repo_that_leaves_a_schedule_leaves_nothing_behind() {
     );
 
     // A run failed in each clone: each has an error of its own.
-    for run in runs::Model::queue(db, &schedule).await.unwrap() {
+    for run in queue_all(db, &schedule).await {
         fail(start(db, run, "p").await).await;
     }
     assert_eq!(open().await, [in_src.as_str(), in_tests.as_str()]);
     // In the second clone, one run is in progress and the next one waits. In the first, one
     // waits.
-    let mut queued = runs::Model::queue(db, &schedule).await.unwrap();
+    let mut queued = queue_all(db, &schedule).await;
     let in_progress = start(db, queued.remove(1), "p").await;
-    let queued = runs::Model::queue(db, &schedule).await.unwrap();
+    let queued = queue_all(db, &schedule).await;
     let (waits_in_src, waits_in_tests) = (&queued[0], &queued[1]);
     assert_ne!(waits_in_tests.id, in_progress.id);
 
@@ -508,7 +564,7 @@ async fn a_repo_that_leaves_a_schedule_leaves_nothing_behind() {
     assert!(open().await.is_empty());
 
     // A schedule that's removed takes its errors with it.
-    for run in runs::Model::queue(db, &schedule).await.unwrap() {
+    for run in queue_all(db, &schedule).await {
         fail(start(db, run, "p").await).await;
     }
     assert_eq!(open().await, [in_src.as_str()]);

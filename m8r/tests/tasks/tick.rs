@@ -9,7 +9,8 @@ use m8r::{
 use serial_test::serial;
 
 use crate::support::{
-    self, configure, queue_one, schedule, schedule_params, start, watch, Sandbox, GH, ISSUE, PR,
+    self, configure, queue_all, queue_one, schedule, schedule_params, start, watch, Sandbox, GH,
+    REQUESTS,
 };
 
 async fn tick(ctx: &AppContext) {
@@ -19,13 +20,25 @@ async fn tick(ctx: &AppContext) {
 }
 
 /// Queue a run of a new schedule in the sandbox's repo: the agent's command, with `prompt`.
+/// The first one is called `triage`, and each later one has a name of its own.
 async fn queue(ctx: &AppContext, sandbox: &Sandbox, prompt: &str) -> runs::Model {
+    let made = schedules::Entity::find().count(&ctx.db).await.unwrap();
+    let name = match made {
+        0 => "triage".to_string(),
+        made => format!("triage {}", made + 1),
+    };
     let params = schedules::Params {
+        name,
         command: Settings::from_context(ctx).unwrap().agent,
         ..schedule_params(&sandbox.repo(), prompt)
     };
     let schedule = schedule(ctx, &params).await;
     queue_one(&ctx.db, &schedule).await
+}
+
+/// The clone at `dir` as one of m8r's repos, with the project at `url`.
+async fn repo(ctx: &AppContext, dir: &std::path::Path, url: &str) -> m8r::models::repos::Model {
+    support::repo(&ctx.db, &dir.to_string_lossy(), url).await
 }
 
 /// What the open errors are about.
@@ -53,16 +66,30 @@ exit "${1:-0}"
 async fn a_tick_runs_the_oldest_queued_run_with_its_compiled_prompt() {
     let boot = boot_test::<App>().await.unwrap();
     let sandbox = Sandbox::new("tick-run");
-    // The forge says that everything on the watchlist is open.
+    // The forges say that everything on the watchlist is open.
     sandbox.tool("gh", r#"echo '{"title": "An open one", "state": "open"}'"#);
+    sandbox.tool(
+        "glab",
+        r#"echo '{"title": "An open one", "state": "opened"}'"#,
+    );
     let ctx = sandbox.context(&boot.app_context, "cat");
     configure(&ctx, "The developer likes short reviews.\n").await;
-    watch(&ctx, "https://github.com/o/r/issues/1", ISSUE).await;
-    watch(&ctx, "https://github.com/o/r/pull/2", PR).await;
-    // A review of the PRs/MRs: the schedule's category says which items its prompt gets.
+    // The run's repo has an issue and a PR, and another repo has an MR.
+    repo(&ctx, &sandbox.repo(), "https://github.com/o/r").await;
+    repo(
+        &ctx,
+        &sandbox.another_repo("other"),
+        "https://git.example.com/g/p",
+    )
+    .await;
+    watch(&ctx, "https://github.com/o/r/issues/1").await;
+    watch(&ctx, "https://github.com/o/r/pull/2").await;
+    watch(&ctx, "https://git.example.com/g/p/-/merge_requests/3").await;
+    // A review of the PRs/MRs: the schedule's category says which of its repo's items its
+    // prompt gets.
     let params = schedules::Params {
-        operation: "review".to_string(),
-        category: PR.to_string(),
+        name: "review".to_string(),
+        category: REQUESTS.to_string(),
         ..schedule_params(
             &sandbox.repo(),
             "{{ m8r_prompt }}\n\n{{ config_prompt }}\n\nReview these:\n{{ watchlist }}",
@@ -70,7 +97,8 @@ async fn a_tick_runs_the_oldest_queued_run_with_its_compiled_prompt() {
     };
     let reviews = schedule(&ctx, &params).await;
     let run = queue_one(&ctx.db, &reviews).await;
-    let later = support::queue(&ctx.db, "triage", "/elsewhere", "cat").await;
+    let elsewhere = sandbox.another_repo("elsewhere");
+    let later = support::queue(&ctx.db, "triage", &elsewhere.to_string_lossy(), "cat").await;
 
     tick(&ctx).await;
 
@@ -88,7 +116,7 @@ async fn a_tick_runs_the_oldest_queued_run_with_its_compiled_prompt() {
         run.prompt.ends_with(
             "they are the developer's.\n\nThe developer likes short reviews.\n\n\
              Review these:\n\
-             - item 2 (Pull/Merge Request, medium): https://github.com/o/r/pull/2"
+             - item 2 (medium): https://github.com/o/r/pull/2"
         ),
         "{}",
         run.prompt
@@ -154,13 +182,15 @@ prompt=$(cat)
 # The lines of the prompt's command that has `$1` in its first line.
 given() { printf '%s\n' "$prompt" | grep -A1 -- "$1" | grep -v '^--$' | sed -e '/[^\\]$/q'; }
 
-echo "listed: $(eval "$(given 'curl -sS "$M8R_URL/api/watchlist_items" -H "Authorization: Bearer $M8R_TOKEN"$')")"
-# The MR of item 1 merged, and the review of item 2 is done.
+echo "listed: $(eval "$(given 'api/watchlist_items?repo_id=')")"
+# The PR of item 1 merged, and the review of item 2 is done.
 eval "$(given '-X DELETE' | sed 's/NUMBER/1/')" > /dev/null
 eval "$(given '-X PATCH' | sed 's/NUMBER/2/')" > /dev/null
-# The agent opened a PR for the developer to follow.
+# The agent opened a PR for the developer to follow, and one in a repo that m8r doesn't have.
 add=$(given 'watchlist_items" -H "Authorization: Bearer $M8R_TOKEN" \\$')
-eval "$(printf '%s\n' "$add" | sed -e 's|"URL"|"https://github.com/o/r/pull/9"|' -e 's|CATEGORY|Pull/Merge Request|')" > /dev/null
+added() { printf '%s\n' "$add" | sed -e "s|\"URL\"|\"$1\"|"; }
+eval "$(added https://github.com/o/r/pull/9)" > /dev/null
+echo "elsewhere: $(eval "$(added https://github.com/o/unknown/pull/1)")"
 
 echo "schedules: $(curl -sS -o /dev/null -w '%{http_code}' "$M8R_URL/api/schedules" -H "Authorization: Bearer $M8R_TOKEN")"
 printf '%s %s' "$M8R_URL" "$M8R_TOKEN" > left-by-the-run
@@ -176,57 +206,77 @@ async fn a_runs_agent_keeps_the_watchlist_with_the_commands_of_m8rs_prompt() {
     sandbox.serve(boot.router.clone().unwrap());
     let ctx = sandbox.context(&boot.app_context, "keeper");
     configure(&ctx, "").await;
-    let merged = watch(&ctx, "https://git.example.com/g/p/-/merge_requests/1", PR).await;
+    // The run's repo has two PRs, and another repo has an MR.
+    repo(&ctx, &sandbox.repo(), "https://github.com/o/r").await;
+    let merged = watch(&ctx, "https://github.com/o/r/pull/1").await;
     let review = watchlist_items::Params {
         url: "https://github.com/o/r/pull/2".to_string(),
-        category: PR.to_string(),
-        review_requested: true,
+        requested: true,
         ..watchlist_items::Params::default()
     };
     watchlist_items::Model::create(&ctx.db, &review)
         .await
         .unwrap()
         .unwrap();
+    let other = watch(&ctx, "https://git.example.com/g/p/-/merge_requests/3").await;
     let run = queue(&ctx, &sandbox, "{{ m8r_prompt }}").await;
 
     tick(&ctx).await;
 
     let run = runs::Model::find(&ctx.db, run.id).await.unwrap();
     assert_eq!(run.status, "ok", "{} {}", run.error, run.output);
-    // It read the list, and its token covers the watchlist alone.
+    // It read the list of its own repo: the requested item first, and no other repo's.
     assert!(
         run.output
-            .starts_with(r#"listed: [{"category":"Pull/Merge Request""#),
+            .starts_with(r#"listed: [{"category":"pull/merge requests","checked_at":null,"id":2,"#),
         "{}",
         run.output
     );
+    assert!(!run.output.contains(&other.url), "{}", run.output);
+    // m8r takes an item only for a repo that it has, and says so.
+    assert!(
+        run.output.contains(
+            "elsewhere: {\"error\":\"Bad Request\",\"description\":\"m8r has no repo for \
+             https://github.com/o/unknown. Add that repo first: an item is in one.\"}"
+        ),
+        "{}",
+        run.output
+    );
+    // Its token covers the watchlist alone.
     assert!(run.output.ends_with("schedules: 403\n"), "{}", run.output);
     // The prompt, which the run's page shows, holds neither the address nor the token.
     assert!(!run.prompt.contains("http://127.0.0.1"), "{}", run.prompt);
     assert!(!run.prompt.contains("eyJ"), "{}", run.prompt);
 
-    let left: Vec<_> = watchlist_items::Model::list(&ctx.db, None)
+    let left: Vec<_> = watchlist_items::Model::list(&ctx.db, watchlist_items::Filter::default())
         .await
         .unwrap()
         .into_iter()
-        .map(|(item, category)| (item.url, item.review_requested, item.note, category.name))
+        .map(|(item, repo)| (item.url, item.requested, item.note, repo.url))
         .collect();
     assert!(!left.iter().any(|item| item.0 == merged.url));
+    let item = |url: &str, note: &str, project: &str| {
+        (
+            url.to_string(),
+            false,
+            note.to_string(),
+            project.to_string(),
+        )
+    };
     assert_eq!(
         left,
         [
-            (
-                "https://github.com/o/r/pull/2".to_string(),
-                false,
-                String::new(),
-                PR.to_string()
+            item(
+                "https://github.com/o/r/pull/2",
+                "",
+                "https://github.com/o/r"
             ),
-            (
-                "https://github.com/o/r/pull/9".to_string(),
-                false,
-                "Why the developer follows it".to_string(),
-                PR.to_string()
+            item(
+                "https://github.com/o/r/pull/9",
+                "Why the developer follows it",
+                "https://github.com/o/r"
             ),
+            item(&other.url, "", "https://git.example.com/g/p"),
         ]
     );
 
@@ -277,10 +327,20 @@ async fn a_run_fails_at_once_when_it_cannot_start() {
     );
 
     // The clone is gone.
-    let run = support::queue(&ctx.db, "triage", "/no/such/clone", "cat").await;
+    let run = support::queue(&ctx.db, "gone clone", "/no/such/clone", "cat").await;
     assert_eq!(
         failed(ctx.clone(), run).await,
         "/no/such/clone isn't a directory."
+    );
+
+    // The repo went while its run waited.
+    let run = queue(&ctx, &sandbox, "Triage.").await;
+    let mut nowhere = run.clone().into_active_model();
+    nowhere.repo_id = Set(None);
+    nowhere.update(&ctx.db).await.unwrap();
+    assert_eq!(
+        failed(ctx.clone(), run).await,
+        "The run's repo was removed before the run started."
     );
 
     // The prompt doesn't compile. m8r checks one when it saves it, so this one came another
@@ -306,7 +366,7 @@ async fn a_tick_queues_the_schedules_that_are_due_once_configured() {
         ("review", "on 2001-01-01 at 00:00"),
     ] {
         let params = schedules::Params {
-            operation: operation.to_string(),
+            name: operation.to_string(),
             hron: hron.into(),
             ..schedule_params(&sandbox.repo(), "Go.")
         };
@@ -322,7 +382,7 @@ async fn a_tick_queues_the_schedules_that_are_due_once_configured() {
     let queued = runs::Model::recent(&ctx.db, 10).await.unwrap();
     assert_eq!(queued.len(), 1);
     assert_eq!(
-        (queued[0].operation.as_str(), queued[0].status.as_str()),
+        (queued[0].name.as_str(), queued[0].status.as_str()),
         ("triage", "ok")
     );
     assert_eq!(queued[0].output, "Go.");
@@ -374,7 +434,7 @@ async fn a_schedules_error_lasts_until_its_next_run_goes_well() {
 
     // The developer installs the command. The next run goes well, and that clears the error.
     sandbox.tool("claude", "cat");
-    runs::Model::queue(&ctx.db, &schedule).await.unwrap();
+    queue_all(&ctx.db, &schedule).await;
     tick(&ctx).await;
     assert!(open(ctx.clone()).await.is_empty());
     // The list keeps it.
@@ -431,7 +491,7 @@ async fn a_run_is_its_schedules_command_with_its_prompt_on_stdin() {
     configure(&ctx, "").await;
     let command = r#"other-tool "Update the changelog.""#;
     let params = |prompt: &str| schedules::Params {
-        operation: "other".to_string(),
+        name: "other".to_string(),
         hron: "every minute".into(),
         command: command.to_string(),
         ..schedule_params(&sandbox.repo(), prompt)
@@ -454,7 +514,7 @@ async fn a_run_is_its_schedules_command_with_its_prompt_on_stdin() {
     // And one with a prompt gets it. Its schedule has no category, so it gets no items,
     // whatever is on the watchlist.
     blank.delete(&ctx.db).await.unwrap();
-    watch(&ctx, "https://github.com/o/r/issues/1", ISSUE).await;
+    watch(&ctx, "https://github.com/o/r/issues/1").await;
     schedule(&ctx, &params("For [{{ category }}]: {{ watchlist }}")).await;
     tick(&ctx).await;
     let ran = runs::Model::recent(&ctx.db, 1).await.unwrap();
@@ -474,10 +534,11 @@ async fn a_tick_asks_the_forges_about_the_watchlist() {
         "https://github.com/o/r/issues/1",
         "https://github.com/o/r/issues/2",
     ] {
-        watch(&ctx, url, ISSUE).await;
+        watch(&ctx, url).await;
     }
     let listed = |ctx: AppContext| async move {
-        let listed = watchlist_items::Model::list(&ctx.db, None).await.unwrap();
+        let all = watchlist_items::Filter::default();
+        let listed = watchlist_items::Model::list(&ctx.db, all).await.unwrap();
         listed.into_iter().map(|(item, _)| item).collect::<Vec<_>>()
     };
 
@@ -642,9 +703,10 @@ async fn a_schedules_runs_start_together_one_in_each_of_its_repos() {
         ..schedule_params(&clones[0], "")
     };
     let everywhere = schedule(&ctx, &params).await;
-    let queued = runs::Model::queue(&ctx.db, &everywhere).await.unwrap();
+    let queued = queue_all(&ctx.db, &everywhere).await;
     assert_eq!(queued.len(), 3);
-    let later = support::queue(&ctx.db, "triage", "/elsewhere", "cat").await;
+    let elsewhere = sandbox.another_repo("elsewhere");
+    let later = support::queue(&ctx.db, "later", &elsewhere.to_string_lossy(), "cat").await;
 
     tick(&ctx).await;
 
@@ -699,7 +761,7 @@ async fn each_of_a_schedules_repos_has_an_error_of_its_own() {
 
     // In one tick, the run in one clone goes well and the run in the other fails. The one
     // that went well doesn't clear the other's error.
-    let queued = runs::Model::queue(&ctx.db, &both).await.unwrap();
+    let queued = queue_all(&ctx.db, &both).await;
     tick(&ctx).await;
     assert_eq!(
         statuses(ctx.clone(), queued.clone()).await,
@@ -722,8 +784,100 @@ async fn each_of_a_schedules_repos_has_an_error_of_its_own() {
 
     // That clone is put right, and its next run clears its error.
     fs::remove_file(bad.join("broken")).unwrap();
-    let queued = runs::Model::queue(&ctx.db, &both).await.unwrap();
+    let queued = queue_all(&ctx.db, &both).await;
     tick(&ctx).await;
     assert_eq!(statuses(ctx.clone(), queued).await, ["ok", "ok"]);
     assert!(errors(&ctx).await.is_empty());
+}
+
+#[tokio::test]
+#[serial]
+async fn each_run_gets_the_items_of_its_own_repo() {
+    let boot = boot_test::<App>().await.unwrap();
+    let sandbox = Sandbox::new("tick-repo-items");
+    let ctx = sandbox.context(&boot.app_context, "cat");
+    configure(&ctx, "").await;
+    let (one, two) = (sandbox.repo(), sandbox.another_repo("second"));
+    repo(&ctx, &one, "https://github.com/o/r").await;
+    repo(&ctx, &two, "https://git.example.com/g/p").await;
+    // Three items in the first repo: the last one is urgent, and someone asked for the
+    // second. One item in the second repo.
+    for (url, priority, requested) in [
+        ("https://github.com/o/r/issues/1", "medium", false),
+        ("https://github.com/o/r/pull/2", "medium", true),
+        ("https://github.com/o/r/issues/3", "high", false),
+        (
+            "https://git.example.com/g/p/-/merge_requests/4",
+            "medium",
+            false,
+        ),
+    ] {
+        let params = watchlist_items::Params {
+            url: url.to_string(),
+            priority: priority.to_string(),
+            requested,
+            ..watchlist_items::Params::default()
+        };
+        let listed = watchlist_items::Model::create(&ctx.db, &params).await;
+        listed.unwrap().unwrap();
+    }
+    // One schedule in both repos. It takes every item, and two at most.
+    let params = schedules::Params {
+        name: "review".to_string(),
+        category: "all".to_string(),
+        max_items: 2,
+        repos: format!("{}\n{}", one.display(), two.display())
+            .as_str()
+            .into(),
+        ..schedule_params(
+            &one,
+            "{{ repo_url }}\nFirst:\n{{ requested_watchlist }}\nAll:\n{{ watchlist }}",
+        )
+    };
+    let both = schedule(&ctx, &params).await;
+    let queued = queue_all(&ctx.db, &both).await;
+
+    tick(&ctx).await;
+
+    // `cat` prints its prompt back. Each run got its own repo's items and no other's: what
+    // someone asked for, then what's urgent, and the cutoff left the third one out.
+    let in_one = runs::Model::find(&ctx.db, queued[0].id).await.unwrap();
+    assert_eq!(
+        in_one.output,
+        "https://github.com/o/r\n\
+         First:\n\
+         - item 2 (medium, requested): https://github.com/o/r/pull/2\n\
+         All:\n\
+         - item 2 (medium, requested): https://github.com/o/r/pull/2\n\
+         - item 3 (high): https://github.com/o/r/issues/3"
+    );
+    let in_two = runs::Model::find(&ctx.db, queued[1].id).await.unwrap();
+    assert_eq!(
+        in_two.output,
+        "https://git.example.com/g/p\n\
+         First:\n\
+         (nothing)\n\
+         All:\n\
+         - item 4 (medium): https://git.example.com/g/p/-/merge_requests/4"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn a_tick_says_when_a_repos_clone_is_not_there() {
+    let boot = boot_test::<App>().await.unwrap();
+    let sandbox = Sandbox::new("tick-repos");
+    let ctx = sandbox.context(&boot.app_context, "cat");
+    let gone = sandbox.path("gone");
+    let lost = repo(&ctx, &gone, "").await;
+    repo(&ctx, &sandbox.repo(), "").await;
+
+    tick(&ctx).await;
+    let subject = format!("repo {}", lost.path);
+    assert!(errors(&ctx).await.contains(&subject));
+
+    // The clone comes, and the next tick sees it.
+    fs::create_dir_all(&gone).unwrap();
+    tick(&ctx).await;
+    assert!(!errors(&ctx).await.iter().any(|it| it.starts_with("repo ")));
 }

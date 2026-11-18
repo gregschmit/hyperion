@@ -10,37 +10,41 @@ pub struct Model {
     pub updated_at: DateTimeWithTimeZone,
     #[sea_orm(primary_key)]
     pub id: i64,
-    pub operation: String,
-    pub repos: String,
+    #[sea_orm(unique)]
+    pub name: String,
+    pub category: String,
+    pub max_items: i64,
     pub hron: String,
     pub command: String,
     #[sea_orm(column_type = "Text")]
     pub prompt: String,
-    pub category_id: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(
-        belongs_to = "super::categories::Entity",
-        from = "Column::CategoryId",
-        to = "super::categories::Column::Id",
-        on_update = "NoAction",
-        on_delete = "Restrict"
-    )]
-    Categories,
     #[sea_orm(has_many = "super::runs::Entity")]
     Runs,
-}
-
-impl Related<super::categories::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Categories.def()
-    }
+    #[sea_orm(has_many = "super::schedule_repos::Entity")]
+    ScheduleRepos,
 }
 
 impl Related<super::runs::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Runs.def()
+    }
+}
+
+impl Related<super::schedule_repos::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ScheduleRepos.def()
+    }
+}
+
+impl Related<super::repos::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::schedule_repos::Relation::Repos.def()
+    }
+    fn via() -> Option<RelationDef> {
+        Some(super::schedule_repos::Relation::Schedules.def().rev())
     }
 }

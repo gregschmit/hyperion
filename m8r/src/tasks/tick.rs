@@ -11,7 +11,7 @@ use tokio::task::JoinSet;
 
 use crate::{
     initializers::access,
-    models::{artifacts, configurations, errors, runs, schedules, watchlist_items, Checked},
+    models::{artifacts, configurations, errors, repos, runs, schedules, watchlist_items, Checked},
     prompts,
     settings::{self, Settings},
     tools,
@@ -31,9 +31,9 @@ impl Task for Tick {
     fn task(&self) -> TaskInfo {
         TaskInfo {
             name: "tick".to_string(),
-            detail: "Queue the schedules that are due, ask the forges about the watchlist, and \
-                     start the runs of the schedule that has waited the longest. The scheduler \
-                     runs this every minute."
+            detail: "Queue the schedules that are due, look at the repos, ask the forges about \
+                     the watchlist, and start the runs of the schedule that has waited the \
+                     longest. The scheduler runs this every minute."
                 .to_string(),
         }
     }
@@ -48,6 +48,7 @@ impl Task for Tick {
         errors::Model::clear(&ctx.db, errors::SCHEDULER).await?;
         errors::Model::check_setup(&ctx.db).await?;
         errors::Model::forget(&ctx.db).await?;
+        repos::Model::check(&ctx.db, &settings.shell).await?;
 
         queue_due(ctx).await?;
 
@@ -100,9 +101,9 @@ async fn queue_due(ctx: &AppContext) -> Result<()> {
     }
     // The server's clock: a schedule's times are on it, unless the schedule names a time zone.
     let now = Zoned::now();
-    for (schedule, _) in schedules::Model::list(&ctx.db).await? {
+    for (schedule, repos) in schedules::Model::list(&ctx.db).await? {
         if schedule.is_due(&now) {
-            runs::Model::queue(&ctx.db, &schedule).await?;
+            runs::Model::queue(&ctx.db, &schedule, &repos).await?;
         }
     }
     Ok(())
@@ -136,7 +137,7 @@ async fn check_api(ctx: &AppContext) -> Result<()> {
 async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Result<()> {
     let ctx = &ctx;
     let dir = std::path::absolute(settings.artifacts_dir(run.id))?;
-    let (schedule, prompt) = match prepare(ctx, &run, &dir).await? {
+    let (schedule, repo, prompt) = match prepare(ctx, &run, &dir).await? {
         Ok(ready) => ready,
         Err(why) => {
             run.into_active_model()
@@ -148,7 +149,7 @@ async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Resul
     fs::create_dir_all(&dir)?;
     let run = run
         .into_active_model()
-        .started(&ctx.db, &schedule, prompt.clone())
+        .started(&ctx.db, &schedule, &repo, prompt.clone())
         .await?;
 
     // What m8r's part of the prompt tells the agent to use (see `prompts`). The token ends
@@ -165,7 +166,7 @@ async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Resul
     let end = tools::run_command(
         &settings.shell,
         &run.command,
-        &schedules::repo_dir(&run.repo),
+        &repo.dir(),
         &prompt,
         &printed,
         limit,
@@ -192,30 +193,37 @@ async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Resul
     Ok(())
 }
 
-/// The run's schedule as it is now, and its compiled prompt, which the command gets on stdin.
-/// Or why the run can't start.
+/// The run's schedule and its repo as they are now, and its compiled prompt, which the command
+/// gets on stdin. Or why the run can't start.
 async fn prepare(
     ctx: &AppContext,
     run: &runs::Model,
     artifacts_dir: &Path,
-) -> Result<Checked<(schedules::Model, String)>> {
+) -> Result<Checked<(schedules::Model, repos::Model, String)>> {
     let Some(schedule_id) = run.schedule_id else {
         return Ok(Err(
             "The run's schedule was removed before the run started.".to_string(),
         ));
     };
-    let (schedule, category) = schedules::Model::find(&ctx.db, schedule_id).await?;
+    let Some(repo_id) = run.repo_id else {
+        return Ok(Err(
+            "The run's repo was removed before the run started.".to_string()
+        ));
+    };
+    let (schedule, _) = schedules::Model::find(&ctx.db, schedule_id).await?;
+    let repo = repos::Model::find(&ctx.db, repo_id).await?;
     if configurations::Model::active(&ctx.db).await?.is_none() {
         return Ok(Err("No configuration is active.".to_string()));
     }
-    if !schedules::repo_dir(&run.repo).is_dir() {
-        return Ok(Err(format!("{} isn't a directory.", run.repo)));
+    if !repo.dir().is_dir() {
+        return Ok(Err(format!("{} isn't a directory.", repo.path)));
     }
     let artifacts_dir = artifacts_dir.to_string_lossy();
-    let context = prompts::Context::load(&ctx.db, category.as_ref(), &artifacts_dir).await?;
+    let (items, most) = (schedule.items(), schedule.most());
+    let context = prompts::Context::load(&ctx.db, Some(&repo), items, most, &artifacts_dir).await?;
     Ok(context
         .compile(&schedule.prompt)
-        .map(|prompt| (schedule, prompt)))
+        .map(|prompt| (schedule, repo, prompt)))
 }
 
 /// The start of what the run printed: all of it, unless it's huge.

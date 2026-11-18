@@ -4,32 +4,51 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(table_name = "categories")]
+#[sea_orm(table_name = "repos")]
 pub struct Model {
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
     #[sea_orm(primary_key)]
     pub id: i64,
     #[sea_orm(unique)]
-    pub name: String,
+    pub path: String,
+    #[sea_orm(unique)]
+    pub url: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(has_many = "super::schedules::Entity")]
-    Schedules,
+    #[sea_orm(has_many = "super::runs::Entity")]
+    Runs,
+    #[sea_orm(has_many = "super::schedule_repos::Entity")]
+    ScheduleRepos,
     #[sea_orm(has_many = "super::watchlist_items::Entity")]
     WatchlistItems,
 }
 
-impl Related<super::schedules::Entity> for Entity {
+impl Related<super::runs::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::Schedules.def()
+        Relation::Runs.def()
+    }
+}
+
+impl Related<super::schedule_repos::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ScheduleRepos.def()
     }
 }
 
 impl Related<super::watchlist_items::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::WatchlistItems.def()
+    }
+}
+
+impl Related<super::schedules::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::schedule_repos::Relation::Schedules.def()
+    }
+    fn via() -> Option<RelationDef> {
+        Some(super::schedule_repos::Relation::Repos.def().rev())
     }
 }

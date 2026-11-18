@@ -9,7 +9,7 @@ use loco_rs::prelude::*;
 use serde_json::{json, Value};
 
 use crate::{
-    models::{artifacts, categories, errors, runs, schedules, watchlist_items},
+    models::{artifacts, errors, repos, runs, schedules, watchlist_items},
     settings::Settings,
 };
 
@@ -85,6 +85,7 @@ pub fn error(error: &errors::Model) -> Value {
     let href = match error.subject.as_str() {
         errors::CONFIGURATION => "/configurations".to_string(),
         errors::SCHEDULES => "/schedules".to_string(),
+        subject if subject.starts_with("repo ") => "/repos".to_string(),
         _ => error
             .run_id
             .map(|id| format!("/runs/{id}"))
@@ -121,7 +122,7 @@ pub fn artifact(artifact: &artifacts::Model) -> Value {
 pub fn run(run: &runs::Model, artifacts: &[artifacts::Model]) -> Value {
     json!({
         "id": run.id,
-        "operation": run.operation,
+        "name": run.name,
         "repo": run.repo,
         "command": run.command,
         "status": run.status,
@@ -135,29 +136,36 @@ pub fn run(run: &runs::Model, artifacts: &[artifacts::Model]) -> Value {
     })
 }
 
+/// A repo, and how many watchlist items and schedules it has.
 #[must_use]
-pub fn category(category: &categories::Model) -> Value {
-    json!({ "id": category.id, "name": category.name })
+pub fn repo(repo: &repos::Model, (items, schedules): (u64, u64)) -> Value {
+    json!({
+        "id": repo.id,
+        "path": repo.path,
+        "url": repo.url,
+        "items": items,
+        "schedules": schedules,
+    })
 }
 
 #[must_use]
-pub fn watchlist_item((item, category): &watchlist_items::Listed) -> Value {
+pub fn watchlist_item((item, repo): &watchlist_items::Listed) -> Value {
     json!({
         "id": item.id,
         "url": item.url,
         "label": item.label(),
         "title": item.title,
-        "category": category.name,
+        "repo": repo.path,
+        "category": item.category,
         "priority": item.priority,
         "note": item.note,
-        "reviewable": item.reviewable(),
-        "review_requested": item.review_requested,
+        "requested": item.requested,
         "checked_at": time_or_blank(item.checked_at.as_ref()),
     })
 }
 
 #[must_use]
-pub fn schedule((schedule, category): &schedules::Listed) -> Value {
+pub fn schedule((schedule, repos): &schedules::Listed) -> Value {
     // On the server's clock, like every time on the pages.
     let next = schedule
         .next(&jiff::Zoned::now())
@@ -165,9 +173,10 @@ pub fn schedule((schedule, category): &schedules::Listed) -> Value {
         .unwrap_or_default();
     json!({
         "id": schedule.id,
-        "operation": schedule.operation,
-        "category": category.as_ref().map(|it| it.name.as_str()).unwrap_or_default(),
-        "repos": schedule.repos().collect::<Vec<_>>(),
+        "name": schedule.name,
+        "category": schedule.category,
+        "max_items": schedule.max_items,
+        "repos": repos.iter().map(|repo| repo.path.as_str()).collect::<Vec<_>>(),
         "hron": schedule.times().collect::<Vec<_>>(),
         "command": schedule.command,
         // The first of its times to come.

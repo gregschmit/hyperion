@@ -16,17 +16,17 @@
     <li>Log each of them in.</li>
     <li>Clone the repos to maintain.</li>
   </ol>
-  <p>Then <a href="/configurations/new">write a configuration</a> and make it active,
-    <a href="/schedules/new">add a schedule</a>, and run it now.</p>
+  <p>Then <a href="/repos">add the repos</a>, <a href="/configurations/new">write a
+    configuration</a> and make it active, <a href="/schedules/new">add a schedule</a>, and run it
+    now.</p>
 </section>
 {% endif %}
 
 {% for row in rows %}
 <section>
-  <h2><a href="/schedules/{{ row.schedule.id }}">{{ row.schedule.operation }}</a> in <span class="mono">{{ row.repo }}</span>
+  <h2><a href="/schedules/{{ row.schedule.id }}">{{ row.schedule.name }}</a> in <span class="mono">{{ row.repo }}</span>
     {% if row.has_run %}<small><a href="/runs/{{ row.run.id }}">run {{ row.run.id }}</a>,
       <span class="status {{ row.run.status }}">{{ row.run.status }}</span> {{ row.run.finished_at }}</small>{% endif %}</h2>
-  {% if row.schedule.operation == "other" %}<p class="mono muted">{{ row.schedule.command }}</p>{% endif %}
   {% if row.has_run %}
   <ul class="artifacts">
     {% for artifact in row.run.artifacts %}

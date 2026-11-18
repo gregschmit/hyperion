@@ -22,8 +22,8 @@ pub const API: &str = "API";
 /// How long the list keeps an error that was cleared.
 const KEPT: Duration = Duration::days(30);
 
-/// The subject of schedule `id` in `repo`, one of its repos: a run there that fails raises its
-/// error, and one that goes well clears it.
+/// The subject of schedule `id` in `repo`, the path of one of its repos: a run there that
+/// fails raises its error, and one that goes well clears it.
 #[must_use]
 pub fn schedule(id: i64, repo: &str) -> String {
     format!("{}{repo}", schedule_start(id))
@@ -32,6 +32,13 @@ pub fn schedule(id: i64, repo: &str) -> String {
 /// How the subjects of schedule `id` start, whichever repo they're about.
 fn schedule_start(id: i64) -> String {
     format!("schedule {id} in ")
+}
+
+/// The subject of the repo whose clone is at `path`. A tick raises its error and clears it
+/// (see `repos::Model::check`).
+#[must_use]
+pub fn repo(path: &str) -> String {
+    format!("repo {path}")
 }
 
 #[async_trait::async_trait]
@@ -151,6 +158,23 @@ impl Model {
             .filter(Column::ClearedAt.is_null())
             .exec(db)
             .await?;
+        Ok(())
+    }
+
+    /// The repo at `path` is gone, or its clone is somewhere else now. The open errors that
+    /// name the path are over: the repo's own, and the ones of schedules in it.
+    ///
+    /// # Errors
+    /// When the query fails.
+    pub async fn clear_repo(db: &DatabaseConnection, path: &str) -> ModelResult<()> {
+        let (own, end) = (repo(path), format!(" in {path}"));
+        // Not LIKE: a path can hold its wildcards.
+        for error in Self::open(db).await? {
+            let subject = &error.subject;
+            if *subject == own || (subject.starts_with("schedule ") && subject.ends_with(&end)) {
+                Self::clear(db, subject).await?;
+            }
+        }
         Ok(())
     }
 

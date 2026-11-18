@@ -27,20 +27,27 @@ use serde_json::{json, Value};
 use super::api::runs::RUNS;
 use crate::{
     initializers::access::Caller,
-    models::{artifacts, categories, configurations, runs, schedules, watchlist_items, Checked},
+    models::{
+        artifacts, configurations, repos, runs,
+        schedules::{self, Items},
+        watchlist_items::{self, Category},
+        Checked,
+    },
     settings::Settings,
     views::api,
 };
 
 /// What every client reads first.
 const INSTRUCTIONS: &str = "\
-m8r runs the developer's coding agents on a schedule, and keeps the developer's watchlist: the \
-issues and PRs/MRs that they follow. A watchlist item is a URL on GitHub or GitLab, with a \
-category, a priority (medium: the developer cares about it; high: it's urgent), a note that \
-says why, and for a PR/MR, whether someone asked the developer to review it \
-(review_requested). The agents get the watchlist in their prompts, so keep it true: add what \
-the developer must follow, turn review_requested on when someone asks them for a review, and \
-remove what's done. m8r removes an item by itself when its issue or PR/MR closes or merges.";
+m8r runs the developer's coding agents on a schedule, in the repos that it works in, and keeps \
+the developer's watchlist: the issues and PRs/MRs that they follow. A watchlist item is a URL \
+on GitHub or GitLab, which says which repo the item is in and whether it's an issue or a \
+PR/MR. It has a priority (medium: the developer cares about it; high: it's urgent), a note that \
+says why, and whether someone asked the developer for it (requested): for a PR/MR, a review. \
+An agent gets the items of the repo that it runs in, the requested ones first, so keep the \
+watchlist true: add what the developer must follow, turn requested on when someone asks them \
+for it, and remove what's done. m8r takes an item only for a repo that it has, and removes an \
+item by itself when its issue or PR/MR closes or merges.";
 
 /// What a tool does to m8r, which the client's approval step goes by.
 #[derive(Clone, Copy)]
@@ -84,25 +91,26 @@ const TOOLS: [Spec; 21] = [
         "List the watchlist",
         "watchlist_items",
         Effect::Reads,
-        "List the watchlist: the issues and PRs/MRs that the developer follows. Each item has \
-         an id, a url, a category, a priority, a note, review_requested, and the title that \
-         the forge gives it.",
+        "List the watchlist: the issues and PRs/MRs that the developer follows, or only a \
+         repo's or a category's. Each item has an id, a url, its repo, its category, a \
+         priority, a note, requested, and the title that the forge gives it.",
     ),
     spec(
         "add_watchlist_item",
         "Add a watchlist item",
         "watchlist_items",
         Effect::Sets,
-        "Put an issue or a PR/MR on the watchlist, by its URL on GitHub or GitLab. If the URL \
-         is already there, this changes that item.",
+        "Put an issue or a PR/MR on the watchlist, by its URL on GitHub or GitLab. The URL \
+         says which repo it's in, and m8r refuses one whose repo it doesn't have: add the repo \
+         first. If the URL is already there, this changes that item.",
     ),
     spec(
         "update_watchlist_item",
         "Change a watchlist item",
         "watchlist_items",
         Effect::Sets,
-        "Change a watchlist item: its category, priority, note or review_requested. What you \
-         leave out stays as it is.",
+        "Change a watchlist item: its priority, note or requested. What you leave out stays \
+         as it is.",
     ),
     spec(
         "remove_watchlist_item",
@@ -112,39 +120,41 @@ const TOOLS: [Spec; 21] = [
         "Take an item off the watchlist, when the developer no longer follows it.",
     ),
     spec(
-        "list_categories",
-        "List the categories",
-        "categories",
+        "list_repos",
+        "List the repos",
+        "repos",
         Effect::Reads,
-        "List the categories that watchlist items are in.",
+        "List the repos that m8r works in. Each has an id, the path of its clone in the home \
+         of m8r's user, and the URL of its project on its forge.",
     ),
     spec(
-        "add_category",
-        "Add a category",
-        "categories",
+        "add_repo",
+        "Add a repo",
+        "repos",
         Effect::Adds,
-        "Add a category for watchlist items.",
+        "Add a repo: a clone that's already in the home of m8r's user. With no url, m8r reads \
+         the project from the clone's origin.",
     ),
     spec(
-        "rename_category",
-        "Rename a category",
-        "categories",
+        "update_repo",
+        "Change a repo",
+        "repos",
         Effect::Sets,
-        "Give a category another name. Its items and schedules keep it.",
+        "Change a repo's path or url. What you leave out stays as it is.",
     ),
     spec(
-        "remove_category",
-        "Remove a category",
-        "categories",
+        "remove_repo",
+        "Remove a repo",
+        "repos",
         Effect::Removes,
-        "Remove a category. m8r refuses while a watchlist item or a schedule uses it.",
+        "Remove a repo. m8r refuses while a watchlist item is in it or a schedule runs in it.",
     ),
     spec(
         "list_schedules",
         "List the schedules",
         "schedules",
         Effect::Reads,
-        "List the schedules: when each one runs, in which clones, with which command and which \
+        "List the schedules: when each one runs, in which repos, with which command and which \
          prompt, and its next time.",
     ),
     spec(
@@ -238,9 +248,8 @@ const TOOLS: [Spec; 21] = [
 ];
 
 impl Spec {
-    /// The tool as a client sees it. `categories` are the ones there are now, which the
-    /// schema offers.
-    fn tool(&self, categories: &[String]) -> Tool {
+    /// The tool as a client sees it.
+    fn tool(&self) -> Tool {
         let hints = ToolAnnotations::with_title(self.title).open_world(false);
         let hints = match self.effect {
             Effect::Reads => hints.read_only(true),
@@ -248,50 +257,50 @@ impl Spec {
             Effect::Sets => hints.read_only(false).destructive(false).idempotent(true),
             Effect::Removes => hints.read_only(false).destructive(true).idempotent(true),
         };
-        Tool::new(self.name, self.description, self.input(categories))
+        Tool::new(self.name, self.description, self.input())
             .with_title(self.title)
             .with_annotations(hints)
     }
 
     /// The JSON schema of the tool's arguments.
-    fn input(&self, categories: &[String]) -> JsonObject {
+    #[allow(clippy::too_many_lines)]
+    fn input(&self) -> JsonObject {
         let id = |of: &str| {
             let description = format!("The id of the {of}, as its list shows it.");
             json!({ "type": "integer", "description": description })
         };
         let text = |description: &str| json!({ "type": "string", "description": description });
-        let mut category = text("The name of a category.");
-        if !categories.is_empty() {
-            category["enum"] = json!(categories);
-        }
+        let category = json!({
+            "type": "string",
+            "enum": Category::ALL.map(Category::as_str),
+            "description": "Only the items of this category.",
+        });
         let priority = json!({
             "type": "string",
             "enum": ["medium", "high"],
             "description": "medium: the developer cares about it. high: it's urgent.",
         });
         let note = text("Why the developer follows it, in a few words.");
-        let review = json!({
+        let requested = json!({
             "type": "boolean",
-            "description": "Someone asked the developer to review this PR/MR. An issue has none.",
+            "description": "Someone asked the developer for it: for a PR/MR, a review.",
         });
-        let operation = json!({
+        let run_category = json!({
             "type": "string",
-            "enum": ["triage", "review", "develop", "other"],
-            "description": "What the schedule is for.",
+            "enum": Items::CHOICES.map(Items::as_str),
+            "description": "Which watchlist items of its repo a run's prompt gets: all, or a \
+                            category's. Blank: no items.",
         });
-        let run_category = {
-            let mut category = category.clone();
-            category["description"] =
-                json!("The category whose watchlist items the prompt gets. Blank: no items.");
-            if let Some(names) = category.get_mut("enum").and_then(Value::as_array_mut) {
-                names.push(json!(""));
-            }
-            category
-        };
+        let most = json!({
+            "type": "integer",
+            "minimum": 0,
+            "description": "How many items a run gets at most: the first ones, and the \
+                            requested ones come first. 0: all of them.",
+        });
         let texts = |description: &str| json!({ "type": "array", "items": { "type": "string" }, "description": description });
         let repos = texts(
-            "The clones that the runs start in, one run in each: paths from the home of m8r's \
-             user, such as ~/git/group/project.",
+            "The repos that the runs start in, one run in each: the paths of their clones, as \
+             list_repos shows them.",
         );
         let hron = texts(
             "When it runs, in words: \"every weekday at 06:00\", \"every 12 hours\", \"every \
@@ -301,59 +310,70 @@ impl Spec {
         let command = text("The exact shell line that a run starts, such as \"claude -p\".");
         let prompt = text(
             "What the command gets on stdin: a template that can hold {{ m8r_prompt }}, \
-             {{ config_prompt }} and {{ watchlist }}.",
+             {{ config_prompt }}, {{ watchlist }} and {{ requested_watchlist }}.",
         );
         let name = |of: &str| text(&format!("The {of}'s name."));
         let config_prompt = text(
             "The developer's part of every prompt: plain text, which a schedule's prompt puts in \
              with {{ config_prompt }}.",
         );
+        let path = text(
+            "The clone: a path from the home of m8r's user, such as ~/git/group/project, or a \
+             full path.",
+        );
+        let url = text(
+            "The project on its forge, such as https://git.example.com/group/project. Blank: \
+             m8r reads it from the clone's origin.",
+        );
 
         let (properties, required): (Value, &[&str]) = match self.name {
-            "list_watchlist_items" => (json!({ "category": category }), &[]),
+            "list_watchlist_items" => (
+                json!({ "category": category, "repo_id": id("repo whose items to list") }),
+                &[],
+            ),
             "add_watchlist_item" => (
                 json!({
                     "url": text("The URL of the issue or PR/MR."),
-                    "category": category,
                     "priority": priority,
                     "note": note,
-                    "review_requested": review,
+                    "requested": requested,
                 }),
-                &["url", "category"],
+                &["url"],
             ),
             "update_watchlist_item" => (
                 json!({
                     "id": id("item"),
-                    "category": category,
                     "priority": priority,
                     "note": note,
-                    "review_requested": review,
+                    "requested": requested,
                 }),
                 &["id"],
             ),
             "remove_watchlist_item" => (json!({ "id": id("item") }), &["id"]),
-            "add_category" => (json!({ "name": name("category") }), &["name"]),
-            "rename_category" => (
-                json!({ "id": id("category"), "name": name("category") }),
-                &["id", "name"],
+            "add_repo" => (json!({ "path": path, "url": url }), &["path"]),
+            "update_repo" => (
+                json!({ "id": id("repo"), "path": path, "url": url }),
+                &["id"],
             ),
-            "remove_category" => (json!({ "id": id("category") }), &["id"]),
+            "remove_repo" => (json!({ "id": id("repo") }), &["id"]),
             "add_schedule" => (
                 json!({
-                    "operation": operation,
+                    "name": name("schedule"),
                     "category": run_category,
+                    "max_items": most,
                     "repos": repos,
                     "hron": hron,
                     "command": command,
                     "prompt": prompt,
                 }),
-                &["operation", "repos", "hron", "command"],
+                &["name", "repos", "hron", "command"],
             ),
             "update_schedule" => (
                 json!({
                     "id": id("schedule"),
-                    "operation": operation,
+                    "name": name("schedule"),
                     "category": run_category,
+                    "max_items": most,
                     "repos": repos,
                     "hron": hron,
                     "command": command,
@@ -416,6 +436,7 @@ struct Nothing {}
 #[derive(Debug, Default, Deserialize)]
 struct ItemFilter {
     category: Option<String>,
+    repo_id: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -472,11 +493,11 @@ impl Server {
         Ok(match name {
             "list_watchlist_items" => {
                 let filter: ItemFilter = parse(arguments)?;
-                let category = match filter.category.filter(|name| !name.trim().is_empty()) {
-                    Some(name) => Some(checked(categories::Model::named(db, &name).await?)?.id),
-                    None => None,
+                let filter = watchlist_items::Filter {
+                    repo_id: filter.repo_id,
+                    category: checked(Category::named(filter.category.as_deref()))?,
                 };
-                let items = watchlist_items::Model::list(db, category).await?;
+                let items = watchlist_items::Model::list(db, filter).await?;
                 json!(items.iter().map(api::watchlist_item).collect::<Vec<_>>())
             }
             "add_watchlist_item" => {
@@ -494,23 +515,24 @@ impl Server {
                 watchlist_items::Model::remove(db, id).await?;
                 json!({ "removed": id })
             }
-            "list_categories" => {
-                let categories = categories::Model::list(db).await?;
-                json!(categories.iter().map(api::category).collect::<Vec<_>>())
+            "list_repos" => {
+                let repos = repos::Model::list(db).await?;
+                json!(repos.iter().map(api::repo).collect::<Vec<_>>())
             }
-            "add_category" => {
-                let params: categories::Params = parse(arguments)?;
-                api::category(&checked(categories::Model::create(db, &params).await?)?)
+            "add_repo" => {
+                let params: repos::Params = parse(arguments)?;
+                let shell = Settings::from_context(&self.ctx)?.shell;
+                api::repo(&checked(repos::Model::create(db, &shell, &params).await?)?)
             }
-            "rename_category" => {
-                let Target { id, rest } = parse::<Target<categories::Params>>(arguments)?;
-                let category = categories::Model::find(db, id).await?;
-                api::category(&checked(category.renamed(db, &rest).await?)?)
+            "update_repo" => {
+                let Target { id, rest } = parse::<Target<repos::Changes>>(arguments)?;
+                let shell = Settings::from_context(&self.ctx)?.shell;
+                api::repo(&checked(repos::Model::change(db, &shell, id, rest).await?)?)
             }
-            "remove_category" => {
+            "remove_repo" => {
                 let Target { id, .. } = parse::<Target<Nothing>>(arguments)?;
-                let category = categories::Model::find(db, id).await?;
-                checked(category.removed(db).await?)?;
+                let repo = repos::Model::find(db, id).await?;
+                checked(repo.removed(db).await?)?;
                 json!({ "removed": id })
             }
             "list_schedules" => {
@@ -532,9 +554,9 @@ impl Server {
             }
             "run_schedule" => {
                 let Target { id, .. } = parse::<Target<Nothing>>(arguments)?;
-                let (schedule, _) = schedules::Model::find(db, id).await?;
+                let (schedule, repos) = schedules::Model::find(db, id).await?;
                 let mut queued = Vec::new();
-                for run in runs::Model::queue(db, &schedule).await? {
+                for run in runs::Model::queue(db, &schedule, &repos).await? {
                     queued.push(self.run(&run, false).await?);
                 }
                 json!(queued)
@@ -626,16 +648,10 @@ impl ServerHandler for Server {
         context: RequestContext<RoleServer>,
     ) -> std::result::Result<ListToolsResult, ErrorData> {
         let caller = caller(&context)?;
-        let categories: Vec<String> = categories::Model::list(&self.ctx.db)
-            .await
-            .map_err(|err| ErrorData::internal_error(err.to_string(), None))?
-            .into_iter()
-            .map(|category| category.name)
-            .collect();
         let tools = TOOLS
             .iter()
             .filter(|tool| caller.covers(tool.resource))
-            .map(|tool| tool.tool(&categories))
+            .map(Spec::tool)
             .collect();
         Ok(ListToolsResult::with_all_items(tools))
     }
@@ -663,10 +679,10 @@ impl ServerHandler for Server {
         Ok(result.into())
     }
 
-    /// For rmcp's own checks, which know no caller and need no categories.
+    /// For rmcp's own checks, which know no caller.
     fn get_tool(&self, name: &str) -> Option<Tool> {
         let tool = TOOLS.iter().find(|tool| tool.name == name)?;
-        Some(tool.tool(&[]))
+        Some(tool.tool())
     }
 }
 

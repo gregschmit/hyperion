@@ -1,5 +1,5 @@
 use loco_rs::prelude::*;
-use m8r::models::{runs::Status, schedules};
+use m8r::models::{errors, runs::Status, schedules};
 use serial_test::serial;
 
 use crate::support::{configure, queue, queue_one, signed_in, start};
@@ -116,6 +116,16 @@ async fn every_page_shows_the_open_errors_and_one_page_lists_them_all() {
             "{page}"
         );
         assert_eq!(page.matches(open).count(), 1, "{page}");
+
+        // An error about a repo leads to the repos.
+        errors::Model::raise(db, "repo ~/git/gone", "The clone isn't there.", None)
+            .await
+            .unwrap();
+        let page = request.get("/errors").await.text();
+        assert!(
+            page.contains(r#"<a href="/repos">repo ~/git/gone</a>"#),
+            "{page}"
+        );
     })
     .await;
 }

@@ -44,8 +44,6 @@ th { color: var(--muted); font-weight: 500; font-size: 0.85rem; }
 td.actions { white-space: nowrap; text-align: right; }
 td.nowrap { white-space: nowrap; }
 td.actions form { display: inline; }
-/* A list of a few short things, such as the categories. */
-.short { max-width: 34rem; }
 /* What a template can use, under its field. */
 table.variables { margin: 0.25rem 0 0.5rem; font-size: 0.9rem; color: var(--muted); }
 table.variables td { padding: 0.15rem 0.6rem 0.15rem 0; border: 0; }
@@ -76,6 +74,10 @@ button.danger { color: var(--bad); }
 label { display: block; margin: 0.9rem 0 0.25rem; font-weight: 600; }
 label small { font-weight: 400; }
 label.check { display: inline-flex; gap: 0.35rem; align-items: center; margin: 0; font-weight: 400; white-space: nowrap; }
+nav.tabs { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin: 1rem 0 0.5rem; }
+nav.tabs a { text-decoration: none; }
+nav.tabs a[aria-current] { color: var(--text); font-weight: 600; }
+nav.tabs form { margin-left: auto; }
 form.row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.75rem 0; }
 form.row input[type="text"], form.row input[type="url"] { flex: 1 1 14rem; min-width: 0; }
 td input[type="text"], input.wide { width: 100%; }

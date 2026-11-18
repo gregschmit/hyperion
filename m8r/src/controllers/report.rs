@@ -16,9 +16,9 @@ pub async fn index(
 ) -> Result<Response> {
     let mut rows: Vec<Value> = Vec::new();
     for listed in schedules::Model::list(&ctx.db).await? {
-        let schedule = &listed.0;
-        for repo in schedule.repos() {
-            let latest = match runs::Model::latest_of(&ctx.db, schedule.id, repo).await? {
+        let (schedule, repos) = &listed;
+        for repo in repos {
+            let latest = match runs::Model::latest_of(&ctx.db, schedule.id, repo.id).await? {
                 Some(run) => {
                     let reported = artifacts::Model::of_run(&ctx.db, run.id).await?;
                     Some(views::run(&run, &reported))
@@ -27,7 +27,7 @@ pub async fn index(
             };
             rows.push(json!({
                 "schedule": views::schedule(&listed),
-                "repo": repo,
+                "repo": repo.path,
                 "has_run": latest.is_some(),
                 "run": latest,
             }));

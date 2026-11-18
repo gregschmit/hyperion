@@ -12,10 +12,11 @@ pub struct Model {
     pub id: i64,
     #[sea_orm(unique)]
     pub url: String,
-    pub category_id: i64,
+    pub repo_id: i64,
+    pub category: String,
     pub priority: String,
     pub note: String,
-    pub review_requested: bool,
+    pub requested: bool,
     pub title: String,
     pub checked_at: Option<DateTimeWithTimeZone>,
 }
@@ -23,17 +24,17 @@ pub struct Model {
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(
-        belongs_to = "super::categories::Entity",
-        from = "Column::CategoryId",
-        to = "super::categories::Column::Id",
+        belongs_to = "super::repos::Entity",
+        from = "Column::RepoId",
+        to = "super::repos::Column::Id",
         on_update = "Cascade",
         on_delete = "Restrict"
     )]
-    Categories,
+    Repos,
 }
 
-impl Related<super::categories::Entity> for Entity {
+impl Related<super::repos::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::Categories.def()
+        Relation::Repos.def()
     }
 }

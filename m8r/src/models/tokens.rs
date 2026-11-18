@@ -10,7 +10,7 @@ pub type Tokens = Entity;
 /// endpoint's tools.
 pub const RESOURCES: [&str; 5] = [
     "watchlist_items",
-    "categories",
+    "repos",
     "schedules",
     "configurations",
     "runs",

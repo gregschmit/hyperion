@@ -6,7 +6,7 @@ use m8r::models::{
 };
 use serial_test::serial;
 
-use crate::support::{queue, queue_one, signed_in, start, unchecked};
+use crate::support::{queue, queue_all, queue_one, signed_in, start, unchecked};
 
 /// Record that `run` reported an artifact: a link, or with a blank `url`, files.
 async fn report(db: &DatabaseConnection, run: &runs::Model, name: &str, url: &str) {
@@ -34,6 +34,10 @@ async fn a_new_install_says_how_to_set_it_up() {
         assert!(page.contains("has nothing to do yet"), "{page}");
         assert!(page.contains("sudo -iu m8r"), "{page}");
         assert!(
+            page.contains(r#"<a href="/repos">add the repos</a>"#),
+            "{page}"
+        );
+        assert!(
             page.contains("No schedules yet, so nothing to report."),
             "{page}"
         );
@@ -59,21 +63,19 @@ async fn the_report_shows_what_each_schedules_latest_run_reported() {
         let db = &ctx.db;
         // Two schedules, each with a run that waits.
         let first = queue(db, "review", "~/git/rxg", "claude -p").await;
-        queue(db, "other", "~/git/infrastructure", "make docs").await;
+        queue(db, "docs", "~/git/infrastructure", "make docs").await;
         let (reviews, _) = schedules::Model::find(db, first.schedule_id.unwrap())
             .await
             .unwrap();
 
         let page = request.get("/").await.text();
-        assert!(
-            page.contains(r#"<a href="/schedules/1">review</a>"#),
-            "{page}"
-        );
-        // A schedule that isn't an agent's says what it runs.
-        assert!(
-            page.contains(r#"<p class="mono muted">make docs</p>"#),
-            "{page}"
-        );
+        // Each has a part, by its name and its repo.
+        for part in [
+            r#"<a href="/schedules/1">review</a> in <span class="mono">~/git/rxg</span>"#,
+            r#"<a href="/schedules/2">docs</a> in <span class="mono">~/git/infrastructure</span>"#,
+        ] {
+            assert!(page.contains(part), "{page}");
+        }
         assert_eq!(page.matches("It hasn't run yet.").count(), 2, "{page}");
 
         // The review runs, and reports a link and a set of files.
@@ -142,8 +144,10 @@ async fn the_report_has_a_part_for_each_repo_of_a_schedule() {
     signed_in(|request, ctx| async move {
         let db = &ctx.db;
         let triage = unchecked(db, "triage", "~/git/rxg\n~/git/infrastructure", "claude -p").await;
-        let mut queued = runs::Model::queue(db, &triage).await.unwrap();
-        let (in_rxg, in_infrastructure) = (queued.remove(0), queued.remove(0));
+        // The repos go by their clones' paths.
+        let mut queued = queue_all(db, &triage).await;
+        let (in_infrastructure, in_rxg) = (queued.remove(0), queued.remove(0));
+        assert_eq!(in_rxg.repo, "~/git/rxg");
 
         // The run in one repo is over, and the other still waits.
         let in_rxg = start(db, in_rxg, "p").await;
