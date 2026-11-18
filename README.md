@@ -104,6 +104,11 @@ After a fresh install or a dist upgrade, check that:
 - `/etc/ssh/sshd_config` has `PasswordAuthentication no`.
 - `/etc/nftables.conf` links into the repo, and `nftables.service` is enabled and active.
 
+`gns` runs sudo without a password (see `src/etc/sudoers.d/gns`), so `gns`'s SSH key is the key to
+the router. sudo takes that file only while root owns it, which `install` sees to. A pull that
+changes the file makes it `gns`'s again: sudo then says so and asks for the password, until
+`install` has run.
+
 The Postgres password is in `/root/postgres_pw.txt`. `install` sets it when the file is missing or
 the password no longer works, so to rotate it, delete the file and run `install`.
 

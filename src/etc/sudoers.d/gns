@@ -1,0 +1,3 @@
+# gns runs sudo without a password, so an update (see README.md) needs nobody at the keyboard.
+# install gives this file to root: sudo passes by a file that anyone else owns.
+gns ALL=(ALL:ALL) NOPASSWD: ALL

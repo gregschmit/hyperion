@@ -3,9 +3,9 @@
 # Symlink each file under `src/` to the same path under `/`, e.g. `src/etc/nftables.conf` ->
 # `/etc/nftables.conf`. Directories are created as needed, so files that packages install next to
 # ours are left alone, and links to files that are gone from `src/` are removed. Also installs the
-# packages in `pkglist` and UniFi OS Server, hands networking to systemd-networkd, sets the
-# postgres password, and builds and starts m8r. Run as root after each pull; it is safe to
-# re-run.
+# packages in `pkglist` and UniFi OS Server, gives the sudoers files to root, hands networking to
+# systemd-networkd, sets the postgres password, and builds and starts m8r. Run as root after each
+# pull; it is safe to re-run.
 
 set -eu
 
@@ -142,6 +142,33 @@ install_postgres() {
   echo "Postgres:    new password for postgres in $pw_file"
 }
 
+# Give the files in src/etc/sudoers.d to root, with mode 440. sudo follows our link to the clone,
+# and passes by a file that root doesn't own, or that others may write. The clone's group may
+# still read them: git takes a file that it can't read for a changed one. A pull that changes one
+# makes it the developer's again, so sudo passes it by, and says so, until this script runs.
+install_sudoers() {
+  local file group want
+
+  # Without sudo, skip it (e.g. in test/run).
+  if ! command -v visudo >/dev/null; then return; fi
+
+  group=$(stat -c %G "$REPO")
+  want="root:$group 440"
+  for file in "$REPO"/src/etc/sudoers.d/*; do
+    [ -e "$file" ] || continue
+    # sudo drops the lines that it can't read and uses the others, so stop before a file with
+    # a mistake is root's.
+    if ! visudo -cf "$file" >/dev/null; then
+      echo "ERROR: ${file#"$REPO"/} isn't a sudoers file that sudo can read; see above." >&2
+      exit 1
+    fi
+    if [ "$(stat -c '%U:%G %a' "$file")" = "$want" ]; then continue; fi
+    echo "Chowning:    ${file#"$REPO"/} to $want, for sudo"
+    chown "root:$group" "$file"
+    chmod 440 "$file"
+  done
+}
+
 # m8r's user (see m8r/README.md): m8r runs as it, and so do its agents, in the home that the
 # developer sets up for them. nftables.conf names the user, so it comes before anything loads
 # that file, everywhere (in test/run too).
@@ -276,6 +303,8 @@ install_m8r_user
 install_dir etc/apt
 install_packages
 install_unifi
+# Before the links, so sudo never meets a sudoers file that it must pass by.
+install_sudoers
 install_dir ""
 install_network
 
