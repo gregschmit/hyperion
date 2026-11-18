@@ -8,7 +8,7 @@ use m8r::{
 };
 use serial_test::serial;
 
-use crate::support::{queue, start};
+use crate::support::{queue, queue_one, start, unchecked};
 
 #[tokio::test]
 #[serial]
@@ -30,7 +30,7 @@ async fn the_queue_holds_one_waiting_run_for_a_schedule() {
         .await
         .unwrap();
     // The same again waits behind nothing: it's already waiting, and that's the answer.
-    let again = runs::Model::queue(db, &schedule).await.unwrap();
+    let again = queue_one(db, &schedule).await;
     assert_eq!(again.id, first.id);
     // Another schedule is another run, even one that looks the same.
     let other = queue(db, "triage", "/a", "cat").await;
@@ -44,9 +44,62 @@ async fn the_queue_holds_one_waiting_run_for_a_schedule() {
     assert_eq!(running.prompt, "the prompt");
     assert!(running.started_at.is_some());
     assert!(runs::Model::is_running(db, running.id).await.unwrap());
-    let later = runs::Model::queue(db, &schedule).await.unwrap();
+    let later = queue_one(db, &schedule).await;
     assert_ne!(later.id, first.id);
     assert_eq!(runs::Model::next(db).await.unwrap().unwrap().id, other.id);
+}
+
+#[tokio::test]
+#[serial]
+async fn a_schedule_queues_a_run_for_each_of_its_repos_and_they_start_together() {
+    let boot = boot_test::<App>().await.unwrap();
+    let db = &boot.app_context.db;
+    let ids = |runs: &[runs::Model]| runs.iter().map(|run| run.id).collect::<Vec<_>>();
+
+    let before = queue(db, "review", "/elsewhere", "cat").await;
+    let schedule = unchecked(db, "triage", "/a\n/b\n/c", "cat").await;
+    let queued = runs::Model::queue(db, &schedule).await.unwrap();
+    let repos: Vec<_> = queued.iter().map(|run| run.repo.as_str()).collect();
+    assert_eq!(repos, ["/a", "/b", "/c"]);
+    assert!(queued.iter().all(|run| {
+        (run.schedule_id, run.status.as_str(), run.command.as_str())
+            == (Some(schedule.id), "queued", "cat")
+    }));
+    let after = queue(db, "develop", "/a", "cat").await;
+    // Queued again, they're the same runs: one waits in each repo.
+    let again = runs::Model::queue(db, &schedule).await.unwrap();
+    assert_eq!(ids(&again), ids(&queued));
+
+    // The schedules take turns, the one that has waited the longest first. A schedule's runs
+    // go together.
+    assert_eq!(
+        ids(&runs::Model::next_batch(db).await.unwrap()),
+        [before.id]
+    );
+    start(db, before, "p").await;
+    let batch = runs::Model::next_batch(db).await.unwrap();
+    assert_eq!(ids(&batch), ids(&queued));
+
+    // One of them has started. The schedule queues again: a new run where none waits.
+    let mut batch = batch;
+    let started = start(db, batch.remove(1), "p").await;
+    assert_eq!(started.repo, "/b");
+    let next = runs::Model::queue(db, &schedule).await.unwrap();
+    assert_eq!((next[0].id, next[2].id), (queued[0].id, queued[2].id));
+    assert!(next[1].id > after.id);
+    // That one starts with the rest of its schedule's, though it was queued after another
+    // schedule's run.
+    assert_eq!(
+        ids(&runs::Model::next_batch(db).await.unwrap()),
+        [queued[0].id, queued[2].id, next[1].id]
+    );
+
+    // A run whose schedule is gone starts alone, to fail.
+    schedules::Model::remove(db, schedule.id).await.unwrap();
+    assert_eq!(
+        ids(&runs::Model::next_batch(db).await.unwrap()),
+        [queued[0].id]
+    );
 }
 
 #[tokio::test]

@@ -1,9 +1,9 @@
 mod artifacts;
 mod categories;
 mod configurations;
+mod errors;
 mod runs;
 mod schedules;
 mod tokens;
-mod tool_errors;
 mod used_links;
 mod watchlist_items;

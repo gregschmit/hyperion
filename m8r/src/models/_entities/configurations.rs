@@ -14,7 +14,7 @@ pub struct Model {
     #[sea_orm(unique)]
     pub active: bool,
     #[sea_orm(column_type = "Text")]
-    pub system_message: String,
+    pub prompt: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

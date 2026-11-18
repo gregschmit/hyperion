@@ -3,9 +3,9 @@
 pub use super::artifacts::Entity as Artifacts;
 pub use super::categories::Entity as Categories;
 pub use super::configurations::Entity as Configurations;
+pub use super::errors::Entity as Errors;
 pub use super::runs::Entity as Runs;
 pub use super::schedules::Entity as Schedules;
 pub use super::tokens::Entity as Tokens;
-pub use super::tool_errors::Entity as ToolErrors;
 pub use super::used_links::Entity as UsedLinks;
 pub use super::watchlist_items::Entity as WatchlistItems;

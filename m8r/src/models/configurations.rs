@@ -12,52 +12,43 @@ pub type Configurations = Entity;
 #[serde(default)]
 pub struct Params {
     pub name: String,
-    pub system_message: String,
+    /// Your part of every prompt. A schedule's prompt says where it goes.
+    pub prompt: String,
 }
 
 /// What changes on a configuration: only what's there.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Changes {
     pub name: Option<String>,
-    pub system_message: Option<String>,
+    pub prompt: Option<String>,
 }
 
 impl Params {
-    /// A new configuration's form: m8r's own system message.
-    #[must_use]
-    pub fn starter() -> Self {
-        Self {
-            system_message: prompts::DEFAULT_SYSTEM_MESSAGE.to_string(),
-            ..Self::default()
-        }
-    }
-
     /// The configuration as it is, with `changes`.
     #[must_use]
     pub fn changed(configuration: &Model, changes: Changes) -> Self {
         Self {
             name: changes.name.unwrap_or_else(|| configuration.name.clone()),
-            system_message: changes
-                .system_message
-                .unwrap_or_else(|| configuration.system_message.clone()),
+            prompt: changes
+                .prompt
+                .unwrap_or_else(|| configuration.prompt.clone()),
         }
     }
 
-    /// The system message as a run would get it now. Which watchlist items a run gets is its
+    /// The prompt as a run would get it now. Which watchlist items a run gets is its
     /// schedule's to say, so here there are none.
     ///
     /// # Errors
     /// When a query fails. Inside: Tera's message, when the template doesn't compile.
     pub async fn compiled(&self, db: &DatabaseConnection) -> ModelResult<Checked<String>> {
         let context = prompts::Context {
-            system_message: self.system_message.clone(),
+            config_prompt: self.prompt.clone(),
             ..prompts::Context::load(db, None, prompts::SAMPLE_ARTIFACTS_DIR).await?
         };
-        Ok(context.compile("{{ system_message }}"))
+        Ok(context.compile("{{ config_prompt }}"))
     }
 
-    /// Why these can't be saved, if they can't: no name, or a system message that doesn't
-    /// compile.
+    /// Why these can't be saved, if they can't: no name, or a prompt that doesn't compile.
     async fn problem(&self, db: &DatabaseConnection) -> ModelResult<Option<String>> {
         if self.name.trim().is_empty() {
             return Ok(Some("Give the configuration a name.".to_string()));
@@ -70,7 +61,7 @@ impl From<&Model> for Params {
     fn from(configuration: &Model) -> Self {
         Self {
             name: configuration.name.clone(),
-            system_message: configuration.system_message.clone(),
+            prompt: configuration.prompt.clone(),
         }
     }
 }
@@ -113,7 +104,7 @@ impl Model {
             .ok_or_else(|| ModelError::EntityNotFound)
     }
 
-    /// The configuration whose system message the runs get. With none, nothing runs.
+    /// The configuration whose prompt the runs get. With none, nothing runs.
     ///
     /// # Errors
     /// When the query fails.
@@ -149,6 +140,15 @@ impl Model {
         configuration.revised(db, &params).await
     }
 
+    /// Remove configuration `id`. If it was the active one, nothing runs after that.
+    ///
+    /// # Errors
+    /// `ModelError::EntityNotFound` when there's no such configuration, or when a query fails.
+    pub async fn remove(db: &DatabaseConnection, id: i64) -> ModelResult<()> {
+        Self::find(db, id).await?.delete(db).await?;
+        Ok(())
+    }
+
     /// Change the configuration: `params` are all that it has from you.
     ///
     /// # Errors
@@ -170,13 +170,13 @@ impl Model {
 impl ActiveModel {
     fn set(&mut self, params: &Params) {
         self.name = Set(params.name.trim().to_string());
-        self.system_message = Set(params.system_message.clone());
+        self.prompt = Set(params.prompt.clone());
     }
 
     /// Make this the one active configuration.
     ///
     /// # Errors
-    /// When an update fails.
+    /// When a query fails.
     pub async fn activated(mut self, db: &DatabaseConnection) -> ModelResult<Model> {
         let txn = db.begin().await?;
         Entity::update_many()

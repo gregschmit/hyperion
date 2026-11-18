@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use loco_rs::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::{categories, tool_errors, Checked};
+use super::{categories, errors, Checked};
 use crate::tools;
 
 pub type WatchlistItems = Entity;
@@ -380,17 +380,18 @@ impl Model {
     }
 
     /// Ask the forges about the items that are due, through `gh` and `glab`. An item whose
-    /// issue or PR/MR closed or merged leaves the watchlist. What's wrong with a tool goes in
-    /// `tool_errors`, and leaves it when the tool works again.
+    /// issue or PR/MR closed or merged leaves the watchlist. A tool that fails raises an
+    /// error, and the same check clears it when the tool works again, or when no item needs
+    /// the tool any more.
     ///
     /// # Errors
     /// When a query fails. A tool that fails is not an error here.
     pub async fn refresh(db: &DatabaseConnection, shell: &str) -> ModelResult<()> {
         let now = Utc::now();
-        let failing: HashSet<(String, String)> = tool_errors::Model::list(db)
+        let failing: HashSet<String> = errors::Model::open(db)
             .await?
             .into_iter()
-            .map(|error| (error.tool, error.host))
+            .map(|error| error.subject)
             .collect();
         let mut forges: BTreeMap<(&'static str, String), Vec<(Self, Forge)>> = BTreeMap::new();
         for item in Entity::find().order_by_asc(Column::Id).all(db).await? {
@@ -401,39 +402,43 @@ impl Model {
         }
 
         for ((tool, host), items) in &forges {
+            // The tool's own error, and the error of the tool on this host.
+            let (missing, refused) = ((*tool).to_string(), format!("{tool} on {host}"));
             let stale = |item: &Self| {
                 item.checked_at
                     .is_none_or(|at| now - at.with_timezone(&Utc) > CHECK_EVERY)
             };
-            let due = failing.contains(&((*tool).to_string(), host.clone()))
-                || failing.contains(&((*tool).to_string(), String::new()))
+            let due = failing.contains(&missing)
+                || failing.contains(&refused)
                 || items.iter().any(|(item, _)| stale(item));
             if !due {
                 continue;
             }
             match Self::check(db, shell, items, now).await? {
                 Some(Failure::Tool(message)) => {
-                    tool_errors::Model::set(db, tool, "", &message).await?;
-                    tool_errors::Model::clear(db, tool, host).await?;
+                    errors::Model::raise(db, &missing, &message, None).await?;
+                    errors::Model::clear(db, &refused).await?;
                 }
                 Some(Failure::Host(message)) => {
-                    tool_errors::Model::set(db, tool, host, &message).await?;
-                    tool_errors::Model::clear(db, tool, "").await?;
+                    errors::Model::raise(db, &refused, &message, None).await?;
+                    errors::Model::clear(db, &missing).await?;
                 }
                 None => {
-                    tool_errors::Model::clear(db, tool, host).await?;
-                    tool_errors::Model::clear(db, tool, "").await?;
+                    errors::Model::clear(db, &refused).await?;
+                    errors::Model::clear(db, &missing).await?;
                 }
             }
         }
 
         // An error about a forge that no item is on any more has nothing left to clear it.
-        for error in tool_errors::Model::list(db).await? {
-            let wanted = forges.keys().any(|(tool, host)| {
-                *tool == error.tool && (error.host.is_empty() || *host == error.host)
-            });
-            if Forge::TOOLS.contains(&error.tool.as_str()) && !wanted {
-                tool_errors::Model::clear(db, &error.tool, &error.host).await?;
+        for subject in failing {
+            let mut words = subject.split(" on ");
+            let (tool, host) = (words.next().unwrap_or_default(), words.next());
+            let wanted = forges
+                .keys()
+                .any(|(wanted, on)| *wanted == tool && host.is_none_or(|host| on == host));
+            if Forge::TOOLS.contains(&tool) && !wanted {
+                errors::Model::clear(db, &subject).await?;
             }
         }
         Ok(())
@@ -455,14 +460,16 @@ impl Model {
                     continue;
                 }
                 Err(err) => {
-                    return Ok(Some(Failure::Tool(format!("m8r couldn't run it: {err}"))));
+                    let message = format!("m8r couldn't run {}: {err}", forge.tool);
+                    return Ok(Some(Failure::Tool(message)));
                 }
             };
             if output.missing() {
-                return Ok(Some(Failure::Tool(
-                    "It isn't installed: the login shell of m8r's user finds no such command."
-                        .to_string(),
-                )));
+                return Ok(Some(Failure::Tool(format!(
+                    "m8r asks the forge about the watchlist with {}, and the login shell of \
+                     m8r's user finds no such command.",
+                    forge.tool
+                ))));
             }
             if !output.ok() {
                 let message = format!("{}: {}", forge.label, output.complaint());

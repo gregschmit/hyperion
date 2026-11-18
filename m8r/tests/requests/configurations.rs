@@ -3,8 +3,8 @@ use serial_test::serial;
 
 use crate::support::{location, signed_in, watch, ISSUE};
 
-fn form<'a>(name: &'a str, system_message: &'a str) -> [(&'a str, &'a str); 2] {
-    [("name", name), ("system_message", system_message)]
+fn form<'a>(name: &'a str, prompt: &'a str) -> [(&'a str, &'a str); 2] {
+    [("name", name), ("prompt", prompt)]
 }
 
 #[tokio::test]
@@ -16,13 +16,15 @@ async fn a_configuration_is_written_seen_compiled_and_made_active() {
             .await
             .text()
             .contains("No configurations"));
+        // A new one's prompt is blank: m8r's own part isn't the configuration's to hold.
         let page = request.get("/configurations/new").await.text();
-        assert!(page.contains("You are running in m8r"), "{page}");
-        // The page says what the system message can use: all but itself.
-        assert!(page.contains("<code>{{ artifacts_dir }}</code>"), "{page}");
+        assert!(page.contains(r#"<textarea id="prompt" name="prompt" rows="12"></textarea>"#));
+        assert!(!page.contains("You are running in m8r"), "{page}");
+        // The page says what the prompt can use: all but itself.
+        assert!(page.contains("<code>{{ m8r_prompt }}</code>"), "{page}");
         assert!(page.contains("<code>{{ watchlist }}</code>"), "{page}");
         assert!(
-            !page.contains("<code>{{ system_message }}</code></td>"),
+            !page.contains("<code>{{ config_prompt }}</code></td>"),
             "{page}"
         );
 
@@ -34,7 +36,7 @@ async fn a_configuration_is_written_seen_compiled_and_made_active() {
         assert_eq!(res.status_code(), 200);
         let page = res.text();
         assert!(
-            page.contains("The system message doesn&#39;t compile."),
+            page.contains("The configuration&#39;s prompt doesn&#39;t compile."),
             "{page}"
         );
         assert!(page.contains("nobody"), "{page}");
@@ -51,19 +53,20 @@ async fn a_configuration_is_written_seen_compiled_and_made_active() {
             .post("/configurations")
             .form(&form(
                 "Mornings",
-                "You are in m8r. Report to {{ artifacts_dir }}.\nFollow <these>:\n{{ watchlist }}",
+                "Write in plain words. Report to {{ artifacts_dir }}.\nFollow <these>:\n\
+                 {{ watchlist }}",
             ))
             .await;
         assert_eq!(res.status_code(), 303);
         assert_eq!(location(&res), "/configurations/1");
 
-        // Its page shows the system message compiled. The items are a schedule's to choose, so
-        // here there are none.
+        // Its page shows the prompt compiled. The items are a schedule's to choose, so here
+        // there are none.
         let page = request.get("/configurations/1").await.text();
         assert!(
             page.contains(
-                "<pre>You are in m8r. Report to /var/lib/m8r/artifacts/1.\nFollow &lt;these&gt;:\n\
-                 (nothing)</pre>"
+                "<pre>Write in plain words. Report to /var/lib/m8r/artifacts/1.\n\
+                 Follow &lt;these&gt;:\n(nothing)</pre>"
             ),
             "{page}"
         );
@@ -78,7 +81,7 @@ async fn a_configuration_is_written_seen_compiled_and_made_active() {
         assert!(!configuration.active);
         let page = request.get("/configurations/1").await.text();
         assert!(
-            page.contains("Blank: the prompts get no system message."),
+            page.contains("Blank: the schedules' prompts get nothing from this configuration."),
             "{page}"
         );
 
@@ -115,6 +118,10 @@ async fn a_configuration_is_written_seen_compiled_and_made_active() {
             303
         );
         assert_eq!(request.get("/configurations/1").await.status_code(), 404);
+        assert_eq!(
+            request.post("/configurations/1/remove").await.status_code(),
+            404
+        );
     })
     .await;
 }

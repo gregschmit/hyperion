@@ -308,8 +308,9 @@ async fn the_other_tools_do_what_the_api_does() {
         assert_eq!(listed.as_array().unwrap().len(), 3);
 
         // A schedule that takes that category, so the category stays.
-        let asked = json!({ "operation": "other", "category": "Release", "repo": here,
-            "hron": "every 12 hours", "command": "make release-notes" });
+        let asked = json!({ "operation": "other", "category": "Release", "repos": [here],
+            "hron": ["every 12 hours", "every day at 09:00, 17:00"],
+            "command": "make release-notes" });
         let schedule = call(&request, &mac, "add_schedule", asked).await.unwrap();
         assert_eq!(
             (
@@ -320,11 +321,15 @@ async fn the_other_tools_do_what_the_api_does() {
             ),
             (
                 &json!(1),
-                &json!("every 12 hours from 00:00 to 23:59"),
+                &json!([
+                    "every 12 hours from 00:00 to 23:59",
+                    "every day at 09:00, 17:00"
+                ]),
                 &json!("Release"),
                 &json!("")
             )
         );
+        assert_eq!(schedule["repos"], json!([here]));
         let in_use = call(&request, &mac, "remove_category", json!({ "id": 3 })).await;
         assert!(in_use
             .unwrap_err()
@@ -354,19 +359,26 @@ async fn the_other_tools_do_what_the_api_does() {
             .unwrap();
         assert_eq!(listed, json!([changed]));
 
-        // Its run, and the history.
-        let run = call(&request, &mac, "run_schedule", json!({ "id": 1 }))
+        // Its runs, one for each repo, and the history.
+        let runs = call(&request, &mac, "run_schedule", json!({ "id": 1 }))
             .await
             .unwrap();
+        let run = &runs[0];
+        assert_eq!(runs.as_array().unwrap().len(), 1);
         assert_eq!(
-            (&run["id"], &run["status"], &run["schedule_id"]),
-            (&json!(1), &json!("queued"), &json!(1))
+            (
+                &run["id"],
+                &run["status"],
+                &run["schedule_id"],
+                &run["repo"]
+            ),
+            (&json!(1), &json!("queued"), &json!(1), &json!(here))
         );
         assert_eq!(run.get("prompt"), None);
         let listed = call(&request, &mac, "list_runs", json!({ "limit": 5 }))
             .await
             .unwrap();
-        assert_eq!(listed, json!([run]));
+        assert_eq!(listed, runs);
         let whole = call(&request, &mac, "get_run", json!({ "id": 1 }))
             .await
             .unwrap();
@@ -380,7 +392,7 @@ async fn the_other_tools_do_what_the_api_does() {
         assert_eq!(missing, Err("m8r has nothing with that id.".to_string()));
 
         // Configurations: the one from before is active.
-        let asked = json!({ "name": "Evenings", "system_message": "Report." });
+        let asked = json!({ "name": "Evenings", "prompt": "Report." });
         let evenings = call(&request, &mac, "add_configuration", asked)
             .await
             .unwrap();
@@ -388,17 +400,17 @@ async fn the_other_tools_do_what_the_api_does() {
             (&evenings["id"], &evenings["active"]),
             (&json!(2), &json!(false))
         );
-        let broken = json!({ "id": 2, "system_message": "{{ nope }}" });
+        let broken = json!({ "id": 2, "prompt": "{{ nope }}" });
         let refused = call(&request, &mac, "update_configuration", broken).await;
         assert!(refused
             .unwrap_err()
-            .starts_with("The system message doesn't compile."));
+            .starts_with("The configuration's prompt doesn't compile."));
         let renamed = json!({ "id": 2, "name": "Nights" });
         let nights = call(&request, &mac, "update_configuration", renamed)
             .await
             .unwrap();
         assert_eq!(
-            (&nights["name"], &nights["system_message"]),
+            (&nights["name"], &nights["prompt"]),
             (&json!("Nights"), &json!("Report."))
         );
         let active = call(&request, &mac, "activate_configuration", json!({ "id": 2 })).await;

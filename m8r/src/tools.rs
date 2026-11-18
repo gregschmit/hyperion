@@ -82,36 +82,6 @@ pub async fn run(shell: &str, argv: &[String], limit: Duration) -> io::Result<Ou
     })
 }
 
-/// Whether `program` is on the user's `PATH`.
-///
-/// # Errors
-/// When the shell can't start.
-pub async fn installed(shell: &str, program: &str) -> io::Result<bool> {
-    let status = Command::new(shell)
-        .args(["-lc", r#"command -v "$1""#, "m8r", program])
-        .env_remove(SECRET)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .status();
-    let status = tokio::time::timeout(ANSWER_LIMIT, status)
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "gave no answer in time"))??;
-    Ok(status.success())
-}
-
-/// The program that a command line starts, such as `claude`: its first word, when that's a
-/// plain one. Anything else (a variable, a quote, a subshell) is the shell's to read.
-#[must_use]
-pub fn program(command: &str) -> Option<&str> {
-    let first = command.split_whitespace().next()?;
-    first
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "-_./+".contains(c))
-        .then_some(first)
-}
-
 /// How a run's command ended.
 #[derive(Debug, PartialEq, Eq)]
 pub enum End {

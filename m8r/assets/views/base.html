@@ -15,34 +15,38 @@
     <a href="/watchlist"{% if section == "watchlist" %} aria-current="page"{% endif %}>Watchlist</a>
     <a href="/schedules"{% if section == "schedules" %} aria-current="page"{% endif %}>Schedules</a>
     <a href="/configurations"{% if section == "configurations" %} aria-current="page"{% endif %}>Configurations</a>
+    <a href="/errors"{% if section == "errors" %} aria-current="page"{% endif %}>Errors</a>
   </nav>
 </header>
-{% if has_errors %}
-<section class="errors">
-  <h2>What doesn't work</h2>
-  <table>
-    <tr><th>Tool</th><th>Host</th><th>What's wrong</th><th>Since</th></tr>
-    {% if scheduler_late %}
-    <tr>
-      <td><code>m8r-scheduler</code></td>
-      <td></td>
-      <td>The scheduler isn't running, so nothing starts a run: it ticks every minute, and there
-        was no tick {% if last_tick %}since {{ last_tick }}{% else %}yet{% endif %}.</td>
-      <td>{{ last_tick }}</td>
-    </tr>
-    {% endif %}
-    {% for error in tool_errors %}
-    <tr>
-      <td><code>{{ error.tool }}</code></td>
-      <td>{{ error.host }}</td>
-      <td>{{ error.message }}</td>
-      <td>{{ error.since }}</td>
-    </tr>
+{% if error_count > 0 %}
+<aside class="alert">
+  <a class="count" href="/errors">{{ error_count }} {% if error_count == 1 %}error{% else %}errors{% endif %}</a>
+  <ol>
+    {% for error in open_errors %}
+    <li{% if not loop.first %} hidden{% endif %}><strong>{{ error.subject }}:</strong> {{ error.summary }}</li>
     {% endfor %}
-  </table>
-  <p class="muted">Fix the tools as the <code>m8r</code> user. m8r looks again every minute, and a row goes when
-    its tool works.</p>
-</section>
+  </ol>
+</aside>
+{% if error_count > 1 %}
+<script>
+  {
+    // The alert shows the errors one after the other. It waits while you point at it.
+    const bar = document.querySelector('.alert');
+    const errors = bar.querySelectorAll('li');
+    let shown = 0;
+    let waiting = false;
+    for (const [event, wait] of [['mouseenter', true], ['mouseleave', false], ['focusin', true], ['focusout', false]]) {
+      bar.addEventListener(event, () => { waiting = wait; });
+    }
+    setInterval(() => {
+      if (waiting) return;
+      errors[shown].hidden = true;
+      shown = (shown + 1) % errors.length;
+      errors[shown].hidden = false;
+    }, 5000);
+  }
+</script>
+{% endif %}
 {% endif %}
 <main>
 {% block content %}{% endblock content %}

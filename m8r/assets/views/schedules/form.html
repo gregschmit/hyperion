@@ -2,11 +2,6 @@
 {% block title %}{% if is_new %}New schedule{% else %}Schedule {{ id }}{% endif %} · m8r{% endblock title %}
 {% block content %}
 <h1>{% if is_new %}New schedule{% else %}Schedule {{ id }}{% endif %}</h1>
-{% if not configured %}
-<div class="problem">No configuration is active, so nothing runs, and the prompt below gets no
-  system message. <a href="/configurations">Make one active.</a></div>
-{% endif %}
-
 {% if has_problem %}<div class="problem"><pre>{{ problem }}</pre></div>{% endif %}
 <form method="post" action="{% if is_new %}/schedules{% else %}/schedules/{{ id }}{% endif %}">
   <label for="operation">Operation <small>what the schedule is for. Choosing one fills in its
@@ -26,17 +21,18 @@
     {% endfor %}
   </select>
 
-  <label for="repo">Repo <small>the full path of a clone in the m8r user's home</small></label>
-  <input type="text" id="repo" name="repo" class="wide mono" value="{{ form.repo }}" placeholder="/home/m8r/git/group/project" required>
+  <label for="repos">Repos <small>the clones in the home of m8r's user where the command starts,
+    one to a line. A run starts in each, side by side.</small></label>
+  <textarea id="repos" name="repos" rows="3" placeholder="~/git/group/project" required>{{ form.repos }}</textarea>
 
   <label for="hron">When <small>in words, such as <code>every weekday at 06:00</code>,
     <code>every 12 hours</code> or <code>every monday, thursday at 9:00, 15:00</code>
     (<a href="https://github.com/simpllyf/hron#expression-syntax">hron</a> has more). A five-field
-    cron expression works too. The server's clock, unless you add a time zone:
-    <code>in America/New_York</code>.</small></label>
-  <input type="text" id="hron" name="hron" class="wide" value="{{ form.hron }}" placeholder="every weekday at 06:00" required>
+    cron expression works too. One to a line: the schedule runs at each one's times. The
+    server's clock, unless you add a time zone: <code>in America/New_York</code>.</small></label>
+  <textarea id="hron" name="hron" rows="3" placeholder="every weekday at 06:00" required>{{ form.hron }}</textarea>
 
-  <label for="command">Command <small>the exact line that a run starts, in the repo, through the
+  <label for="command">Command <small>the exact line that a run starts, in its repo, through the
     login shell of m8r's user</small></label>
   <input type="text" id="command" name="command" class="wide mono" value="{{ form.command }}" placeholder="claude -p &quot;Update the changelog.&quot;" required>
 
@@ -64,14 +60,16 @@
 {% endif %}
 
 <script>
-  // Choosing an operation fills in its command, unless you wrote a command of your own.
-  const operation = document.getElementById('operation');
-  const defaults = new Set([...operation.options].map((option) => option.dataset.command));
-  operation.addEventListener('change', () => {
-    const command = operation.form.elements.command;
-    if (command.value === '' || defaults.has(command.value)) {
-      command.value = operation.selectedOptions[0].dataset.command;
-    }
-  });
+  {
+    // Choosing an operation fills in its command, unless you wrote a command of your own.
+    const operation = document.getElementById('operation');
+    const defaults = new Set([...operation.options].map((option) => option.dataset.command));
+    operation.addEventListener('change', () => {
+      const command = operation.form.elements.command;
+      if (command.value === '' || defaults.has(command.value)) {
+        command.value = operation.selectedOptions[0].dataset.command;
+      }
+    });
+  }
 </script>
 {% endblock content %}

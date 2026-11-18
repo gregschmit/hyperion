@@ -38,10 +38,11 @@ pub fn schedule((schedule, category): &schedules::Listed) -> Value {
         "id": schedule.id,
         "operation": schedule.operation,
         "category": category.as_ref().map(|it| it.name.as_str()).unwrap_or_default(),
-        "repo": schedule.repo,
-        "hron": schedule.hron,
+        "repos": schedule.repos().collect::<Vec<_>>(),
+        "hron": schedule.times().collect::<Vec<_>>(),
         "command": schedule.command,
         "prompt": schedule.prompt,
+        // The first of its times to come.
         "next": next,
     })
 }
@@ -52,7 +53,7 @@ pub fn configuration(configuration: &configurations::Model) -> Value {
         "id": configuration.id,
         "name": configuration.name,
         "active": configuration.active,
-        "system_message": configuration.system_message,
+        "prompt": configuration.prompt,
     })
 }
 

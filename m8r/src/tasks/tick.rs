@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeSet,
     fs::{self, File, TryLockError},
     io::Read,
     path::Path,
@@ -8,10 +7,11 @@ use std::{
 
 use jiff::Zoned;
 use loco_rs::prelude::*;
+use tokio::task::JoinSet;
 
 use crate::{
     initializers::access,
-    models::{artifacts, configurations, runs, schedules, tool_errors, watchlist_items, Checked},
+    models::{artifacts, configurations, errors, runs, schedules, watchlist_items, Checked},
     prompts,
     settings::{self, Settings},
     tools,
@@ -19,9 +19,6 @@ use crate::{
 
 /// How much m8r reads of what a run printed.
 const OUTPUT_BYTES: u64 = 1024 * 1024;
-
-/// What the pages are called in the list of what doesn't work.
-const PAGES: &str = "m8r-web";
 
 /// How long the pages get to take a connection.
 const PAGES_LIMIT: Duration = Duration::from_secs(3);
@@ -34,8 +31,9 @@ impl Task for Tick {
     fn task(&self) -> TaskInfo {
         TaskInfo {
             name: "tick".to_string(),
-            detail: "Queue the schedules that are due, check the tools and the watchlist, and \
-                     start the oldest queued run. The scheduler runs this every minute."
+            detail: "Queue the schedules that are due, ask the forges about the watchlist, and \
+                     start the runs of the schedule that has waited the longest. The scheduler \
+                     runs this every minute."
                 .to_string(),
         }
     }
@@ -46,23 +44,40 @@ impl Task for Tick {
         // The pages say so when this file gets old: the scheduler isn't running.
         fs::write(settings.tick_file(), "")?;
 
+        // The pages raise this error when the ticks stop.
+        errors::Model::clear(&ctx.db, errors::SCHEDULER).await?;
+        errors::Model::check_setup(&ctx.db).await?;
+        errors::Model::forget(&ctx.db).await?;
+
         queue_due(ctx).await?;
 
         // One tick at a time talks to the forges: a slow answer mustn't pile ticks up.
         if let Some(_checking) = lock(&settings.data.join("check.lock"))? {
-            check_tools(ctx, &settings).await?;
+            watchlist_items::Model::refresh(&ctx.db, &settings.shell).await?;
+            check_api(ctx).await?;
         }
 
-        // The tick that has a run in progress holds this lock for as long as the run takes.
+        // The tick that has runs in progress holds this lock for as long as they take.
         let Some(_running) = lock(&settings.lock_file())? else {
             return Ok(());
         };
         // So nothing is running now, whatever the rows say.
         runs::Model::fail_running(&ctx.db, "m8r stopped while the run was in progress").await?;
-        if let Some(run) = runs::Model::next(&ctx.db).await? {
-            execute(ctx, &settings, run).await?;
+
+        // One schedule's runs start together, one in each of its repos. Another schedule's
+        // wait for a later tick, so two schedules never work in the same clone at once.
+        let mut running = JoinSet::new();
+        for run in runs::Model::next_batch(&ctx.db).await? {
+            running.spawn(execute(ctx.clone(), settings.clone(), run));
         }
-        Ok(())
+        // Each run is on its own: one that goes wrong doesn't end the others.
+        let mut ended = Ok(());
+        while let Some(run) = running.join_next().await {
+            if let Err(err) = run.map_err(Error::wrap).and_then(|run| run) {
+                ended = Err(err);
+            }
+        }
+        ended
     }
 }
 
@@ -77,8 +92,8 @@ fn lock(path: &Path) -> Result<Option<File>> {
     }
 }
 
-/// Queue a run for each schedule whose time has come. With no active configuration, nothing
-/// runs.
+/// Queue the runs of each schedule whose time has come: one for each of its repos. With no
+/// active configuration, nothing runs.
 async fn queue_due(ctx: &AppContext) -> Result<()> {
     if configurations::Model::active(&ctx.db).await?.is_none() {
         return Ok(());
@@ -93,51 +108,9 @@ async fn queue_due(ctx: &AppContext) -> Result<()> {
     Ok(())
 }
 
-/// See whether the tools work: the programs that the schedules' commands start, `gh` and
-/// `glab`, which ask the forges about the watchlist, and m8r's own API, which the agents use.
-/// A tool that's missing or logged out is recorded, not fatal, and the record goes when it
-/// works.
-async fn check_tools(ctx: &AppContext, settings: &Settings) -> Result<()> {
-    // The agent's own command too: before there's a schedule, setup wants to know.
-    let mut programs: BTreeSet<String> = tools::program(&settings.agent)
-        .map(str::to_string)
-        .into_iter()
-        .collect();
-    for (schedule, _) in schedules::Model::list(&ctx.db).await? {
-        programs.extend(tools::program(&schedule.command).map(str::to_string));
-    }
-    for program in &programs {
-        match tools::installed(&settings.shell, program).await {
-            Ok(true) => tool_errors::Model::clear(&ctx.db, program, "").await?,
-            Ok(false) => {
-                let message = "It isn't installed: the login shell of m8r's user finds no such \
-                               command. A run that starts it fails.";
-                tool_errors::Model::set(&ctx.db, program, "", message).await?;
-            }
-            Err(err) => {
-                let message = format!("m8r couldn't look for it with {}: {err}", settings.shell);
-                tool_errors::Model::set(&ctx.db, program, "", &message).await?;
-            }
-        }
-    }
-    watchlist_items::Model::refresh(&ctx.db, &settings.shell).await?;
-    check_pages(ctx).await?;
-
-    // An error about a tool that m8r no longer runs has nothing left to clear it.
-    for error in tool_errors::Model::list(&ctx.db).await? {
-        let wanted = programs.contains(&error.tool)
-            || error.tool == PAGES
-            || watchlist_items::Forge::TOOLS.contains(&error.tool.as_str());
-        if !wanted {
-            tool_errors::Model::clear(&ctx.db, &error.tool, &error.host).await?;
-        }
-    }
-    Ok(())
-}
-
 /// See whether a run can reach m8r's API: a tick runs as the same user, on the same host. If
 /// it can't, an agent can't change the watchlist, and nothing else would say so.
-async fn check_pages(ctx: &AppContext) -> Result<()> {
+async fn check_api(ctx: &AppContext) -> Result<()> {
     let server = &ctx.config.server;
     let address = (
         server.binding.as_str(),
@@ -145,20 +118,23 @@ async fn check_pages(ctx: &AppContext) -> Result<()> {
     );
     let connection = tokio::net::TcpStream::connect(address);
     let problem = match tokio::time::timeout(PAGES_LIMIT, connection).await {
-        Ok(Ok(_)) => return Ok(tool_errors::Model::clear(&ctx.db, PAGES, "").await?),
-        Ok(Err(err)) => err.to_string(),
-        Err(_) => "no answer in time".to_string(),
+        Ok(Ok(_)) => None,
+        Ok(Err(err)) => Some(err.to_string()),
+        Err(_) => Some("no answer in time".to_string()),
     };
-    let message = format!(
-        "A run can't reach m8r's API at {}, so its agent can't change the watchlist: {problem}. \
-         The pages are down, or a firewall keeps m8r's user from them.",
-        settings::local_url(ctx)
-    );
-    Ok(tool_errors::Model::set(&ctx.db, PAGES, "", &message).await?)
+    let message = problem.map(|problem| {
+        format!(
+            "A run can't reach m8r's API at {}, so its agent can't change the watchlist: \
+             {problem}. The pages are down, or a firewall keeps m8r's user from them.",
+            settings::local_url(ctx)
+        )
+    });
+    Ok(errors::Model::set(&ctx.db, errors::API, message.as_deref()).await?)
 }
 
 /// Run one queued run from start to end, and record how it went.
-async fn execute(ctx: &AppContext, settings: &Settings, run: runs::Model) -> Result<()> {
+async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Result<()> {
+    let ctx = &ctx;
     let dir = std::path::absolute(settings.artifacts_dir(run.id))?;
     let (schedule, prompt) = match prepare(ctx, &run, &dir).await? {
         Ok(ready) => ready,
@@ -175,7 +151,8 @@ async fn execute(ctx: &AppContext, settings: &Settings, run: runs::Model) -> Res
         .started(&ctx.db, &schedule, prompt.clone())
         .await?;
 
-    // What m8r's skill tells the agent to use (see `prompts`). The token ends with the run.
+    // What m8r's part of the prompt tells the agent to use (see `prompts`). The token ends
+    // with the run.
     let limit = settings.run_limit();
     let env = [
         ("M8R_URL", settings::local_url(ctx)),
@@ -188,7 +165,7 @@ async fn execute(ctx: &AppContext, settings: &Settings, run: runs::Model) -> Res
     let end = tools::run_command(
         &settings.shell,
         &run.command,
-        Path::new(&run.repo),
+        &schedules::repo_dir(&run.repo),
         &prompt,
         &printed,
         limit,
@@ -231,8 +208,8 @@ async fn prepare(
     if configurations::Model::active(&ctx.db).await?.is_none() {
         return Ok(Err("No configuration is active.".to_string()));
     }
-    if !Path::new(&schedule.repo).is_dir() {
-        return Ok(Err(format!("{} isn't a directory.", schedule.repo)));
+    if !schedules::repo_dir(&run.repo).is_dir() {
+        return Ok(Err(format!("{} isn't a directory.", run.repo)));
     }
     let artifacts_dir = artifacts_dir.to_string_lossy();
     let context = prompts::Context::load(&ctx.db, category.as_ref(), &artifacts_dir).await?;

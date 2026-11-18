@@ -48,7 +48,7 @@ async fn the_runs_page_lists_the_queue_and_the_history() {
                 || page.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
             "{page}"
         );
-        assert!(!page.contains("<script>"), "{page}");
+        assert!(!page.contains("<script>alert"), "{page}");
         assert!(page.contains("the command exited with status 3"), "{page}");
 
         assert_eq!(request.get("/runs/99").await.status_code(), 404);

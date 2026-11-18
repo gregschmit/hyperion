@@ -37,7 +37,8 @@ const TOKEN: &str = "token";
 /// What a session's user is called. m8r has one user: whoever holds a link.
 const USER: &str = "m8r";
 
-/// What a run's token covers: the watchlist, which m8r's skill tells the agent to keep.
+/// What a run's token covers: the watchlist, which m8r's part of the prompt tells the agent
+/// to keep.
 const RUN_SCOPE: &str = "watchlist_items";
 
 /// Who makes a request to the API or the MCP endpoint: the holder of a token.

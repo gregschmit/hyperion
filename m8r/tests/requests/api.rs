@@ -47,7 +47,7 @@ async fn watchlist_items_are_listed_added_changed_and_removed() {
         let res = request.get(items).authorization_bearer(&token).await;
         assert_eq!(answer(&res), (200, json!([])));
 
-        // As m8r's skill adds one: the category by its name.
+        // As m8r's prompt adds one: the category by its name.
         let res = request
             .post(items)
             .authorization_bearer(&token)
@@ -122,7 +122,7 @@ async fn watchlist_items_are_listed_added_changed_and_removed() {
             (&json!(1), &json!("medium"), &json!(""))
         );
 
-        // A change names only what changes, as the skill does after a review.
+        // A change names only what changes, as m8r's prompt does after a review.
         let res = request
             .patch(&format!("{items}/1"))
             .authorization_bearer(&token)
@@ -277,18 +277,20 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
         let schedules = "/api/schedules";
         let here = std::env::current_dir().unwrap();
         let here = here.to_string_lossy();
+        // Its repos and its times are lists.
+        let (src, tests) = (format!("{here}/src"), format!("{here}/tests"));
         let res = request
             .post(schedules)
             .authorization_bearer(&token)
             .json(
-                &json!({ "operation": "review", "category": PR, "repo": here,
-                "hron": "0 6 * * 1-5", "command": "claude -p",
-                "prompt": "{{ system_message }}\n\n{{ watchlist }}" }),
+                &json!({ "operation": "review", "category": PR, "repos": [src, tests],
+                "hron": ["0 6 * * 1-5", "every saturday at 10:00"], "command": "claude -p",
+                "prompt": "{{ config_prompt }}\n\n{{ watchlist }}" }),
             )
             .await;
         let (status, added) = answer(&res);
         assert_eq!(status, 200, "{added}");
-        // The time is in words, and the next one is a moment.
+        // The times are in words, and the next one is a moment.
         let next = added["next"].as_str().unwrap().to_string();
         assert!(next.ends_with('Z') && next.len() == 20, "{next}");
         assert_eq!(
@@ -297,10 +299,10 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
                 "id": 1,
                 "operation": "review",
                 "category": PR,
-                "repo": here,
-                "hron": "every weekday at 06:00",
+                "repos": [src, tests],
+                "hron": ["every weekday at 06:00", "every saturday at 10:00"],
                 "command": "claude -p",
-                "prompt": "{{ system_message }}\n\n{{ watchlist }}",
+                "prompt": "{{ config_prompt }}\n\n{{ watchlist }}",
                 "next": next,
             })
         );
@@ -316,7 +318,7 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
             .post(schedules)
             .authorization_bearer(&token)
             .json(
-                &json!({ "operation": "review", "repo": here, "hron": "every day at 6am",
+                &json!({ "operation": "review", "repos": [here], "hron": ["every day at 6am"],
                 "command": "claude -p" }),
             )
             .await;
@@ -325,7 +327,8 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
             bad_request("error: unknown keyword 'am'\n  every day at 6am\n                ^^")
         );
 
-        // A change names only what changes. A blank category is none.
+        // A change names only what changes. A blank category is none. A list of one can be
+        // text, and so can a longer one, with a line for each.
         let res = request
             .patch(&format!("{schedules}/1"))
             .authorization_bearer(&token)
@@ -334,13 +337,32 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
         let (status, changed) = answer(&res);
         assert_eq!(status, 200);
         assert_eq!(
-            (&changed["hron"], &changed["category"], &changed["command"]),
             (
-                &json!("every 12 hours from 00:00 to 23:59"),
+                &changed["hron"],
+                &changed["category"],
+                &changed["command"],
+                &changed["repos"]
+            ),
+            (
+                &json!(["every 12 hours from 00:00 to 23:59"]),
                 &json!(""),
-                &json!("claude -p")
+                &json!("claude -p"),
+                &json!([src, tests])
             )
         );
+        let res = request
+            .patch(&format!("{schedules}/1"))
+            .authorization_bearer(&token)
+            .json(&json!({ "repos": format!("{tests}\n{src}") }))
+            .await;
+        assert_eq!(res.json::<Value>()["repos"], json!([tests, src]));
+        let res = request
+            .patch(&format!("{schedules}/1"))
+            .authorization_bearer(&token)
+            .json(&json!({ "repos": [] }))
+            .await;
+        let why = res.json::<Value>()["description"].to_string();
+        assert!(why.contains("Say which repo the schedule runs in"), "{why}");
         let res = request
             .patch(&format!("{schedules}/1"))
             .authorization_bearer(&token)
@@ -351,27 +373,41 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
         let why = refused["description"].as_str().unwrap();
         assert!(why.starts_with("The prompt doesn't compile."), "{why}");
 
-        // "Run now": the answer is the run that waits, and again the same one.
+        // "Run now": the answer is the runs that wait, one for each repo, and again the same
+        // ones.
         let res = request
             .post(&format!("{schedules}/1/run"))
             .authorization_bearer(&token)
             .await;
-        let (status, run) = answer(&res);
+        let (status, runs) = answer(&res);
         assert_eq!(status, 200);
+        let queued: Vec<_> = runs
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|run| {
+                (
+                    &run["id"],
+                    &run["schedule_id"],
+                    &run["repo"],
+                    &run["status"],
+                    &run["command"],
+                )
+            })
+            .collect();
+        let (one, queued_status, command) = (json!(1), json!("queued"), json!("claude -p"));
         assert_eq!(
-            (
-                &run["id"],
-                &run["schedule_id"],
-                &run["status"],
-                &run["command"]
-            ),
-            (&json!(1), &json!(1), &json!("queued"), &json!("claude -p"))
+            queued,
+            [
+                (&json!(1), &one, &json!(tests), &queued_status, &command),
+                (&json!(2), &one, &json!(src), &queued_status, &command),
+            ]
         );
         let res = request
             .post(&format!("{schedules}/1/run"))
             .authorization_bearer(&token)
             .await;
-        assert_eq!(res.json::<Value>()["id"], json!(1));
+        assert_eq!(answer(&res), (200, runs));
 
         let res = request
             .delete(&format!("{schedules}/1"))
@@ -401,15 +437,13 @@ async fn configurations_are_listed_added_changed_made_active_and_removed() {
         let res = request
             .post(configurations)
             .authorization_bearer(&token)
-            .json(
-                &json!({ "name": "Mornings", "system_message": "Report to {{ artifacts_dir }}." }),
-            )
+            .json(&json!({ "name": "Mornings", "prompt": "Report to {{ artifacts_dir }}." }))
             .await;
         let one = json!({
             "id": 1,
             "name": "Mornings",
             "active": false,
-            "system_message": "Report to {{ artifacts_dir }}.",
+            "prompt": "Report to {{ artifacts_dir }}.",
         });
         assert_eq!(answer(&res), (200, one.clone()));
         let res = request
@@ -417,18 +451,18 @@ async fn configurations_are_listed_added_changed_made_active_and_removed() {
             .authorization_bearer(&token)
             .json(&json!({ "name": "Evenings" }))
             .await;
-        assert_eq!(res.json::<Value>()["system_message"], json!(""));
+        assert_eq!(res.json::<Value>()["prompt"], json!(""));
         let res = request
             .post(configurations)
             .authorization_bearer(&token)
-            .json(&json!({ "system_message": "x" }))
+            .json(&json!({ "prompt": "x" }))
             .await;
         assert_eq!(answer(&res), bad_request("Give the configuration a name."));
 
         let res = request
             .patch(&format!("{configurations}/1"))
             .authorization_bearer(&token)
-            .json(&json!({ "system_message": "{{ nope }}" }))
+            .json(&json!({ "prompt": "{{ nope }}" }))
             .await;
         assert_eq!(res.status_code(), 400);
         let res = request
@@ -438,8 +472,8 @@ async fn configurations_are_listed_added_changed_made_active_and_removed() {
             .await;
         let (_, renamed) = answer(&res);
         assert_eq!(
-            (&renamed["name"], &renamed["system_message"]),
-            (&json!("Weekdays"), &one["system_message"])
+            (&renamed["name"], &renamed["prompt"]),
+            (&json!("Weekdays"), &one["prompt"])
         );
 
         // One is active, or none.

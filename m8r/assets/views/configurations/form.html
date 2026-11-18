@@ -2,17 +2,17 @@
 {% block title %}{% if is_new %}New configuration{% else %}{{ form.name }}{% endif %} · m8r{% endblock title %}
 {% block content %}
 <h1>{% if is_new %}New configuration{% else %}{{ form.name }}{% endif %}</h1>
-<p class="muted">A configuration holds the system message: m8r's part of every prompt. A
-  schedule's prompt says where it goes, with <code>{{ "{{ system_message }}" }}</code>.</p>
+<p class="muted">A configuration holds your part of every prompt: what every agent should know,
+  whatever its schedule. A schedule's prompt says where it goes, with
+  <code>{{ "{{ config_prompt }}" }}</code>.</p>
 
 {% if has_problem %}<div class="problem"><pre>{{ problem }}</pre></div>{% endif %}
 <form method="post" action="{% if is_new %}/configurations{% else %}/configurations/{{ id }}{% endif %}">
   <label for="name">Name</label>
   <input type="text" id="name" name="name" value="{{ form.name }}" required>
 
-  <label for="system_message">System message <small>where the agent is, and how it reports. It's
-    a template, and it can use these too.</small></label>
-  <textarea id="system_message" name="system_message" rows="12">{{ form.system_message }}</textarea>
+  <label for="prompt">Prompt <small>It's a template, and it can use these. It can be blank.</small></label>
+  <textarea id="prompt" name="prompt" rows="12">{{ form.prompt }}</textarea>
   <table class="variables">
     {% for variable in variables %}
     <tr><td class="nowrap"><code>{{ variable.name }}</code></td><td>{{ variable.meaning }}</td></tr>
@@ -23,14 +23,14 @@
 </form>
 
 <h2>Compiled</h2>
-<p class="muted">The system message as the next run would get it, with a sample artifact
-  directory and no watchlist items: a schedule's page shows its prompt with that schedule's
-  items. Save to see your changes here.</p>
+<p class="muted">The prompt as the next run would get it, with a sample artifact directory and
+  no watchlist items: a schedule's page shows its prompt with that schedule's items. Save to
+  see your changes here.</p>
 {% if not compiles %}
 <div class="problem"><pre>{{ compiled }}</pre></div>
 {% elif compiled %}
 <pre>{{ compiled }}</pre>
 {% else %}
-<p class="muted">Blank: the prompts get no system message.</p>
+<p class="muted">Blank: the schedules' prompts get nothing from this configuration.</p>
 {% endif %}
 {% endblock content %}

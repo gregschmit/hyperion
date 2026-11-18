@@ -4,7 +4,7 @@ use loco_rs::prelude::*;
 use m8r::{
     app::App,
     models::watchlist_items,
-    prompts::{Context, DEFAULT_SYSTEM_MESSAGE, STARTER, VARIABLES},
+    prompts::{Context, STARTER, VARIABLES},
 };
 use serial_test::serial;
 
@@ -36,32 +36,43 @@ async fn watchlist(ctx: &AppContext) {
 
 #[tokio::test]
 #[serial]
-async fn a_prompt_gets_the_system_message_and_the_watchlist_where_it_says() {
+async fn a_prompt_gets_each_part_where_it_says() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
     watchlist(ctx).await;
-    configure(ctx, DEFAULT_SYSTEM_MESSAGE).await;
+    configure(ctx, "Write to {{ category }} people in plain words.\n").await;
     let prs = category(ctx, PR).await;
 
     let context = Context::load(&ctx.db, Some(&prs), "/data/artifacts/9")
         .await
         .unwrap();
     let prompt = context
-        .compile("Before.\n{{ system_message }}\nFollow these:\n{{ watchlist }}\nAfter.")
+        .compile(
+            "Before.\n{{ m8r_prompt }}\n\n{{ config_prompt }}\nFollow these:\n\
+             {{ watchlist }}\nAfter.",
+        )
         .unwrap();
 
+    // m8r's own part: where the agent is, where it reports, and how it keeps the watchlist.
     assert!(
-        prompt.starts_with("Before.\nYou are running in m8r"),
+        prompt.starts_with("Before.\nYou are running in m8r, a maintainer automation tool."),
         "{prompt}"
     );
     assert!(
         prompt.contains("make a directory in\n/data/artifacts/9, named"),
         "{prompt}"
     );
-    // The category's items, the urgent one first, and nothing escaped: a prompt isn't HTML.
+    assert!(
+        prompt.contains("\n## How to use m8r's watchlist\n"),
+        "{prompt}"
+    );
+    // Then yours, which is a template too. Then the category's items, the urgent one first,
+    // and nothing escaped: a prompt isn't HTML.
     assert!(
         prompt.ends_with(
-            "only its link.\nFollow these:\n\
+            "they are the developer's.\n\n\
+             Write to Pull/Merge Request people in plain words.\n\
+             Follow these:\n\
              - item 2 (Pull/Merge Request, high): \
              https://git.example.com/g/p/-/merge_requests/2 Ship by <Friday>\n\
              - item 3 (Pull/Merge Request, medium, review requested): \
@@ -119,35 +130,34 @@ async fn a_schedule_gets_the_items_of_its_category_and_none_without_one() {
 
 #[tokio::test]
 #[serial]
-async fn the_skill_says_how_to_change_the_watchlist_and_holds_no_secret() {
+async fn m8rs_part_says_how_to_change_the_watchlist_and_holds_no_secret() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
     let context = Context::load(&ctx.db, None, "/x").await.unwrap();
 
-    let skill = context.compile("{{ skill }}").unwrap();
+    let part = context.compile("{{ m8r_prompt }}").unwrap();
 
-    assert!(
-        skill.starts_with("## How to use m8r's watchlist\n"),
-        "{skill}"
-    );
+    assert_eq!(part, context.m8r_prompt().trim_end());
     // The address and the token are in the run's environment, by these names.
     for request in [
         r#"curl -sS "$M8R_URL/api/watchlist_items" -H "Authorization: Bearer $M8R_TOKEN""#,
         r#"curl -sS -X PATCH "$M8R_URL/api/watchlist_items/NUMBER" -H "Authorization: Bearer $M8R_TOKEN""#,
         r#"curl -sS -X DELETE "$M8R_URL/api/watchlist_items/NUMBER" -H "Authorization: Bearer $M8R_TOKEN""#,
     ] {
-        assert!(skill.contains(request), "{request}: {skill}");
+        assert!(part.contains(request), "{request}: {part}");
     }
     assert!(
-        skill.contains(r#"--json '{"review_requested": false}'"#),
-        "{skill}"
+        part.contains(r#"--json '{"review_requested": false}'"#),
+        "{part}"
     );
     // It names the categories as they are now.
     assert!(
-        skill.contains("The categories are: Issue, Pull/Merge Request.\n"),
-        "{skill}"
+        part.contains("The categories are: Issue, Pull/Merge Request.\n"),
+        "{part}"
     );
-    assert!(skill.ends_with("they are the developer's."), "{skill}");
+    assert!(part.ends_with("they are the developer's."), "{part}");
+    // Nothing is left for a template to fill in.
+    assert!(!part.contains("{artifacts_dir}") && !part.contains("{categories}"));
 }
 
 #[tokio::test]
@@ -155,42 +165,42 @@ async fn the_skill_says_how_to_change_the_watchlist_and_holds_no_secret() {
 async fn a_prompt_says_where_each_part_goes_or_goes_without_it() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
-    configure(ctx, "Report to {{ artifacts_dir }}.\n").await;
+    configure(ctx, "Report in {{ artifacts_dir }} too.\n").await;
     let context = Context::load(&ctx.db, None, "/x").await.unwrap();
 
     assert_eq!(context.compile("Just triage.").unwrap(), "Just triage.");
     assert_eq!(context.compile("").unwrap(), "");
     // A part ends where its text does, so the prompt says what comes between two.
     assert_eq!(
-        context.compile("{{ system_message }}\n\nTriage.").unwrap(),
-        "Report to /x.\n\nTriage."
+        context.compile("{{ config_prompt }}\n\nTriage.").unwrap(),
+        "Report in /x too.\n\nTriage."
     );
 
-    // A new schedule's prompt holds all three, in this order.
+    // A new schedule's prompt holds m8r's part, yours and the watchlist, in this order.
     let starter = context.compile(STARTER).unwrap();
+    assert!(starter.starts_with("You are running in m8r"), "{starter}");
     assert!(
-        starter.starts_with("Report to /x.\n\n## How to use m8r's watchlist\n"),
-        "{starter}"
-    );
-    assert!(
-        starter.ends_with("they are the developer's.\n\nThe watchlist now:\n(nothing)\n\n"),
+        starter.ends_with(
+            "they are the developer's.\n\nReport in /x too.\n\nThe watchlist now:\n(nothing)\n\n"
+        ),
         "{starter}"
     );
 
-    // With no active configuration there's no system message.
+    // With no active configuration, that part is blank.
     let none = Context {
-        system_message: String::new(),
+        config_prompt: String::new(),
         ..context.clone()
     };
-    assert_eq!(none.compile("[{{ system_message }}]").unwrap(), "[]");
-    // The system message can use the rest.
+    assert_eq!(none.compile("[{{ config_prompt }}]").unwrap(), "[]");
+    // A configuration's prompt can use the rest, m8r's part too.
     let fuller = Context {
-        system_message: "{{ watchlist }} in {{ artifacts_dir }}".to_string(),
+        config_prompt: "{{ watchlist }} in {{ artifacts_dir }}\n{{ m8r_prompt }}".to_string(),
         ..context
     };
-    assert_eq!(
-        fuller.compile("{{ system_message }}").unwrap(),
-        "(nothing) in /x"
+    let compiled = fuller.compile("{{ config_prompt }}").unwrap();
+    assert!(
+        compiled.starts_with("(nothing) in /x\nYou are running in m8r"),
+        "{compiled}"
     );
 }
 
@@ -207,14 +217,17 @@ async fn a_template_that_does_not_compile_says_which_one_and_why() {
         "{unknown}"
     );
     assert!(unknown.contains("nope"), "{unknown}");
+    // The names from before are no names now.
+    assert!(context.compile("{{ system_message }}").is_err());
+    assert!(context.compile("{{ skill }}").is_err());
 
     let broken = Context {
-        system_message: "{% for %}".to_string(),
+        config_prompt: "{% for %}".to_string(),
         ..context
     };
     let problem = broken.compile("anything").unwrap_err();
     assert!(
-        problem.starts_with("The system message doesn't compile."),
+        problem.starts_with("The configuration's prompt doesn't compile."),
         "{problem}"
     );
 }
@@ -227,6 +240,8 @@ async fn every_variable_that_the_pages_name_is_one_that_compiles() {
     watchlist(ctx).await;
     let context = Context::load(&ctx.db, None, "/x").await.unwrap();
 
+    let names: Vec<_> = VARIABLES.iter().map(|(name, _)| *name).collect();
+    assert_eq!(names[..2], ["{{ m8r_prompt }}", "{{ config_prompt }}"]);
     for (variable, meaning) in VARIABLES {
         // The loop's page text has an ellipsis for its body.
         let template = variable.replace('…', "{{ item.url }}");

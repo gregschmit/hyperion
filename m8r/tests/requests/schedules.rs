@@ -13,7 +13,11 @@ async fn schedules_are_added_changed_run_and_removed() {
             .into_owned();
         let page = request.get("/schedules").await.text();
         assert!(page.contains("No schedules."), "{page}");
-        assert!(page.contains("No configuration is active"), "{page}");
+        // What's missing is in the alert, on every page.
+        assert!(
+            page.contains("<strong>configuration:</strong> No configuration is active"),
+            "{page}"
+        );
 
         // The form starts with the agent's command, and knows each operation's own.
         let page = request.get("/schedules/new").await.text();
@@ -40,7 +44,7 @@ async fn schedules_are_added_changed_run_and_removed() {
         );
         assert!(
             page.contains(
-                "{{ system_message }}\n\n{{ skill }}\n\nThe watchlist now:\n{{ watchlist }}"
+                "{{ m8r_prompt }}\n\n{{ config_prompt }}\n\nThe watchlist now:\n{{ watchlist }}"
             ),
             "{page}"
         );
@@ -49,7 +53,7 @@ async fn schedules_are_added_changed_run_and_removed() {
             [
                 ("operation", "triage"),
                 ("category", ""),
-                ("repo", repo),
+                ("repos", repo),
                 ("hron", hron),
                 ("command", command),
                 ("prompt", "Triage the new issues."),
@@ -87,7 +91,7 @@ async fn schedules_are_added_changed_run_and_removed() {
             .form(&[
                 ("operation", "other"),
                 ("category", PR),
-                ("repo", here),
+                ("repos", here),
                 ("hron", "every 12 hours"),
                 ("command", r#"claude -p "Update the <changelog>.""#),
                 ("prompt", "{{ watchlist }}"),
@@ -125,7 +129,7 @@ async fn schedules_are_added_changed_run_and_removed() {
             [
                 ("operation", "review"),
                 ("category", category),
-                ("repo", here),
+                ("repos", here),
                 ("hron", hron),
                 ("command", command),
                 ("prompt", ""),
@@ -188,15 +192,15 @@ async fn schedules_are_added_changed_run_and_removed() {
 async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
     signed_in(|request, ctx| async move {
         let here = std::env::current_dir().unwrap();
-        configure(&ctx, "You are in m8r. Report in {{ artifacts_dir }}.").await;
+        configure(&ctx, "Write in plain words, for {{ category }} readers.").await;
         watch(&ctx, "https://github.com/o/r/issues/1", ISSUE).await;
         watch(&ctx, "https://github.com/o/r/pull/2", PR).await;
 
         // The variables are on the page, where the prompt is written.
         let page = request.get("/schedules/new").await.text();
         for variable in [
-            "{{ system_message }}",
-            "{{ skill }}",
+            "{{ m8r_prompt }}",
+            "{{ config_prompt }}",
             "{{ watchlist }}",
             "{{ category }}",
             "{{ artifacts_dir }}",
@@ -207,13 +211,26 @@ async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
                 "{variable}: {page}"
             );
         }
-        // And the starting prompt shows compiled: the system message and the skill. A schedule
-        // with no category gets no items.
+        // The clone is a path from the home of m8r's user.
         assert!(
-            page.contains("You are in m8r. Report in /var/lib/m8r/artifacts/1."),
+            page.contains(r#"placeholder="~/git/group/project""#),
+            "{page}"
+        );
+        // And the starting prompt shows compiled: m8r's part, with a sample artifact directory,
+        // and the configuration's. A schedule with no category gets no items.
+        assert!(
+            page.contains("<pre>You are running in m8r, a maintainer automation tool."),
+            "{page}"
+        );
+        assert!(
+            page.contains("make a directory in\n/var/lib/m8r/artifacts/1, named"),
             "{page}"
         );
         assert!(page.contains("## How to use m8r&#39;s watchlist"), "{page}");
+        assert!(
+            page.contains("Write in plain words, for  readers."),
+            "{page}"
+        );
         assert!(page.contains("The watchlist now:\n(nothing)"), "{page}");
         assert!(!page.contains("- item 1 (Issue"), "{page}");
 
@@ -223,7 +240,7 @@ async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
             .form(&[
                 ("operation", "review"),
                 ("category", PR),
-                ("repo", &*here.to_string_lossy()),
+                ("repos", &*here.to_string_lossy()),
                 ("hron", "every day at 9:00"),
                 ("command", "cat"),
                 (
@@ -248,7 +265,7 @@ async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
             .form(&[
                 ("operation", "review"),
                 ("category", PR),
-                ("repo", &*here.to_string_lossy()),
+                ("repos", &*here.to_string_lossy()),
                 ("hron", "every day at 9:00"),
                 ("command", "cat"),
                 ("prompt", "{{ watchlist"),
@@ -266,7 +283,7 @@ async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
             .form(&[
                 ("operation", "other"),
                 ("category", ""),
-                ("repo", &*here.to_string_lossy()),
+                ("repos", &*here.to_string_lossy()),
                 ("hron", "every day at 9:00"),
                 ("command", "make changelog"),
                 ("prompt", ""),
@@ -291,7 +308,7 @@ async fn a_schedule_whose_time_cannot_be_read_says_so() {
         // From before m8r read times in words: a cron expression that hron has no words for.
         let mut old = schedules::ActiveModel::new();
         old.operation = Set("triage".to_string());
-        old.repo = Set("/home/m8r/git/rxg".to_string());
+        old.repos = Set("/home/m8r/git/rxg".to_string());
         old.hron = Set("*/7 * * * *".to_string());
         old.command = Set("claude -p".to_string());
         old.insert(&ctx.db).await.unwrap();
@@ -299,6 +316,104 @@ async fn a_schedule_whose_time_cannot_be_read_says_so() {
         let page = request.get("/schedules").await.text();
         assert!(page.contains("<td>*/7 * * * *</td>"), "{page}");
         assert!(page.contains("m8r can't read this time"), "{page}");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_schedule_takes_several_repos_and_several_times() {
+    signed_in(|request, ctx| async move {
+        let here = std::env::current_dir().unwrap();
+        let (src, tests) = (here.join("src"), here.join("tests"));
+        let (src, tests) = (src.to_string_lossy(), tests.to_string_lossy());
+        // The form has a box for each list.
+        let page = request.get("/schedules/new").await.text();
+        assert!(
+            page.contains(
+                r#"<textarea id="repos" name="repos" rows="3" placeholder="~/git/group/project" required></textarea>"#
+            ),
+            "{page}"
+        );
+        assert!(
+            page.contains(r#"<textarea id="hron" name="hron" rows="3""#),
+            "{page}"
+        );
+
+        // One to a line. A browser ends a line with a return too.
+        let form = |repos: String, hron: &'static str| {
+            [
+                ("operation", "triage".to_string()),
+                ("category", String::new()),
+                ("repos", repos),
+                ("hron", hron.to_string()),
+                ("command", "cat".to_string()),
+                ("prompt", String::new()),
+            ]
+        };
+        let res = request
+            .post("/schedules")
+            .form(&form(
+                format!("{src}\r\n{tests}\r\n"),
+                "every weekday at 6:00\r\n0 12 * * 6",
+            ))
+            .await;
+        assert_eq!(location(&res), "/schedules");
+
+        // The list shows each repo and each time.
+        let page = request.get("/schedules").await.text();
+        assert!(
+            page.contains(&format!(
+                r#"<td class="mono">{src}<br>{tests}<br><small>cat</small></td>"#
+            )),
+            "{page}"
+        );
+        assert!(
+            page.contains("<td>every weekday at 06:00<br>every saturday at 12:00</td>"),
+            "{page}"
+        );
+        // And the form shows them again, as m8r read them.
+        let page = request.get("/schedules/1").await.text();
+        assert!(
+            page.contains(&format!("required>{src}\n{tests}</textarea>")),
+            "{page}"
+        );
+        assert!(
+            page.contains("required>every weekday at 06:00\nevery saturday at 12:00</textarea>"),
+            "{page}"
+        );
+
+        // A line that m8r can't read: nothing is saved, and what was typed is still there.
+        let res = request
+            .post("/schedules/1")
+            .form(&form(src.to_string(), "every day at 9:00\r\nwhenever"))
+            .await;
+        assert_eq!(res.status_code(), 200);
+        let page = res.text();
+        assert!(page.contains("  whenever\n"), "{page}");
+        assert!(
+            page.contains("required>every day at 9:00\r\nwhenever</textarea>"),
+            "{page}"
+        );
+        let (kept, _) = schedules::Model::find(&ctx.db, 1).await.unwrap();
+        assert_eq!(kept.repos().count(), 2);
+
+        // "Run now" queues a run in each repo, and the report has a part for each.
+        let res = request.post("/schedules/1/run").await;
+        assert_eq!(location(&res), "/runs");
+        let queued = runs::Model::next_batch(&ctx.db).await.unwrap();
+        let repos: Vec<_> = queued.iter().map(|run| run.repo.as_str()).collect();
+        assert_eq!(repos, [&*src, &*tests]);
+        let page = request.get("/").await.text();
+        for repo in [&src, &tests] {
+            assert!(
+                page.contains(&format!(
+                    r#"<a href="/schedules/1">triage</a> in <span class="mono">{repo}</span>"#
+                )),
+                "{page}"
+            );
+        }
+        assert_eq!(page.matches("It hasn't run yet.").count(), 2, "{page}");
     })
     .await;
 }

@@ -1,15 +1,17 @@
 use loco_rs::prelude::*;
 use m8r::{
     app::App,
-    models::configurations::{self, Changes, Params},
-    prompts,
+    models::{
+        configurations::{self, Changes, Params},
+        errors,
+    },
 };
 use serial_test::serial;
 
-fn params(name: &str, system_message: &str) -> Params {
+fn params(name: &str, prompt: &str) -> Params {
     Params {
         name: name.to_string(),
-        system_message: system_message.to_string(),
+        prompt: prompt.to_string(),
     }
 }
 
@@ -18,16 +20,9 @@ async fn create(db: &DatabaseConnection, params: &Params) -> configurations::Mod
     made.unwrap().unwrap()
 }
 
-#[test]
-fn a_new_configuration_starts_with_the_default_system_message() {
-    let starter = Params::starter();
-    assert_eq!(starter.system_message, prompts::DEFAULT_SYSTEM_MESSAGE);
-    assert!(starter.name.is_empty());
-}
-
 #[tokio::test]
 #[serial]
-async fn a_configuration_needs_a_name_and_a_system_message_that_compiles() {
+async fn a_configuration_needs_a_name_and_a_prompt_that_compiles() {
     let boot = boot_test::<App>().await.unwrap();
     let db = &boot.app_context.db;
     let problem = |params: Params| async move {
@@ -41,25 +36,18 @@ async fn a_configuration_needs_a_name_and_a_system_message_that_compiles() {
     );
     let unknown = problem(params("One", "{{ nope }}")).await;
     assert!(
-        unknown.starts_with("The system message doesn't compile."),
+        unknown.starts_with("The configuration's prompt doesn't compile."),
         "{unknown}"
     );
     assert!(unknown.contains("nope"), "{unknown}");
-    // The system message can't hold itself.
-    let itself = problem(params("One", "{{ system_message }}")).await;
-    assert!(itself.starts_with("The system message doesn't compile."));
+    // Its prompt can't hold itself.
+    let itself = problem(params("One", "{{ config_prompt }}")).await;
+    assert!(itself.starts_with("The configuration's prompt doesn't compile."));
     assert!(configurations::Model::list(db).await.unwrap().is_empty());
 
-    // The default compiles, and so does every variable but that one.
-    create(
-        db,
-        &Params {
-            name: "One".to_string(),
-            ..Params::starter()
-        },
-    )
-    .await;
-    let all = "{{ skill }} {{ watchlist }} {{ category }} {{ artifacts_dir }} \
+    // A blank prompt is fine: m8r's own part is in every m8r. So is every other variable.
+    create(db, &params("One", "")).await;
+    let all = "{{ m8r_prompt }} {{ watchlist }} {{ category }} {{ artifacts_dir }} \
                {% for item in watchlist_items %}{{ item.url }}{% endfor %}";
     let two = create(db, &params(" Two ", all)).await;
     assert_eq!(two.name, "Two");
@@ -72,11 +60,11 @@ async fn a_configuration_needs_a_name_and_a_system_message_that_compiles() {
     let changed = configurations::Model::change(db, two.id, renamed).await;
     let changed = changed.unwrap().unwrap();
     assert_eq!(
-        (changed.name.as_str(), changed.system_message.as_str()),
+        (changed.name.as_str(), changed.prompt.as_str()),
         ("Evenings", all)
     );
     let broken = Changes {
-        system_message: Some("{% for %}".to_string()),
+        prompt: Some("{% for %}".to_string()),
         ..Changes::default()
     };
     let refused = configurations::Model::change(db, two.id, broken).await;
@@ -111,4 +99,42 @@ async fn at_most_one_configuration_is_active() {
 
     two.into_active_model().deactivated(db).await.unwrap();
     assert!(configurations::Model::active(db).await.unwrap().is_none());
+}
+
+#[tokio::test]
+#[serial]
+async fn no_active_configuration_is_an_error_until_one_is_active() {
+    let boot = boot_test::<App>().await.unwrap();
+    let db = &boot.app_context.db;
+    // What a tick and a page ask: is m8r set up?
+    let raised = |db| async move {
+        errors::Model::check_setup(db).await.unwrap();
+        let open = errors::Model::open(db).await.unwrap();
+        open.iter()
+            .any(|error| error.subject == errors::CONFIGURATION)
+    };
+    assert!(raised(db).await);
+
+    // Writing one isn't enough: it has to be active.
+    let one = create(db, &params("One", "")).await;
+    assert!(raised(db).await);
+    let one = one.into_active_model().activated(db).await.unwrap();
+    assert!(!raised(db).await);
+
+    // Removing the active one brings the error back, and so does deactivating it.
+    configurations::Model::remove(db, one.id).await.unwrap();
+    assert!(raised(db).await);
+    let two = create(db, &params("Two", "")).await;
+    let two = two.into_active_model().activated(db).await.unwrap();
+    assert!(!raised(db).await);
+    two.into_active_model().deactivated(db).await.unwrap();
+    assert!(raised(db).await);
+    let gone = configurations::Model::remove(db, 99).await;
+    assert!(matches!(gone, Err(ModelError::EntityNotFound)));
+    // The list keeps the two times that it was put right.
+    let cleared = errors::Model::list(db, 10).await.unwrap();
+    assert_eq!(
+        cleared.iter().filter(|it| it.cleared_at.is_some()).count(),
+        2
+    );
 }

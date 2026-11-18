@@ -20,4 +20,6 @@ features = [
   # View the list of supported features at https://www.sea-ql.org/SeaORM/docs/install-and-config/database-and-async-runtime.
   # e.g.
   "runtime-tokio-rustls", # `ASYNC_RUNTIME` feature
+  # `schema.sql` is SQLite's schema, whatever database m8r uses: see `src/schema.rs`.
+  "sqlx-sqlite",
 ]

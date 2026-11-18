@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Errors · m8r{% endblock title %}
+{% block content %}
+<h1>Errors</h1>
+<p class="muted">What's wrong now, and what was: a schedule whose run failed, or something that
+  m8r needs and doesn't have. Nobody clears an error by hand. It goes when its schedule's next
+  run goes well, or when what it's about is put right. The list keeps a cleared error for 30
+  days.</p>
+<table>
+  <tr><th>Since</th><th>About</th><th>What's wrong</th><th>Cleared</th></tr>
+  {% for error in errors %}
+  <tr>
+    <td class="nowrap">{{ error.since }}</td>
+    <td class="nowrap">{% if error.href %}<a href="{{ error.href }}">{{ error.subject }}</a>{% else %}{{ error.subject }}{% endif %}</td>
+    <td class="message">{{ error.message }}</td>
+    <td class="nowrap">{% if error.open %}<span class="status failed">not yet</span>{% else %}{{ error.cleared_at }}{% endif %}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="muted">No errors.</td></tr>
+  {% endfor %}
+</table>
+{% endblock content %}

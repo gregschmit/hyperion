@@ -34,7 +34,7 @@ pub async fn update(
 
 #[debug_handler]
 pub async fn remove(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Result<Response> {
-    Model::find(&ctx.db, id).await?.delete(&ctx.db).await?;
+    Model::remove(&ctx.db, id).await?;
     format::empty_json()
 }
 

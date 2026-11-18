@@ -11,7 +11,6 @@ DATABASE_URL=sqlite:///var/lib/m8r/m8r.sqlite?mode=rwc
 M8R_DATA=/var/lib/m8r
 # The agent's command, which a new schedule's form starts with. Each schedule then keeps a
 # command of its own, and a run pipes its prompt to that one, as the m8r user. Nobody is there
-# to approve a tool call, so give the agent what your prompts need, here or in a schedule's
-# command: an --allowedTools list, or --dangerously-skip-permissions. To keep the watchlist, an
-# agent runs curl.
-M8R_AGENT=claude -p
+# to approve a tool call, so the agent skips the asking. For less, give it an --allowedTools
+# list here or in a schedule's command: to keep the watchlist, an agent runs curl.
+M8R_AGENT=claude -p --dangerously-skip-permissions

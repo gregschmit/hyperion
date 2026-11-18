@@ -7,8 +7,8 @@ use crate::{
     prompts, views,
 };
 
-/// The form for a new configuration (no `id`) or a saved one, with the system message
-/// compiled as the next run would get it.
+/// The form for a new configuration (no `id`) or a saved one, with its prompt compiled as the
+/// next run would get it.
 async fn form(
     v: &TeraView,
     ctx: &AppContext,
@@ -17,9 +17,10 @@ async fn form(
     problem: Option<String>,
 ) -> Result<Response> {
     let compiled = form.compiled(&ctx.db).await?;
-    // The system message can use what a prompt can, but for itself.
-    let variables: Vec<Value> = prompts::VARIABLES[1..]
+    // A configuration's prompt can use what a schedule's can, but for itself.
+    let variables: Vec<Value> = prompts::VARIABLES
         .iter()
+        .filter(|(name, _)| !name.contains("config_prompt"))
         .map(|(name, meaning)| json!({ "name": name, "meaning": meaning }))
         .collect();
     let data = json!({
@@ -35,7 +36,7 @@ async fn form(
     views::page(v, ctx, "configurations/form.html", "configurations", data).await
 }
 
-/// The system messages. One configuration is active, or none, and then nothing runs.
+/// The configurations. One is active, or none, and then nothing runs.
 #[debug_handler]
 pub async fn index(
     ViewEngine(v): ViewEngine<TeraView>,
@@ -69,7 +70,7 @@ pub async fn new(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
 ) -> Result<Response> {
-    form(&v, &ctx, None, &Params::starter(), None).await
+    form(&v, &ctx, None, &Params::default(), None).await
 }
 
 #[debug_handler]
@@ -130,10 +131,7 @@ pub async fn deactivate(State(ctx): State<AppContext>, Path(id): Path<i64>) -> R
 
 #[debug_handler]
 pub async fn remove(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Result<Response> {
-    configurations::Model::find(&ctx.db, id)
-        .await?
-        .delete(&ctx.db)
-        .await?;
+    configurations::Model::remove(&ctx.db, id).await?;
     format::redirect("/configurations")
 }
 

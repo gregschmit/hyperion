@@ -9,7 +9,7 @@ use loco_rs::prelude::*;
 use serde_json::{json, Value};
 
 use crate::{
-    models::{artifacts, categories, runs, schedules, tool_errors, watchlist_items},
+    models::{artifacts, categories, errors, runs, schedules, watchlist_items},
     settings::Settings,
 };
 
@@ -28,7 +28,35 @@ fn time_or_blank(at: Option<&DateTimeWithTimeZone>) -> String {
     at.map(time).unwrap_or_default()
 }
 
-/// Render a page. Every page also shows the tools that don't work, so `data` gets them.
+/// What m8r sees whenever someone looks at a page: whether the scheduler ticks, and whether
+/// m8r is set up. Each raises its error or clears it, so the page shows what's true now.
+///
+/// # Errors
+/// When a query fails.
+pub async fn look(ctx: &AppContext) -> Result<()> {
+    let last_tick = std::fs::metadata(Settings::from_context(ctx)?.tick_file())
+        .and_then(|file| file.modified())
+        .ok();
+    // A scheduler that's down can't say so. So a page raises its error, and the next tick
+    // clears it.
+    if last_tick.is_none_or(|at| at.elapsed().is_ok_and(|age| age > TICK_LATE)) {
+        let since = last_tick.map_or_else(
+            || "yet".to_string(),
+            |at| {
+                let at = DateTime::<Local>::from(at).format("%Y-%m-%d %H:%M");
+                format!("since {at}")
+            },
+        );
+        let message = format!(
+            "The scheduler isn't running, so nothing starts a run: it ticks every minute, and \
+             there was no tick {since}."
+        );
+        errors::Model::raise(&ctx.db, errors::SCHEDULER, &message, None).await?;
+    }
+    Ok(errors::Model::check_setup(&ctx.db).await?)
+}
+
+/// Render a page. Every page also shows the errors that are open, so `data` gets them.
 ///
 /// # Errors
 /// When a query or the template fails.
@@ -39,32 +67,39 @@ pub async fn page(
     section: &str,
     mut data: Value,
 ) -> Result<Response> {
-    let errors: Vec<Value> = tool_errors::Model::list(&ctx.db)
+    look(ctx).await?;
+    let open: Vec<Value> = errors::Model::open(&ctx.db)
         .await?
         .iter()
-        .map(|error| {
-            json!({
-                "tool": error.tool,
-                "host": error.host,
-                "message": error.message,
-                "since": time(&error.created_at),
-            })
-        })
+        .map(error)
         .collect();
-    let last_tick = std::fs::metadata(Settings::from_context(ctx)?.tick_file())
-        .and_then(|file| file.modified())
-        .ok();
-    let scheduler_late = last_tick.is_none_or(|at| at.elapsed().is_ok_and(|age| age > TICK_LATE));
     data["section"] = json!(section);
-    data["has_errors"] = json!(scheduler_late || !errors.is_empty());
-    data["tool_errors"] = json!(errors);
-    data["scheduler_late"] = json!(scheduler_late);
-    data["last_tick"] = json!(last_tick
-        .map(|at| DateTime::<Local>::from(at)
-            .format("%Y-%m-%d %H:%M")
-            .to_string())
-        .unwrap_or_default());
+    data["error_count"] = json!(open.len());
+    data["open_errors"] = json!(open);
     format::render().view(v, key, data)
+}
+
+#[must_use]
+pub fn error(error: &errors::Model) -> Value {
+    // Where the error can be looked into, or put right.
+    let href = match error.subject.as_str() {
+        errors::CONFIGURATION => "/configurations".to_string(),
+        errors::SCHEDULES => "/schedules".to_string(),
+        _ => error
+            .run_id
+            .map(|id| format!("/runs/{id}"))
+            .unwrap_or_default(),
+    };
+    json!({
+        "subject": error.subject,
+        "message": error.message,
+        // The alert has room for a line.
+        "summary": error.message.lines().next().unwrap_or_default(),
+        "href": href,
+        "since": time(&error.created_at),
+        "open": error.cleared_at.is_none(),
+        "cleared_at": time_or_blank(error.cleared_at.as_ref()),
+    })
 }
 
 #[must_use]
@@ -132,11 +167,12 @@ pub fn schedule((schedule, category): &schedules::Listed) -> Value {
         "id": schedule.id,
         "operation": schedule.operation,
         "category": category.as_ref().map(|it| it.name.as_str()).unwrap_or_default(),
-        "repo": schedule.repo,
-        "hron": schedule.hron,
+        "repos": schedule.repos().collect::<Vec<_>>(),
+        "hron": schedule.times().collect::<Vec<_>>(),
         "command": schedule.command,
+        // The first of its times to come.
         "next": next,
         // A time from before m8r read times in words may be one that it can't read.
-        "unreadable": schedules::parse(&schedule.hron).is_err(),
+        "unreadable": schedule.times().any(|time| schedules::parse(time).is_err()),
     })
 }

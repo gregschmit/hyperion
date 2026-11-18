@@ -3,14 +3,13 @@ use std::fs::{self, File};
 use loco_rs::{boot::run_task, prelude::*, task};
 use m8r::{
     app::App,
-    models::{artifacts, runs, schedules, tool_errors, watchlist_items},
-    prompts::DEFAULT_SYSTEM_MESSAGE,
+    models::{artifacts, errors, runs, schedules, watchlist_items},
     settings::Settings,
 };
 use serial_test::serial;
 
 use crate::support::{
-    self, configure, schedule, schedule_params, start, watch, Sandbox, GH, ISSUE, PR,
+    self, configure, queue_one, schedule, schedule_params, start, watch, Sandbox, GH, ISSUE, PR,
 };
 
 async fn tick(ctx: &AppContext) {
@@ -26,20 +25,17 @@ async fn queue(ctx: &AppContext, sandbox: &Sandbox, prompt: &str) -> runs::Model
         ..schedule_params(&sandbox.repo(), prompt)
     };
     let schedule = schedule(ctx, &params).await;
-    runs::Model::queue(&ctx.db, &schedule).await.unwrap()
+    queue_one(&ctx.db, &schedule).await
 }
 
-async fn errors(ctx: &AppContext) -> Vec<(String, String)> {
-    tool_errors::Model::list(&ctx.db)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|error| (error.tool, error.host))
-        .collect()
+/// What the open errors are about.
+async fn errors(ctx: &AppContext) -> Vec<String> {
+    let open = errors::Model::open(&ctx.db).await.unwrap();
+    open.into_iter().map(|error| error.subject).collect()
 }
 
-/// An agent that reports as the system message says: a page, a link, and a loose file. Then
-/// it does what `$1` says.
+/// An agent that reports as m8r's prompt says: a page, a link, and a loose file. Then it does
+/// what `$1` says.
 const REPORTER: &str = r#"
 prompt=$(cat)
 dir=$(printf '%s\n' "$prompt" | sed -n 's/^\(\/.*\/artifacts\/[0-9]*\), named.*/\1/p')
@@ -60,7 +56,7 @@ async fn a_tick_runs_the_oldest_queued_run_with_its_compiled_prompt() {
     // The forge says that everything on the watchlist is open.
     sandbox.tool("gh", r#"echo '{"title": "An open one", "state": "open"}'"#);
     let ctx = sandbox.context(&boot.app_context, "cat");
-    configure(&ctx, DEFAULT_SYSTEM_MESSAGE).await;
+    configure(&ctx, "The developer likes short reviews.\n").await;
     watch(&ctx, "https://github.com/o/r/issues/1", ISSUE).await;
     watch(&ctx, "https://github.com/o/r/pull/2", PR).await;
     // A review of the PRs/MRs: the schedule's category says which items its prompt gets.
@@ -69,11 +65,11 @@ async fn a_tick_runs_the_oldest_queued_run_with_its_compiled_prompt() {
         category: PR.to_string(),
         ..schedule_params(
             &sandbox.repo(),
-            "{{ system_message }}\n\nReview these:\n{{ watchlist }}",
+            "{{ m8r_prompt }}\n\n{{ config_prompt }}\n\nReview these:\n{{ watchlist }}",
         )
     };
     let reviews = schedule(&ctx, &params).await;
-    let run = runs::Model::queue(&ctx.db, &reviews).await.unwrap();
+    let run = queue_one(&ctx.db, &reviews).await;
     let later = support::queue(&ctx.db, "triage", "/elsewhere", "cat").await;
 
     tick(&ctx).await;
@@ -90,7 +86,8 @@ async fn a_tick_runs_the_oldest_queued_run_with_its_compiled_prompt() {
     );
     assert!(
         run.prompt.ends_with(
-            "only its link.\n\nReview these:\n\
+            "they are the developer's.\n\nThe developer likes short reviews.\n\n\
+             Review these:\n\
              - item 2 (Pull/Merge Request, medium): https://github.com/o/r/pull/2"
         ),
         "{}",
@@ -104,7 +101,7 @@ async fn a_tick_runs_the_oldest_queued_run_with_its_compiled_prompt() {
         "{}",
         run.prompt
     );
-    // One run for each tick: the next one waits for the next tick.
+    // One schedule for each tick: the next one's run waits for the next tick.
     assert_eq!(
         runs::Model::find(&ctx.db, later.id).await.unwrap().status,
         "queued"
@@ -119,8 +116,8 @@ async fn a_run_reports_artifacts_even_when_the_agent_fails() {
     let sandbox = Sandbox::new("tick-artifacts");
     sandbox.tool("reporter", REPORTER);
     let ctx = sandbox.context(&boot.app_context, "reporter 3");
-    configure(&ctx, DEFAULT_SYSTEM_MESSAGE).await;
-    let run = queue(&ctx, &sandbox, "{{ system_message }}").await;
+    configure(&ctx, "").await;
+    let run = queue(&ctx, &sandbox, "{{ m8r_prompt }}").await;
 
     tick(&ctx).await;
 
@@ -149,20 +146,20 @@ async fn a_run_reports_artifacts_even_when_the_agent_fails() {
     );
 }
 
-/// An agent that keeps the watchlist as m8r's skill says, with the skill's own commands: it
-/// takes each one from its prompt, puts in what the skill leaves open, and runs it. Then it
+/// An agent that keeps the watchlist as m8r's prompt says, with the prompt's own commands: it
+/// takes each one from its prompt, puts in what the prompt leaves open, and runs it. Then it
 /// tries what its token doesn't cover, and leaves the token for the test.
 const KEEPER: &str = r#"
 prompt=$(cat)
-# The lines of the skill's command that has `$1` in its first line.
-skill() { printf '%s\n' "$prompt" | grep -A1 -- "$1" | grep -v '^--$' | sed -e '/[^\\]$/q'; }
+# The lines of the prompt's command that has `$1` in its first line.
+given() { printf '%s\n' "$prompt" | grep -A1 -- "$1" | grep -v '^--$' | sed -e '/[^\\]$/q'; }
 
-echo "listed: $(eval "$(skill 'curl -sS "$M8R_URL/api/watchlist_items" -H "Authorization: Bearer $M8R_TOKEN"$')")"
+echo "listed: $(eval "$(given 'curl -sS "$M8R_URL/api/watchlist_items" -H "Authorization: Bearer $M8R_TOKEN"$')")"
 # The MR of item 1 merged, and the review of item 2 is done.
-eval "$(skill '-X DELETE' | sed 's/NUMBER/1/')" > /dev/null
-eval "$(skill '-X PATCH' | sed 's/NUMBER/2/')" > /dev/null
+eval "$(given '-X DELETE' | sed 's/NUMBER/1/')" > /dev/null
+eval "$(given '-X PATCH' | sed 's/NUMBER/2/')" > /dev/null
 # The agent opened a PR for the developer to follow.
-add=$(skill 'watchlist_items" -H "Authorization: Bearer $M8R_TOKEN" \\$')
+add=$(given 'watchlist_items" -H "Authorization: Bearer $M8R_TOKEN" \\$')
 eval "$(printf '%s\n' "$add" | sed -e 's|"URL"|"https://github.com/o/r/pull/9"|' -e 's|CATEGORY|Pull/Merge Request|')" > /dev/null
 
 echo "schedules: $(curl -sS -o /dev/null -w '%{http_code}' "$M8R_URL/api/schedules" -H "Authorization: Bearer $M8R_TOKEN")"
@@ -171,9 +168,9 @@ printf '%s %s' "$M8R_URL" "$M8R_TOKEN" > left-by-the-run
 
 #[tokio::test]
 #[serial]
-async fn a_runs_agent_keeps_the_watchlist_with_the_skills_own_commands() {
+async fn a_runs_agent_keeps_the_watchlist_with_the_commands_of_m8rs_prompt() {
     let boot = boot_test::<App>().await.unwrap();
-    let sandbox = Sandbox::new("tick-skill");
+    let sandbox = Sandbox::new("tick-watchlist-api");
     sandbox.tool("keeper", KEEPER);
     // The pages are up, where the run's environment says.
     sandbox.serve(boot.router.clone().unwrap());
@@ -190,7 +187,7 @@ async fn a_runs_agent_keeps_the_watchlist_with_the_skills_own_commands() {
         .await
         .unwrap()
         .unwrap();
-    let run = queue(&ctx, &sandbox, "{{ skill }}").await;
+    let run = queue(&ctx, &sandbox, "{{ m8r_prompt }}").await;
 
     tick(&ctx).await;
 
@@ -287,13 +284,13 @@ async fn a_run_fails_at_once_when_it_cannot_start() {
     );
 
     // The prompt compiled when it was saved, and doesn't now.
-    let run = queue(&ctx, &sandbox, "{{ system_message }}").await;
+    let run = queue(&ctx, &sandbox, "{{ config_prompt }}").await;
     let mut broken = active.into_active_model();
-    broken.system_message = Set("{{ gone }}".to_string());
+    broken.prompt = Set("{{ gone }}".to_string());
     broken.update(&ctx.db).await.unwrap();
     let error = failed(ctx.clone(), run).await;
     assert!(
-        error.starts_with("The system message doesn't compile."),
+        error.starts_with("The configuration's prompt doesn't compile."),
         "{error}"
     );
 }
@@ -311,7 +308,7 @@ async fn a_tick_queues_the_schedules_that_are_due_once_configured() {
     ] {
         let params = schedules::Params {
             operation: operation.to_string(),
-            hron: hron.to_string(),
+            hron: hron.into(),
             ..schedule_params(&sandbox.repo(), "Go.")
         };
         schedule(&ctx, &params).await;
@@ -334,48 +331,87 @@ async fn a_tick_queues_the_schedules_that_are_due_once_configured() {
 
 #[tokio::test]
 #[serial]
-async fn a_missing_agent_is_a_tool_error_until_it_shows_up() {
+async fn a_schedules_error_lasts_until_its_next_run_goes_well() {
     let boot = boot_test::<App>().await.unwrap();
-    let sandbox = Sandbox::new("tick-missing-agent");
+    let sandbox = Sandbox::new("tick-schedule-error");
+    // The command isn't there yet: the developer still has to install it.
     let ctx = sandbox.context(&boot.app_context, "claude -p");
     configure(&ctx, "").await;
     let run = queue(&ctx, &sandbox, "Triage.").await;
+    let (schedule, _) = schedules::Model::find(&ctx.db, run.schedule_id.unwrap())
+        .await
+        .unwrap();
+    let repo = sandbox.repo();
+    let open = |ctx: AppContext| async move { errors::Model::open(&ctx.db).await.unwrap() };
 
     tick(&ctx).await;
-    assert_eq!(errors(&ctx).await, [("claude".to_string(), String::new())]);
     let run = runs::Model::find(&ctx.db, run.id).await.unwrap();
     assert_eq!(run.status, "failed");
     assert_eq!(run.error, "the command wasn't found (exit status 127)");
+    // The run that failed raised the error of its schedule in its repo, which leads to the run.
+    let raised = open(ctx.clone()).await;
+    assert_eq!(raised.len(), 1);
+    assert_eq!(
+        raised[0].subject,
+        format!("schedule {} in {}", schedule.id, repo.display())
+    );
+    assert_eq!(
+        raised[0].message,
+        format!(
+            "Run {} (triage) failed: the command wasn't found (exit status 127)",
+            run.id
+        )
+    );
+    assert_eq!(raised[0].run_id, Some(run.id));
 
-    // The developer installs it. The next tick sees it.
-    sandbox.tool("claude", "cat");
+    // It fails again: still one error, which says what the latest run did.
+    let again = queue_one(&ctx.db, &schedule).await;
     tick(&ctx).await;
-    assert!(errors(&ctx).await.is_empty());
+    let still = open(ctx.clone()).await;
+    assert_eq!(still.len(), 1);
+    assert_eq!(still[0].id, raised[0].id);
+    assert_eq!(still[0].run_id, Some(again.id));
+    assert!(still[0].message.starts_with(&format!("Run {} ", again.id)));
+
+    // The developer installs the command. The next run goes well, and that clears the error.
+    sandbox.tool("claude", "cat");
+    runs::Model::queue(&ctx.db, &schedule).await.unwrap();
+    tick(&ctx).await;
+    assert!(open(ctx.clone()).await.is_empty());
+    // The list keeps it.
+    let kept = errors::Model::list(&ctx.db, 10).await.unwrap();
+    assert_eq!(kept.len(), 1);
+    assert!(kept[0].cleared_at.is_some());
 }
 
 #[tokio::test]
 #[serial]
-async fn the_program_of_a_schedules_command_is_looked_for_too() {
+async fn a_tick_says_what_m8r_needs_before_anything_runs() {
     let boot = boot_test::<App>().await.unwrap();
-    let sandbox = Sandbox::new("tick-missing-program");
+    let sandbox = Sandbox::new("tick-setup");
     let ctx = sandbox.context(&boot.app_context, "cat");
-    let params = |command: &str| schedules::Params {
-        operation: "other".to_string(),
-        hron: "on 2001-01-01 at 00:00".to_string(),
-        command: command.to_string(),
-        ..schedule_params(&sandbox.repo(), "")
-    };
-    let codex = schedule(&ctx, &params("codex exec 'Tidy up.'")).await;
-    // What isn't a plain word first is the shell's to read, and m8r doesn't guess at it.
-    schedule(&ctx, &params("NO_COLOR=1 nosuchtool --flag")).await;
 
+    // A new m8r has no configuration and no schedule.
     tick(&ctx).await;
-    assert_eq!(errors(&ctx).await, [("codex".to_string(), String::new())]);
+    assert_eq!(errors(&ctx).await, ["configuration", "schedules"]);
 
-    // No schedule starts it any more, so nothing needs it.
-    codex.delete(&ctx.db).await.unwrap();
+    // Each error goes when what it's about is there.
+    let active = configure(&ctx, "").await;
+    tick(&ctx).await;
+    assert_eq!(errors(&ctx).await, ["schedules"]);
+    let only = schedule(&ctx, &schedule_params(&sandbox.repo(), "Go.")).await;
     tick(&ctx).await;
     assert!(errors(&ctx).await.is_empty());
+
+    // And it's back when that goes.
+    active
+        .into_active_model()
+        .deactivated(&ctx.db)
+        .await
+        .unwrap();
+    schedules::Model::remove(&ctx.db, only.id).await.unwrap();
+    tick(&ctx).await;
+    assert_eq!(errors(&ctx).await, ["configuration", "schedules"]);
 }
 
 /// A command that isn't an agent's: it says what it was started with and what it got.
@@ -397,7 +433,7 @@ async fn a_run_is_its_schedules_command_with_its_prompt_on_stdin() {
     let command = r#"other-tool "Update the changelog.""#;
     let params = |prompt: &str| schedules::Params {
         operation: "other".to_string(),
-        hron: "every minute".to_string(),
+        hron: "every minute".into(),
         command: command.to_string(),
         ..schedule_params(&sandbox.repo(), prompt)
     };
@@ -448,13 +484,13 @@ async fn a_tick_asks_the_forges_about_the_watchlist() {
 
     // gh isn't installed: an error, and the items wait.
     tick(&ctx).await;
-    assert_eq!(errors(&ctx).await, [("gh".to_string(), String::new())]);
+    assert!(errors(&ctx).await.contains(&"gh".to_string()));
     assert_eq!(listed(ctx.clone()).await.len(), 2);
 
     // It shows up: the open issue gets its title, and the closed one leaves the watchlist.
     sandbox.tool("gh", GH);
     tick(&ctx).await;
-    assert!(errors(&ctx).await.is_empty());
+    assert!(!errors(&ctx).await.contains(&"gh".to_string()));
     let left = listed(ctx.clone()).await;
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].title, "An open one");
@@ -471,9 +507,9 @@ async fn a_tick_says_when_a_run_could_not_reach_the_api() {
     down.config.server.port = sandbox.closed_port().into();
 
     tick(&down).await;
-    let said = tool_errors::Model::list(&down.db).await.unwrap();
+    let said = errors::Model::open(&down.db).await.unwrap();
+    let said: Vec<_> = said.iter().filter(|error| error.subject == "API").collect();
     assert_eq!(said.len(), 1);
-    assert_eq!(said[0].tool, "m8r-web");
     assert!(
         said[0].message.starts_with(&format!(
             "A run can't reach m8r's API at http://127.0.0.1:{}, so its agent can't change \
@@ -486,7 +522,7 @@ async fn a_tick_says_when_a_run_could_not_reach_the_api() {
 
     // They answer again, and the next tick sees it.
     tick(&up).await;
-    assert!(errors(&up).await.is_empty());
+    assert!(!errors(&up).await.contains(&"API".to_string()));
 }
 
 #[tokio::test]
@@ -516,13 +552,18 @@ async fn the_pages_say_when_the_scheduler_does_not_tick() {
     };
 
     let before = page(ctx.clone(), engine.clone()).await;
-    assert!(before.contains("The scheduler isn't running"), "{before}");
+    assert!(
+        before.contains("<strong>scheduler:</strong> The scheduler isn&#39;t running"),
+        "{before}"
+    );
     assert!(before.contains("no tick yet"), "{before}");
 
+    // A tick clears the error that the page raised.
+    assert!(errors(&ctx).await.contains(&"scheduler".to_string()));
     tick(&ctx).await;
+    assert!(!errors(&ctx).await.contains(&"scheduler".to_string()));
     let after = page(ctx.clone(), engine).await;
-    assert!(!after.contains("The scheduler isn't running"), "{after}");
-    assert!(!after.contains("What doesn't work"), "{after}");
+    assert!(!after.contains("<strong>scheduler:</strong>"), "{after}");
 }
 
 #[tokio::test]
@@ -565,4 +606,125 @@ async fn one_run_at_a_time() {
         runs::Model::find(&ctx.db, waiting.id).await.unwrap().status,
         "ok"
     );
+}
+
+/// A command that waits for company. It leaves its mark beside the clones, and ends well once
+/// `$1` clones have left theirs. Alone, it gives up.
+const MEET: &str = r#"
+marks="$(dirname "$(pwd)")/marks"
+mkdir -p "$marks"
+touch "$marks/$(basename "$(pwd)")"
+tries=0
+until [ "$(ls "$marks" | wc -l)" -ge "$1" ]; do
+  tries=$((tries + 1))
+  [ "$tries" -gt 100 ] && { echo "alone in $(basename "$(pwd)")"; exit 1; }
+  sleep 0.1
+done
+echo "met in $(basename "$(pwd)")"
+"#;
+
+#[tokio::test]
+#[serial]
+async fn a_schedules_runs_start_together_one_in_each_of_its_repos() {
+    let boot = boot_test::<App>().await.unwrap();
+    let sandbox = Sandbox::new("tick-together");
+    sandbox.tool("meet", MEET);
+    let ctx = sandbox.context(&boot.app_context, "cat");
+    configure(&ctx, "").await;
+    let clones = [
+        sandbox.repo(),
+        sandbox.another_repo("second"),
+        sandbox.another_repo("third"),
+    ];
+    let repos: Vec<_> = clones.iter().map(|clone| clone.to_string_lossy()).collect();
+    let params = schedules::Params {
+        repos: repos.join("\n").as_str().into(),
+        command: "meet 3".to_string(),
+        ..schedule_params(&clones[0], "")
+    };
+    let everywhere = schedule(&ctx, &params).await;
+    let queued = runs::Model::queue(&ctx.db, &everywhere).await.unwrap();
+    assert_eq!(queued.len(), 3);
+    let later = support::queue(&ctx.db, "triage", "/elsewhere", "cat").await;
+
+    tick(&ctx).await;
+
+    // Each command ended well, and it could only because the others ran at the same time.
+    for (run, repo) in queued.iter().zip(&repos) {
+        let run = runs::Model::find(&ctx.db, run.id).await.unwrap();
+        assert_eq!(run.status, "ok", "{} {}", run.error, run.output);
+        assert_eq!(&run.repo, repo);
+        let clone = std::path::Path::new(&run.repo).file_name().unwrap();
+        assert_eq!(run.output, format!("met in {}\n", clone.to_string_lossy()));
+    }
+    // The schedules take turns: another one's run waits for the next tick.
+    assert_eq!(
+        runs::Model::find(&ctx.db, later.id).await.unwrap().status,
+        "queued"
+    );
+    assert!(errors(&ctx).await.is_empty());
+}
+
+/// A command that fails in a clone that holds a file named `broken`.
+const PICKY: &str = r#"
+[ -e broken ] && { echo "broken here"; exit 3; }
+echo "fine here"
+"#;
+
+#[tokio::test]
+#[serial]
+async fn each_of_a_schedules_repos_has_an_error_of_its_own() {
+    let boot = boot_test::<App>().await.unwrap();
+    let sandbox = Sandbox::new("tick-repo-errors");
+    sandbox.tool("picky", PICKY);
+    let ctx = sandbox.context(&boot.app_context, "cat");
+    configure(&ctx, "").await;
+    let (good, bad) = (sandbox.repo(), sandbox.another_repo("second"));
+    fs::write(bad.join("broken"), "").unwrap();
+    let params = schedules::Params {
+        repos: format!("{}\n{}", good.display(), bad.display())
+            .as_str()
+            .into(),
+        command: "picky".to_string(),
+        ..schedule_params(&good, "")
+    };
+    let both = schedule(&ctx, &params).await;
+    let statuses = |ctx: AppContext, runs: Vec<runs::Model>| async move {
+        let mut statuses = Vec::new();
+        for run in runs {
+            let run = runs::Model::find(&ctx.db, run.id).await.unwrap();
+            statuses.push(run.status);
+        }
+        statuses
+    };
+
+    // In one tick, the run in one clone goes well and the run in the other fails. The one
+    // that went well doesn't clear the other's error.
+    let queued = runs::Model::queue(&ctx.db, &both).await.unwrap();
+    tick(&ctx).await;
+    assert_eq!(
+        statuses(ctx.clone(), queued.clone()).await,
+        ["ok", "failed"]
+    );
+    let open = errors::Model::open(&ctx.db).await.unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(
+        open[0].subject,
+        format!("schedule {} in {}", both.id, bad.display())
+    );
+    assert_eq!(open[0].run_id, Some(queued[1].id));
+    assert_eq!(
+        open[0].message,
+        format!(
+            "Run {} (triage) failed: the command exited with status 3",
+            queued[1].id
+        )
+    );
+
+    // That clone is put right, and its next run clears its error.
+    fs::remove_file(bad.join("broken")).unwrap();
+    let queued = runs::Model::queue(&ctx.db, &both).await.unwrap();
+    tick(&ctx).await;
+    assert_eq!(statuses(ctx.clone(), queued).await, ["ok", "ok"]);
+    assert!(errors(&ctx).await.is_empty());
 }

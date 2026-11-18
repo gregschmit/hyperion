@@ -31,18 +31,6 @@ impl ActiveModelBehavior for ActiveModel {
 }
 
 impl Model {
-    /// The latest artifacts, newest first.
-    ///
-    /// # Errors
-    /// When the query fails.
-    pub async fn recent(db: &DatabaseConnection, limit: u64) -> ModelResult<Vec<Self>> {
-        Ok(Entity::find()
-            .order_by_desc(Column::Id)
-            .limit(limit)
-            .all(db)
-            .await?)
-    }
-
     /// # Errors
     /// When the query fails.
     pub async fn of_run(db: &DatabaseConnection, run_id: i64) -> ModelResult<Vec<Self>> {

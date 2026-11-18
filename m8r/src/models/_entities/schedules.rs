@@ -11,7 +11,7 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,
     pub operation: String,
-    pub repo: String,
+    pub repos: String,
     pub hron: String,
     pub command: String,
     #[sea_orm(column_type = "Text")]

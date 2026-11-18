@@ -4,7 +4,7 @@ use loco_rs::prelude::*;
 use m8r::{
     app::App,
     models::{
-        categories, tool_errors,
+        categories, errors,
         watchlist_items::{self, Changes, Forge, Params, Remote},
     },
 };
@@ -52,12 +52,20 @@ async fn urls(db: &DatabaseConnection) -> Vec<String> {
     urls
 }
 
+/// The open errors: the tool, its host (blank when it's about the tool itself), and what's
+/// wrong.
 async fn errors(db: &DatabaseConnection) -> Vec<(String, String, String)> {
-    tool_errors::Model::list(db)
+    errors::Model::open(db)
         .await
         .unwrap()
         .into_iter()
-        .map(|error| (error.tool, error.host, error.message))
+        .map(|error| {
+            let (tool, host) = error
+                .subject
+                .split_once(" on ")
+                .unwrap_or((&error.subject, ""));
+            (tool.to_string(), host.to_string(), error.message.clone())
+        })
         .collect()
 }
 
@@ -377,10 +385,10 @@ async fn a_missing_tool_is_an_error_until_it_shows_up() {
     assert_eq!(missing.len(), 2);
     assert_eq!((missing[0].0.as_str(), missing[0].1.as_str()), ("gh", ""));
     assert_eq!((missing[1].0.as_str(), missing[1].1.as_str()), ("glab", ""));
-    assert!(
-        missing[0].2.starts_with("It isn't installed"),
-        "{}",
-        missing[0].2
+    assert_eq!(
+        missing[0].2,
+        "m8r asks the forge about the watchlist with gh, and the login shell of m8r's user \
+         finds no such command."
     );
     assert_eq!(urls(db).await.len(), 2);
 
@@ -435,6 +443,11 @@ async fn a_failed_login_is_an_error_until_it_is_fixed() {
         .unwrap();
     assert!(errors(db).await.is_empty());
     assert_eq!(items(db).await[0].title, "An open one");
+    // The error is over, and the list keeps it.
+    let kept = errors::Model::list(db, 10).await.unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].subject, "gh on github.com");
+    assert!(kept[0].cleared_at.is_some());
 }
 
 #[tokio::test]

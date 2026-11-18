@@ -2,23 +2,18 @@
 {% block title %}Schedules · m8r{% endblock title %}
 {% block content %}
 <h1>Schedules</h1>
-<p class="muted">When each operation runs, in which clone, with which command, and with which
-  prompt. A run starts its schedule's command in the clone, through the login shell of m8r's
-  user, and pipes the prompt to it.</p>
-{% if not configured %}
-<div class="problem">No configuration is active, so nothing runs: the schedules queue nothing, and
-  a run that you queue here fails. <a href="/configurations">Make one active.</a></div>
-{% endif %}
-
+<p class="muted">When each operation runs, in which clones, with which command, and with which
+  prompt. A schedule has a run for each of its repos, and they start together. A run starts the
+  command in its clone, through the login shell of m8r's user, and pipes the prompt to it.</p>
 <p><a href="/schedules/new">New schedule</a></p>
 <table>
-  <tr><th>Operation</th><th>Watchlist</th><th>Repo and command</th><th>When</th><th>Next</th><th></th></tr>
+  <tr><th>Operation</th><th>Watchlist</th><th>Repos and command</th><th>When</th><th>Next</th><th></th></tr>
   {% for schedule in schedules %}
   <tr>
     <td><a href="/schedules/{{ schedule.id }}">{{ schedule.operation }}</a></td>
     <td class="nowrap">{% if schedule.category %}{{ schedule.category }}{% else %}<span class="muted">no items</span>{% endif %}</td>
-    <td class="mono">{{ schedule.repo }}<br><small>{{ schedule.command }}</small></td>
-    <td>{{ schedule.hron }}</td>
+    <td class="mono">{% for repo in schedule.repos %}{{ repo }}<br>{% endfor %}<small>{{ schedule.command }}</small></td>
+    <td>{% for time in schedule.hron %}{{ time }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
     <td class="nowrap">{% if schedule.unreadable %}<span class="status failed">m8r can't read this time</span>{% else %}{{ schedule.next }}{% endif %}</td>
     <td class="actions">
       <form method="get" action="/schedules/{{ schedule.id }}"><button>Edit</button></form>

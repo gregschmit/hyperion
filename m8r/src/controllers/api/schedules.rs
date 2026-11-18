@@ -42,14 +42,17 @@ pub async fn remove(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Resul
     format::empty_json()
 }
 
-/// Queue the schedule's run now. The answer is the run that waits.
+/// Queue the schedule's runs now. The answer is the runs that wait: one for each repo.
 #[debug_handler]
 pub async fn run(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Result<Response> {
     let (schedule, _) = Model::find(&ctx.db, id).await?;
-    let run = runs::Model::queue(&ctx.db, &schedule).await?;
-    let reported = artifacts::Model::of_run(&ctx.db, run.id).await?;
     let pages = Settings::from_context(&ctx)?.url;
-    format::json(api::run(&run, &reported, &pages))
+    let mut queued = Vec::new();
+    for run in runs::Model::queue(&ctx.db, &schedule).await? {
+        let reported = artifacts::Model::of_run(&ctx.db, run.id).await?;
+        queued.push(api::run(&run, &reported, &pages));
+    }
+    format::json(queued)
 }
 
 pub fn routes() -> Routes {

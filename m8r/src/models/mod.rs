@@ -2,10 +2,10 @@ pub mod _entities;
 pub mod artifacts;
 pub mod categories;
 pub mod configurations;
+pub mod errors;
 pub mod runs;
 pub mod schedules;
 pub mod tokens;
-pub mod tool_errors;
 pub mod used_links;
 pub mod watchlist_items;
 

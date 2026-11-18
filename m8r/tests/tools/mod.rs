@@ -11,25 +11,6 @@ fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| (*word).to_string()).collect()
 }
 
-#[test]
-fn the_program_of_a_command_is_its_first_word_when_that_is_a_plain_one() {
-    assert_eq!(tools::program("claude -p --model opus"), Some("claude"));
-    assert_eq!(
-        tools::program("  /opt/bin/codex exec 'x'"),
-        Some("/opt/bin/codex")
-    );
-    assert_eq!(tools::program("cat"), Some("cat"));
-    // The shell's own syntax: a variable, a quote, a subshell.
-    for command in [
-        "NO_COLOR=1 claude -p",
-        "\"my tool\" x",
-        "$(which claude) -p",
-        "",
-    ] {
-        assert_eq!(tools::program(command), None, "{command}");
-    }
-}
-
 #[tokio::test]
 async fn a_tool_gets_its_arguments_as_they_are() {
     let sandbox = Sandbox::new("tools-run");
@@ -95,7 +76,6 @@ async fn a_tool_that_is_not_installed_is_missing() {
         .await
         .unwrap();
     assert!(output.missing() && !output.ok());
-    assert!(!tools::installed(&shell, "gh").await.unwrap());
 
     sandbox.tool("gh", "echo 'gh: Bad credentials (HTTP 401)' >&2\nexit 1");
     let output = tools::run(&shell, &argv(&["gh", "api"]), tools::ANSWER_LIMIT)
@@ -103,7 +83,6 @@ async fn a_tool_that_is_not_installed_is_missing() {
         .unwrap();
     assert!(!output.missing() && !output.ok());
     assert_eq!(output.complaint(), "gh: Bad credentials (HTTP 401)");
-    assert!(tools::installed(&shell, "gh").await.unwrap());
 
     // No shell at all is an error, not a missing tool.
     assert!(

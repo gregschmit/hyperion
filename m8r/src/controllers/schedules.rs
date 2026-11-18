@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use crate::{
     models::{
-        categories, configurations, runs,
+        categories, runs,
         schedules::{self, Operation, Params},
     },
     prompts,
@@ -23,10 +23,7 @@ pub async fn index(
         .iter()
         .map(views::schedule)
         .collect();
-    let data = json!({
-        "schedules": rows,
-        "configured": configurations::Model::active(&ctx.db).await?.is_some(),
-    });
+    let data = json!({ "schedules": rows });
     views::page(&v, &ctx, "schedules/index.html", "schedules", data).await
 }
 
@@ -69,7 +66,6 @@ async fn form(
         "variables": variables,
         "compiles": compiled.is_ok(),
         "compiled": compiled.unwrap_or_else(|problem| problem),
-        "configured": configurations::Model::active(&ctx.db).await?.is_some(),
         "has_problem": problem.is_some(),
         "problem": problem.unwrap_or_default(),
     });
@@ -128,7 +124,8 @@ pub async fn remove(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Resul
     format::redirect("/schedules")
 }
 
-/// Queue the schedule's run now, to try its command and prompt. The next tick starts it.
+/// Queue the schedule's runs now, one for each repo, to try its command and prompt. The next
+/// tick starts them.
 #[debug_handler]
 pub async fn run(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Result<Response> {
     let (schedule, _) = schedules::Model::find(&ctx.db, id).await?;

@@ -53,11 +53,11 @@ pub async fn watch(ctx: &AppContext, url: &str, category: &str) -> watchlist_ite
     listed.unwrap().unwrap().0
 }
 
-/// Make a configuration with this system message, and make it active.
-pub async fn configure(ctx: &AppContext, system_message: &str) -> configurations::Model {
+/// Make a configuration with this prompt, and make it active.
+pub async fn configure(ctx: &AppContext, prompt: &str) -> configurations::Model {
     let params = configurations::Params {
         name: "Test".to_string(),
-        system_message: system_message.to_string(),
+        prompt: prompt.to_string(),
     };
     let made = configurations::Model::create(&ctx.db, &params).await;
     let configuration = made.unwrap().unwrap().into_active_model();
@@ -69,8 +69,8 @@ pub async fn configure(ctx: &AppContext, system_message: &str) -> configurations
 pub fn schedule_params(repo: &Path, prompt: &str) -> schedules::Params {
     schedules::Params {
         operation: "triage".to_string(),
-        repo: repo.to_string_lossy().into_owned(),
-        hron: "every weekday at 06:00".to_string(),
+        repos: (&*repo.to_string_lossy()).into(),
+        hron: "every weekday at 06:00".into(),
         command: "cat".to_string(),
         prompt: prompt.to_string(),
         ..schedules::Params::default()
@@ -90,13 +90,31 @@ pub async fn queue(
     repo: &str,
     command: &str,
 ) -> runs::Model {
+    let schedule = unchecked(db, operation, repo, command).await;
+    queue_one(db, &schedule).await
+}
+
+/// A schedule that skips its form's checks: `operation` in `repos`, one to a line, with
+/// `command`.
+pub async fn unchecked(
+    db: &DatabaseConnection,
+    operation: &str,
+    repos: &str,
+    command: &str,
+) -> schedules::Model {
     let mut schedule = schedules::ActiveModel::new();
     schedule.operation = Set(operation.to_string());
-    schedule.repo = Set(repo.to_string());
+    schedule.repos = Set(repos.to_string());
     schedule.hron = Set("every day at 06:00".to_string());
     schedule.command = Set(command.to_string());
-    let schedule = schedule.insert(db).await.unwrap();
-    runs::Model::queue(db, &schedule).await.unwrap()
+    schedule.insert(db).await.unwrap()
+}
+
+/// Queue the run of a schedule that has one repo.
+pub async fn queue_one(db: &DatabaseConnection, schedule: &schedules::Model) -> runs::Model {
+    let mut queued = runs::Model::queue(db, schedule).await.unwrap();
+    assert_eq!(queued.len(), 1);
+    queued.remove(0)
 }
 
 /// Start `run` with `prompt`, as a tick does.
@@ -171,6 +189,13 @@ impl Sandbox {
     /// A clone for a schedule to run in: an empty directory.
     pub fn repo(&self) -> PathBuf {
         self.dir.join("repo")
+    }
+
+    /// One more clone, for a schedule that has several.
+    pub fn another_repo(&self, name: &str) -> PathBuf {
+        let dir = self.dir.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     /// Serve the app itself where the stand-in for the pages listens, so that a run's agent

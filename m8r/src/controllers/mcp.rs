@@ -144,7 +144,7 @@ const TOOLS: [Spec; 21] = [
         "List the schedules",
         "schedules",
         Effect::Reads,
-        "List the schedules: when each one runs, in which clone, with which command and which \
+        "List the schedules: when each one runs, in which clones, with which command and which \
          prompt, and its next time.",
     ),
     spec(
@@ -152,8 +152,8 @@ const TOOLS: [Spec; 21] = [
         "Add a schedule",
         "schedules",
         Effect::Adds,
-        "Add a schedule: m8r then runs its command in its repo at its times, with its prompt \
-         on stdin.",
+        "Add a schedule: m8r then runs its command in each of its repos at its times, with its \
+         prompt on stdin.",
     ),
     spec(
         "update_schedule",
@@ -174,16 +174,16 @@ const TOOLS: [Spec; 21] = [
         "Run a schedule now",
         "schedules",
         Effect::Adds,
-        "Queue a schedule's run now. Runs happen one at a time, so it may wait. The answer is \
-         the run.",
+        "Queue a schedule's runs now: one for each of its repos, which start together. The \
+         schedules take turns, so they may wait. The answer is the runs.",
     ),
     spec(
         "list_configurations",
         "List the configurations",
         "configurations",
         Effect::Reads,
-        "List the configurations. Each holds a system message, and the runs get the active \
-         one's.",
+        "List the configurations. Each holds a prompt, the developer's part of every \
+         schedule's prompt, and the runs get the active one's.",
     ),
     spec(
         "add_configuration",
@@ -197,7 +197,7 @@ const TOOLS: [Spec; 21] = [
         "Change a configuration",
         "configurations",
         Effect::Sets,
-        "Change a configuration's name or system message. What you leave out stays as it is.",
+        "Change a configuration's name or prompt. What you leave out stays as it is.",
     ),
     spec(
         "remove_configuration",
@@ -288,19 +288,26 @@ impl Spec {
             }
             category
         };
-        let repo = text("The full path of a clone in the m8r user's home.");
-        let hron = text(
-            "When it runs, in words: \"every weekday at 06:00\", \"every 12 hours\". A \
-             five-field cron expression works too.",
+        let texts = |description: &str| json!({ "type": "array", "items": { "type": "string" }, "description": description });
+        let repos = texts(
+            "The clones that the runs start in, one run in each: paths from the home of m8r's \
+             user, such as ~/git/group/project.",
+        );
+        let hron = texts(
+            "When it runs, in words: \"every weekday at 06:00\", \"every 12 hours\", \"every \
+             day at 09:00, 17:00\". A five-field cron expression works too. With several, it \
+             runs at each one's times.",
         );
         let command = text("The exact shell line that a run starts, such as \"claude -p\".");
         let prompt = text(
-            "What the command gets on stdin: a template that can hold {{ system_message }}, \
-             {{ skill }} and {{ watchlist }}.",
+            "What the command gets on stdin: a template that can hold {{ m8r_prompt }}, \
+             {{ config_prompt }} and {{ watchlist }}.",
         );
         let name = |of: &str| text(&format!("The {of}'s name."));
-        let system_message =
-            text("m8r's part of every prompt: where the agent is, and how it reports. A template.");
+        let config_prompt = text(
+            "The developer's part of every prompt: a template that a schedule's prompt puts in \
+             with {{ config_prompt }}.",
+        );
 
         let (properties, required): (Value, &[&str]) = match self.name {
             "list_watchlist_items" => (json!({ "category": category }), &[]),
@@ -335,19 +342,19 @@ impl Spec {
                 json!({
                     "operation": operation,
                     "category": run_category,
-                    "repo": repo,
+                    "repos": repos,
                     "hron": hron,
                     "command": command,
                     "prompt": prompt,
                 }),
-                &["operation", "repo", "hron", "command"],
+                &["operation", "repos", "hron", "command"],
             ),
             "update_schedule" => (
                 json!({
                     "id": id("schedule"),
                     "operation": operation,
                     "category": run_category,
-                    "repo": repo,
+                    "repos": repos,
                     "hron": hron,
                     "command": command,
                     "prompt": prompt,
@@ -356,14 +363,14 @@ impl Spec {
             ),
             "remove_schedule" | "run_schedule" => (json!({ "id": id("schedule") }), &["id"]),
             "add_configuration" => (
-                json!({ "name": name("configuration"), "system_message": system_message }),
+                json!({ "name": name("configuration"), "prompt": config_prompt }),
                 &["name"],
             ),
             "update_configuration" => (
                 json!({
                     "id": id("configuration"),
                     "name": name("configuration"),
-                    "system_message": system_message,
+                    "prompt": config_prompt,
                 }),
                 &["id"],
             ),
@@ -526,8 +533,11 @@ impl Server {
             "run_schedule" => {
                 let Target { id, .. } = parse::<Target<Nothing>>(arguments)?;
                 let (schedule, _) = schedules::Model::find(db, id).await?;
-                let run = runs::Model::queue(db, &schedule).await?;
-                self.run(&run, false).await?
+                let mut queued = Vec::new();
+                for run in runs::Model::queue(db, &schedule).await? {
+                    queued.push(self.run(&run, false).await?);
+                }
+                json!(queued)
             }
             "list_configurations" => {
                 let configurations = configurations::Model::list(db).await?;
@@ -548,8 +558,7 @@ impl Server {
             }
             "remove_configuration" => {
                 let Target { id, .. } = parse::<Target<Nothing>>(arguments)?;
-                let configuration = configurations::Model::find(db, id).await?;
-                configuration.delete(db).await.map_err(ModelError::from)?;
+                configurations::Model::remove(db, id).await?;
                 json!({ "removed": id })
             }
             "activate_configuration" => {
