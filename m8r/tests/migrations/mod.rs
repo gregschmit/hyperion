@@ -143,8 +143,8 @@ Review them:{%- for item in items -%} {{ item.url }}{%- endfor %}');
     assert!(triage.is_due(&monday(6, 30)));
     assert!(!triage.is_due(&monday(6, 31)));
 
-    // The templates loop over the list by its new name, and compile. What isn't a template's
-    // tag stays as it was written. What was the system message is the configuration's prompt.
+    // The templates loop over the list by its new name. What isn't a template's tag stays as
+    // it was written. What was the system message is the configuration's prompt.
     let active = configurations::Model::active(&db).await.unwrap().unwrap();
     assert!(active.prompt.starts_with(
         "These have priority, as the items say:\n{% for item in watchlist_items %}- "
@@ -156,23 +156,29 @@ Review them:{%- for item in items -%} {{ item.url }}{%- endfor %}');
         "{}",
         review.prompt
     );
-    // A triage gets the issues, and a review the PRs/MRs.
+    // A schedule's prompt compiles. The configuration's is plain text now, so it goes in as
+    // it was written, and its tags are text. A triage gets the issues, and a review the
+    // PRs/MRs.
+    let urls = "{% for item in watchlist_items %}{{ item.url }}{% endfor %}";
     let context = prompts::Context::load(&db, Some(&issues), "/x")
         .await
         .unwrap();
     assert_eq!(
         context.compile(&triage.prompt).unwrap(),
-        "These have priority, as the items say:\n\
-         - medium: https://github.com/o/r/issues/2 Triage the new items."
+        format!("{} Triage the new items.", active.prompt)
+    );
+    assert_eq!(
+        context.compile(urls).unwrap(),
+        "https://github.com/o/r/issues/2"
     );
     let context = prompts::Context::load(&db, Some(&prs), "/x").await.unwrap();
     assert_eq!(
         context.compile(&review.prompt).unwrap(),
-        "These have priority, as the items say:\n\
-         - high: https://github.com/o/r/pull/1 Soon\n\
-         - medium: https://git.example.com/g/p/-/merge_requests/3 Alice asked\n\
-         Review them:https://github.com/o/r/pull/1\
-         https://git.example.com/g/p/-/merge_requests/3"
+        format!(
+            "{}\nReview them:https://github.com/o/r/pull/1\
+             https://git.example.com/g/p/-/merge_requests/3",
+            active.prompt
+        )
     );
 
     // The history has the command too. The run that waited has its schedule, so it starts.
@@ -235,13 +241,16 @@ The watchlist now:
     );
     // Its repo is the first of its repos, and the only one.
     assert_eq!(review.repos().collect::<Vec<_>>(), ["~/git/rxg"]);
-    // And the prompt compiles to what it did: the configuration's part, m8r's, the items.
+    // And the prompt compiles: the configuration's part as it was written (it's plain text
+    // now, so its tag is text), then m8r's, then the items.
     let context = prompts::Context::load(&db, prs.as_ref(), "/x")
         .await
         .unwrap();
     let compiled = context.compile(&review.prompt).unwrap();
     assert!(
-        compiled.starts_with("The words skill and system_message stay.\nYou are running in m8r"),
+        compiled.starts_with(
+            "The words skill and system_message stay.\n{{ m8r_prompt }}\n\nYou are running in m8r"
+        ),
         "{compiled}"
     );
     assert!(

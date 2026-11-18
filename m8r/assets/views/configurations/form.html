@@ -11,26 +11,9 @@
   <label for="name">Name</label>
   <input type="text" id="name" name="name" value="{{ form.name }}" required>
 
-  <label for="prompt">Prompt <small>It's a template, and it can use these. It can be blank.</small></label>
+  <label for="prompt">Prompt <small>Plain text: an agent gets it as you write it. It can be blank.</small></label>
   <textarea id="prompt" name="prompt" rows="12">{{ form.prompt }}</textarea>
-  <table class="variables">
-    {% for variable in variables %}
-    <tr><td class="nowrap"><code>{{ variable.name }}</code></td><td>{{ variable.meaning }}</td></tr>
-    {% endfor %}
-  </table>
 
   <p><button class="primary">Save</button> <a href="/configurations">Back</a></p>
 </form>
-
-<h2>Compiled</h2>
-<p class="muted">The prompt as the next run would get it, with a sample artifact directory and
-  no watchlist items: a schedule's page shows its prompt with that schedule's items. Save to
-  see your changes here.</p>
-{% if not compiles %}
-<div class="problem"><pre>{{ compiled }}</pre></div>
-{% elif compiled %}
-<pre>{{ compiled }}</pre>
-{% else %}
-<p class="muted">Blank: the schedules' prompts get nothing from this configuration.</p>
-{% endif %}
 {% endblock content %}

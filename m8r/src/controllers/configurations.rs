@@ -4,11 +4,10 @@ use serde_json::{json, Value};
 
 use crate::{
     models::configurations::{self, Params},
-    prompts, views,
+    views,
 };
 
-/// The form for a new configuration (no `id`) or a saved one, with its prompt compiled as the
-/// next run would get it.
+/// The form for a new configuration (no `id`) or a saved one.
 async fn form(
     v: &TeraView,
     ctx: &AppContext,
@@ -16,20 +15,10 @@ async fn form(
     form: &Params,
     problem: Option<String>,
 ) -> Result<Response> {
-    let compiled = form.compiled(&ctx.db).await?;
-    // A configuration's prompt can use what a schedule's can, but for itself.
-    let variables: Vec<Value> = prompts::VARIABLES
-        .iter()
-        .filter(|(name, _)| !name.contains("config_prompt"))
-        .map(|(name, meaning)| json!({ "name": name, "meaning": meaning }))
-        .collect();
     let data = json!({
         "is_new": id.is_none(),
         "id": id.unwrap_or_default(),
         "form": form,
-        "variables": variables,
-        "compiles": compiled.is_ok(),
-        "compiled": compiled.unwrap_or_else(|problem| problem),
         "has_problem": problem.is_some(),
         "problem": problem.unwrap_or_default(),
     });

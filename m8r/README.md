@@ -133,8 +133,8 @@ when the run starts. It can use these, and the schedule's page lists them:
   reports what it made, and how it adds, changes and removes watchlist items while it runs,
   with `curl` commands for m8r's API.
 - `{{ config_prompt }}`: the active configuration's prompt. That's your part of every prompt:
-  what every agent should know, whatever its schedule. It's a template too, and can use all of
-  these but itself.
+  what every agent should know, whatever its schedule. It's plain text, and it goes in as you
+  wrote it.
 - `{{ watchlist }}`: the watchlist items in the schedule's category, one to a line, such as
   `- item 12 (Pull/Merge Request, high, review requested): https://… Ship by Friday`. The
   number is what the API's commands take. With no items, it's `(nothing)`.
@@ -156,7 +156,7 @@ The watchlist now:
 ```
 
 A schedule's page shows its prompt compiled, with the watchlist as it is now, and a run's page
-shows the prompt it got. m8r refuses to save a template that doesn't compile, and shows Tera's
+shows the prompt it got. m8r refuses to save a prompt that doesn't compile, and shows Tera's
 error.
 
 **Configurations** hold `config_prompt`. One is active, or none, and then nothing runs.
@@ -194,7 +194,7 @@ The scheduler runs the `tick` task every minute, each time in a process of its o
 A run:
 
 1. takes its schedule as it is now, and compiles the prompt. It fails here if no configuration
-   is active, if its schedule is gone, if its clone isn't there, or if a template doesn't
+   is active, if its schedule is gone, if its clone isn't there, or if the prompt doesn't
    compile;
 2. starts the command through the login shell, in its clone, with the prompt on stdin. The
    login shell gives it the `PATH` and environment that you get when you become `m8r`;

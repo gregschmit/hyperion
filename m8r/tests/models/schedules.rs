@@ -253,7 +253,7 @@ async fn a_schedule_needs_an_operation_a_clone_a_time_and_a_command() {
 
 #[tokio::test]
 #[serial]
-async fn a_schedules_prompt_is_checked_against_the_active_configurations_prompt() {
+async fn a_change_to_a_schedule_keeps_what_it_does_not_name() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
     watch(ctx, "https://github.com/o/r/issues/1", ISSUE).await;
@@ -296,21 +296,15 @@ async fn a_schedules_prompt_is_checked_against_the_active_configurations_prompt(
         .unwrap();
     assert_eq!((changed.category_id, category), (None, None));
 
-    // The configuration's prompt that's active now doesn't compile, so no prompt with it
-    // does.
-    let mut broken = configure(ctx, "").await.into_active_model();
-    broken.prompt = Set("{{ nope }}".to_string());
-    broken.update(&ctx.db).await.unwrap();
+    // The active configuration's prompt is plain text: whatever it holds, a prompt that
+    // places it compiles.
+    configure(ctx, "{{ nope }} {% for %}").await;
     let again = Changes {
         command: Some("cat".to_string()),
         ..Changes::default()
     };
-    let refused = schedules::Model::change(&ctx.db, schedule.id, again).await;
-    let problem = refused.unwrap().unwrap_err();
-    assert!(
-        problem.starts_with("The configuration's prompt doesn't compile."),
-        "{problem}"
-    );
+    let changed = schedules::Model::change(&ctx.db, schedule.id, again).await;
+    assert_eq!(changed.unwrap().unwrap().0.command, "cat");
 }
 
 #[tokio::test]

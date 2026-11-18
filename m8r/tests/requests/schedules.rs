@@ -217,7 +217,8 @@ async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
             "{page}"
         );
         // And the starting prompt shows compiled: m8r's part, with a sample artifact directory,
-        // and the configuration's. A schedule with no category gets no items.
+        // and the configuration's as it was written, which is plain text. A schedule with no
+        // category gets no items.
         assert!(
             page.contains("<pre>You are running in m8r, a maintainer automation tool."),
             "{page}"
@@ -228,7 +229,7 @@ async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
         );
         assert!(page.contains("## How to use m8r&#39;s watchlist"), "{page}");
         assert!(
-            page.contains("Write in plain words, for  readers."),
+            page.contains("Write in plain words, for {{ category }} readers."),
             "{page}"
         );
         assert!(page.contains("The watchlist now:\n(nothing)"), "{page}");

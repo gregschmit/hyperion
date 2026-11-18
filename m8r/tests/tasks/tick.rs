@@ -266,7 +266,7 @@ async fn a_run_fails_at_once_when_it_cannot_start() {
     );
 
     // The schedule went while its run waited.
-    let active = configure(&ctx, "").await;
+    configure(&ctx, "").await;
     let run = queue(&ctx, &sandbox, "Triage.").await;
     schedules::Model::remove(&ctx.db, run.schedule_id.unwrap())
         .await
@@ -283,16 +283,15 @@ async fn a_run_fails_at_once_when_it_cannot_start() {
         "/no/such/clone isn't a directory."
     );
 
-    // The prompt compiled when it was saved, and doesn't now.
-    let run = queue(&ctx, &sandbox, "{{ config_prompt }}").await;
-    let mut broken = active.into_active_model();
+    // The prompt doesn't compile. m8r checks one when it saves it, so this one came another
+    // way.
+    let run = queue(&ctx, &sandbox, "Triage.").await;
+    let found = schedules::Model::find(&ctx.db, run.schedule_id.unwrap()).await;
+    let mut broken = found.unwrap().0.into_active_model();
     broken.prompt = Set("{{ gone }}".to_string());
     broken.update(&ctx.db).await.unwrap();
     let error = failed(ctx.clone(), run).await;
-    assert!(
-        error.starts_with("The configuration's prompt doesn't compile."),
-        "{error}"
-    );
+    assert!(error.starts_with("The prompt doesn't compile."), "{error}");
 }
 
 #[tokio::test]

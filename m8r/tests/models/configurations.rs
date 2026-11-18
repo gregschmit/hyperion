@@ -22,35 +22,23 @@ async fn create(db: &DatabaseConnection, params: &Params) -> configurations::Mod
 
 #[tokio::test]
 #[serial]
-async fn a_configuration_needs_a_name_and_a_prompt_that_compiles() {
+async fn a_configuration_needs_a_name_and_takes_any_text_for_its_prompt() {
     let boot = boot_test::<App>().await.unwrap();
     let db = &boot.app_context.db;
-    let problem = |params: Params| async move {
-        let made = configurations::Model::create(db, &params).await;
-        made.unwrap().unwrap_err()
-    };
 
+    let nameless = configurations::Model::create(db, &params(" ", "x")).await;
     assert_eq!(
-        problem(params(" ", "x")).await,
+        nameless.unwrap().unwrap_err(),
         "Give the configuration a name."
     );
-    let unknown = problem(params("One", "{{ nope }}")).await;
-    assert!(
-        unknown.starts_with("The configuration's prompt doesn't compile."),
-        "{unknown}"
-    );
-    assert!(unknown.contains("nope"), "{unknown}");
-    // Its prompt can't hold itself.
-    let itself = problem(params("One", "{{ config_prompt }}")).await;
-    assert!(itself.starts_with("The configuration's prompt doesn't compile."));
     assert!(configurations::Model::list(db).await.unwrap().is_empty());
 
-    // A blank prompt is fine: m8r's own part is in every m8r. So is every other variable.
+    // A blank prompt is fine: m8r's own part is in every m8r.
     create(db, &params("One", "")).await;
-    let all = "{{ m8r_prompt }} {{ watchlist }} {{ category }} {{ artifacts_dir }} \
-               {% for item in watchlist_items %}{{ item.url }}{% endfor %}";
-    let two = create(db, &params(" Two ", all)).await;
-    assert_eq!(two.name, "Two");
+    // The prompt is plain text, and kept as written: nothing in it is a tag to check.
+    let any = "{{ nope }} {% for %} {{ config_prompt }}\n";
+    let two = create(db, &params(" Two ", any)).await;
+    assert_eq!((two.name.as_str(), two.prompt.as_str()), ("Two", any));
 
     // A change keeps what it doesn't name, and is checked like the rest.
     let renamed = Changes {
@@ -61,14 +49,17 @@ async fn a_configuration_needs_a_name_and_a_prompt_that_compiles() {
     let changed = changed.unwrap().unwrap();
     assert_eq!(
         (changed.name.as_str(), changed.prompt.as_str()),
-        ("Evenings", all)
+        ("Evenings", any)
     );
-    let broken = Changes {
-        prompt: Some("{% for %}".to_string()),
+    let nameless = Changes {
+        name: Some(" ".to_string()),
         ..Changes::default()
     };
-    let refused = configurations::Model::change(db, two.id, broken).await;
-    assert!(refused.unwrap().is_err());
+    let refused = configurations::Model::change(db, two.id, nameless).await;
+    assert_eq!(
+        refused.unwrap().unwrap_err(),
+        "Give the configuration a name."
+    );
 }
 
 #[tokio::test]

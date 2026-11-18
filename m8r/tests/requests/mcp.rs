@@ -400,18 +400,20 @@ async fn the_other_tools_do_what_the_api_does() {
             (&evenings["id"], &evenings["active"]),
             (&json!(2), &json!(false))
         );
-        let broken = json!({ "id": 2, "prompt": "{{ nope }}" });
-        let refused = call(&request, &mac, "update_configuration", broken).await;
-        assert!(refused
-            .unwrap_err()
-            .starts_with("The configuration's prompt doesn't compile."));
+        let nameless = json!({ "id": 2, "name": " " });
+        let refused = call(&request, &mac, "update_configuration", nameless).await;
+        assert_eq!(refused, Err("Give the configuration a name.".to_string()));
+        // Its prompt is plain text, so any text will do.
+        let rewritten = json!({ "id": 2, "prompt": "Report. {{ nope }}" });
+        let kept = call(&request, &mac, "update_configuration", rewritten).await;
+        assert_eq!(kept.unwrap()["prompt"], json!("Report. {{ nope }}"));
         let renamed = json!({ "id": 2, "name": "Nights" });
         let nights = call(&request, &mac, "update_configuration", renamed)
             .await
             .unwrap();
         assert_eq!(
             (&nights["name"], &nights["prompt"]),
-            (&json!("Nights"), &json!("Report."))
+            (&json!("Nights"), &json!("Report. {{ nope }}"))
         );
         let active = call(&request, &mac, "activate_configuration", json!({ "id": 2 })).await;
         assert_eq!(active.unwrap()["active"], json!(true));

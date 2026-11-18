@@ -3,7 +3,6 @@ use loco_rs::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::Checked;
-use crate::prompts;
 
 pub type Configurations = Entity;
 
@@ -12,7 +11,7 @@ pub type Configurations = Entity;
 #[serde(default)]
 pub struct Params {
     pub name: String,
-    /// Your part of every prompt. A schedule's prompt says where it goes.
+    /// Your part of every prompt: plain text. A schedule's prompt says where it goes.
     pub prompt: String,
 }
 
@@ -35,25 +34,10 @@ impl Params {
         }
     }
 
-    /// The prompt as a run would get it now. Which watchlist items a run gets is its
-    /// schedule's to say, so here there are none.
-    ///
-    /// # Errors
-    /// When a query fails. Inside: Tera's message, when the template doesn't compile.
-    pub async fn compiled(&self, db: &DatabaseConnection) -> ModelResult<Checked<String>> {
-        let context = prompts::Context {
-            config_prompt: self.prompt.clone(),
-            ..prompts::Context::load(db, None, prompts::SAMPLE_ARTIFACTS_DIR).await?
-        };
-        Ok(context.compile("{{ config_prompt }}"))
-    }
-
-    /// Why these can't be saved, if they can't: no name, or a prompt that doesn't compile.
-    async fn problem(&self, db: &DatabaseConnection) -> ModelResult<Option<String>> {
-        if self.name.trim().is_empty() {
-            return Ok(Some("Give the configuration a name.".to_string()));
-        }
-        Ok(self.compiled(db).await?.err())
+    /// Why these can't be saved, if they can't: no name. Any text will do for the prompt.
+    fn problem(&self) -> Option<String> {
+        let nameless = self.name.trim().is_empty();
+        nameless.then(|| "Give the configuration a name.".to_string())
     }
 }
 
@@ -118,7 +102,7 @@ impl Model {
     /// # Errors
     /// When a query fails.
     pub async fn create(db: &DatabaseConnection, params: &Params) -> ModelResult<Checked<Self>> {
-        if let Some(problem) = params.problem(db).await? {
+        if let Some(problem) = params.problem() {
             return Ok(Err(problem));
         }
         let mut configuration = ActiveModel::new();
@@ -158,7 +142,7 @@ impl Model {
         db: &DatabaseConnection,
         params: &Params,
     ) -> ModelResult<Checked<Self>> {
-        if let Some(problem) = params.problem(db).await? {
+        if let Some(problem) = params.problem() {
             return Ok(Err(problem));
         }
         let mut configuration = self.into_active_model();

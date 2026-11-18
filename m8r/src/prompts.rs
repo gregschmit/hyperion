@@ -1,7 +1,7 @@
 //! What a run's command gets on stdin: its schedule's prompt.
 //!
-//! A prompt is a Tera template, and so is the prompt of the active configuration. This is
-//! what they can use, and how m8r compiles them.
+//! A prompt is a Tera template. This is what it can use, and how m8r compiles it. The active
+//! configuration's prompt is one of those things: plain text, which no one compiles.
 
 use loco_rs::prelude::*;
 use serde_json::json;
@@ -70,8 +70,7 @@ The watchlist now:
 /// The artifact directory that a prompt is compiled with when no run is at hand.
 pub const SAMPLE_ARTIFACTS_DIR: &str = "/var/lib/m8r/artifacts/1";
 
-/// What a prompt can use, for the pages to say. A configuration's prompt can use all but
-/// itself.
+/// What a prompt can use, for the pages to say.
 pub const VARIABLES: [(&str, &str); 6] = [
     (
         "{{ m8r_prompt }}",
@@ -80,7 +79,7 @@ pub const VARIABLES: [(&str, &str); 6] = [
     ),
     (
         "{{ config_prompt }}",
-        "The active configuration's prompt: your part of every prompt.",
+        "The active configuration's prompt: your part of every prompt, as you wrote it.",
     ),
     (
         "{{ watchlist }}",
@@ -105,8 +104,8 @@ pub const VARIABLES: [(&str, &str); 6] = [
 /// What a prompt is compiled with.
 #[derive(Debug, Clone, Default)]
 pub struct Context {
-    /// The active configuration's prompt, which is a template itself. Blank with no active
-    /// configuration.
+    /// The active configuration's prompt: plain text, which goes in as it is. Blank with no
+    /// active configuration.
     pub config_prompt: String,
     /// The items that the run gets: the ones in its schedule's category. None, with no
     /// category.
@@ -146,11 +145,10 @@ impl Context {
         })
     }
 
-    /// Compile `prompt`: the configuration's prompt first, then the prompt, which says where
-    /// that and m8r's part go.
+    /// Compile `prompt`, which says where m8r's part and the configuration's go.
     ///
     /// # Errors
-    /// Tera's message, when a template doesn't compile.
+    /// Tera's message, when the prompt doesn't compile.
     pub fn compile(&self, prompt: &str) -> std::result::Result<String, String> {
         // Not HTML: nothing in a prompt is escaped.
         let autoescape = false;
@@ -174,9 +172,8 @@ impl Context {
         context.insert("category", &self.category);
         context.insert("artifacts_dir", &self.artifacts_dir);
         context.insert("m8r_prompt", self.m8r_prompt().trim_end());
-        let config_prompt = tera::Tera::one_off(&self.config_prompt, &context, autoescape)
-            .map_err(|err| format!("The configuration's prompt doesn't compile.\n{err}"))?;
-        context.insert("config_prompt", config_prompt.trim_end());
+        // Plain text: a value goes in as it is, whatever braces it has.
+        context.insert("config_prompt", self.config_prompt.trim_end());
         tera::Tera::one_off(prompt, &context, autoescape)
             .map_err(|err| format!("The prompt doesn't compile.\n{err}"))
     }

@@ -305,7 +305,7 @@ impl Spec {
         );
         let name = |of: &str| text(&format!("The {of}'s name."));
         let config_prompt = text(
-            "The developer's part of every prompt: a template that a schedule's prompt puts in \
+            "The developer's part of every prompt: plain text, which a schedule's prompt puts in \
              with {{ config_prompt }}.",
         );
 

@@ -40,7 +40,7 @@ async fn a_prompt_gets_each_part_where_it_says() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
     watchlist(ctx).await;
-    configure(ctx, "Write to {{ category }} people in plain words.\n").await;
+    configure(ctx, "Write to the reviewers in plain words.\n").await;
     let prs = category(ctx, PR).await;
 
     let context = Context::load(&ctx.db, Some(&prs), "/data/artifacts/9")
@@ -66,12 +66,12 @@ async fn a_prompt_gets_each_part_where_it_says() {
         prompt.contains("\n## How to use m8r's watchlist\n"),
         "{prompt}"
     );
-    // Then yours, which is a template too. Then the category's items, the urgent one first,
-    // and nothing escaped: a prompt isn't HTML.
+    // Then yours. Then the category's items, the urgent one first, and nothing escaped: a
+    // prompt isn't HTML.
     assert!(
         prompt.ends_with(
             "they are the developer's.\n\n\
-             Write to Pull/Merge Request people in plain words.\n\
+             Write to the reviewers in plain words.\n\
              Follow these:\n\
              - item 2 (Pull/Merge Request, high): \
              https://git.example.com/g/p/-/merge_requests/2 Ship by <Friday>\n\
@@ -80,6 +80,26 @@ async fn a_prompt_gets_each_part_where_it_says() {
              After."
         ),
         "{prompt}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn the_configurations_prompt_goes_in_as_it_was_written() {
+    let boot = boot_test::<App>().await.unwrap();
+    let ctx = &boot.app_context;
+    watchlist(ctx).await;
+    // It's plain text, and no template: what looks like a tag is text too, and so is what
+    // Tera couldn't read.
+    let written = "Use {{ watchlist }} and {{ m8r_prompt }}.\n\
+                   {% for %} {{ nope }} ${{ github.sha }} <b>";
+    configure(ctx, written).await;
+    let prs = category(ctx, PR).await;
+    let context = Context::load(&ctx.db, Some(&prs), "/x").await.unwrap();
+
+    assert_eq!(
+        context.compile("[{{ config_prompt }}]").unwrap(),
+        format!("[{written}]")
     );
 }
 
@@ -165,7 +185,7 @@ async fn m8rs_part_says_how_to_change_the_watchlist_and_holds_no_secret() {
 async fn a_prompt_says_where_each_part_goes_or_goes_without_it() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
-    configure(ctx, "Report in {{ artifacts_dir }} too.\n").await;
+    configure(ctx, "Write in plain words.\n").await;
     let context = Context::load(&ctx.db, None, "/x").await.unwrap();
 
     assert_eq!(context.compile("Just triage.").unwrap(), "Just triage.");
@@ -173,7 +193,7 @@ async fn a_prompt_says_where_each_part_goes_or_goes_without_it() {
     // A part ends where its text does, so the prompt says what comes between two.
     assert_eq!(
         context.compile("{{ config_prompt }}\n\nTriage.").unwrap(),
-        "Report in /x too.\n\nTriage."
+        "Write in plain words.\n\nTriage."
     );
 
     // A new schedule's prompt holds m8r's part, yours and the watchlist, in this order.
@@ -181,7 +201,8 @@ async fn a_prompt_says_where_each_part_goes_or_goes_without_it() {
     assert!(starter.starts_with("You are running in m8r"), "{starter}");
     assert!(
         starter.ends_with(
-            "they are the developer's.\n\nReport in /x too.\n\nThe watchlist now:\n(nothing)\n\n"
+            "they are the developer's.\n\nWrite in plain words.\n\n\
+             The watchlist now:\n(nothing)\n\n"
         ),
         "{starter}"
     );
@@ -189,24 +210,14 @@ async fn a_prompt_says_where_each_part_goes_or_goes_without_it() {
     // With no active configuration, that part is blank.
     let none = Context {
         config_prompt: String::new(),
-        ..context.clone()
-    };
-    assert_eq!(none.compile("[{{ config_prompt }}]").unwrap(), "[]");
-    // A configuration's prompt can use the rest, m8r's part too.
-    let fuller = Context {
-        config_prompt: "{{ watchlist }} in {{ artifacts_dir }}\n{{ m8r_prompt }}".to_string(),
         ..context
     };
-    let compiled = fuller.compile("{{ config_prompt }}").unwrap();
-    assert!(
-        compiled.starts_with("(nothing) in /x\nYou are running in m8r"),
-        "{compiled}"
-    );
+    assert_eq!(none.compile("[{{ config_prompt }}]").unwrap(), "[]");
 }
 
 #[tokio::test]
 #[serial]
-async fn a_template_that_does_not_compile_says_which_one_and_why() {
+async fn a_prompt_that_does_not_compile_says_why() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
     let context = Context::load(&ctx.db, None, "/x").await.unwrap();
@@ -220,16 +231,6 @@ async fn a_template_that_does_not_compile_says_which_one_and_why() {
     // The names from before are no names now.
     assert!(context.compile("{{ system_message }}").is_err());
     assert!(context.compile("{{ skill }}").is_err());
-
-    let broken = Context {
-        config_prompt: "{% for %}".to_string(),
-        ..context
-    };
-    let problem = broken.compile("anything").unwrap_err();
-    assert!(
-        problem.starts_with("The configuration's prompt doesn't compile."),
-        "{problem}"
-    );
 }
 
 #[tokio::test]

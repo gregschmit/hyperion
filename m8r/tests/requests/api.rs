@@ -459,12 +459,22 @@ async fn configurations_are_listed_added_changed_made_active_and_removed() {
             .await;
         assert_eq!(answer(&res), bad_request("Give the configuration a name."));
 
+        // A change is checked like the rest, and keeps what it doesn't name. The prompt is
+        // plain text, so any text will do.
         let res = request
             .patch(&format!("{configurations}/1"))
             .authorization_bearer(&token)
-            .json(&json!({ "prompt": "{{ nope }}" }))
+            .json(&json!({ "name": " " }))
             .await;
-        assert_eq!(res.status_code(), 400);
+        assert_eq!(answer(&res), bad_request("Give the configuration a name."));
+        let any = json!("{{ nope }} {% for %}");
+        let res = request
+            .patch(&format!("{configurations}/1"))
+            .authorization_bearer(&token)
+            .json(&json!({ "prompt": any }))
+            .await;
+        let (status, rewritten) = answer(&res);
+        assert_eq!((status, &rewritten["prompt"]), (200, &any));
         let res = request
             .patch(&format!("{configurations}/1"))
             .authorization_bearer(&token)
@@ -473,7 +483,7 @@ async fn configurations_are_listed_added_changed_made_active_and_removed() {
         let (_, renamed) = answer(&res);
         assert_eq!(
             (&renamed["name"], &renamed["prompt"]),
-            (&json!("Weekdays"), &one["prompt"])
+            (&json!("Weekdays"), &any)
         );
 
         // One is active, or none.

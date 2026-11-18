@@ -1,7 +1,7 @@
 use m8r::models::configurations;
 use serial_test::serial;
 
-use crate::support::{location, signed_in, watch, ISSUE};
+use crate::support::{location, signed_in};
 
 fn form<'a>(name: &'a str, prompt: &'a str) -> [(&'a str, &'a str); 2] {
     [("name", name), ("prompt", prompt)]
@@ -9,7 +9,7 @@ fn form<'a>(name: &'a str, prompt: &'a str) -> [(&'a str, &'a str); 2] {
 
 #[tokio::test]
 #[serial]
-async fn a_configuration_is_written_seen_compiled_and_made_active() {
+async fn a_configuration_is_written_seen_and_made_active() {
     signed_in(|request, ctx| async move {
         assert!(request
             .get("/configurations")
@@ -20,56 +20,44 @@ async fn a_configuration_is_written_seen_compiled_and_made_active() {
         let page = request.get("/configurations/new").await.text();
         assert!(page.contains(r#"<textarea id="prompt" name="prompt" rows="12"></textarea>"#));
         assert!(!page.contains("You are running in m8r"), "{page}");
-        // The page says what the prompt can use: all but itself.
-        assert!(page.contains("<code>{{ m8r_prompt }}</code>"), "{page}");
-        assert!(page.contains("<code>{{ watchlist }}</code>"), "{page}");
+        // The prompt is plain text, so the page names nothing for it to use: only how a
+        // schedule's prompt places it.
+        assert!(page.contains("<code>{{ config_prompt }}</code>"), "{page}");
         assert!(
-            !page.contains("<code>{{ config_prompt }}</code></td>"),
+            !page.contains("m8r_prompt") && !page.contains("{{ watchlist }}"),
             "{page}"
         );
 
-        // A template that doesn't compile isn't saved, and Tera says why.
-        let res = request
-            .post("/configurations")
-            .form(&form("Mornings", "Hello {{ nobody }}"))
-            .await;
+        // A configuration has a name.
+        let res = request.post("/configurations").form(&form(" ", "x")).await;
         assert_eq!(res.status_code(), 200);
-        let page = res.text();
-        assert!(
-            page.contains("The configuration&#39;s prompt doesn&#39;t compile."),
-            "{page}"
-        );
-        assert!(page.contains("nobody"), "{page}");
+        assert!(res.text().contains("Give the configuration a name."));
         assert!(configurations::Model::list(&ctx.db)
             .await
             .unwrap()
             .is_empty());
-        // And a configuration has a name.
-        let res = request.post("/configurations").form(&form(" ", "x")).await;
-        assert!(res.text().contains("Give the configuration a name."));
 
-        watch(&ctx, "https://github.com/o/r/issues/1", ISSUE).await;
+        // Any text is a prompt. It's kept and shown as written: what looks like a tag is
+        // text, and so is what no template could hold.
+        let written = "Write in plain words.\nFollow <these>: {{ watchlist }} {% for %}";
         let res = request
             .post("/configurations")
-            .form(&form(
-                "Mornings",
-                "Write in plain words. Report to {{ artifacts_dir }}.\nFollow <these>:\n\
-                 {{ watchlist }}",
-            ))
+            .form(&form("Mornings", written))
             .await;
         assert_eq!(res.status_code(), 303);
         assert_eq!(location(&res), "/configurations/1");
-
-        // Its page shows the prompt compiled. The items are a schedule's to choose, so here
-        // there are none.
+        let configuration = configurations::Model::find(&ctx.db, 1).await.unwrap();
+        assert_eq!(configuration.prompt, written);
         let page = request.get("/configurations/1").await.text();
         assert!(
             page.contains(
-                "<pre>Write in plain words. Report to /var/lib/m8r/artifacts/1.\n\
-                 Follow &lt;these&gt;:\n(nothing)</pre>"
+                "rows=\"12\">Write in plain words.\n\
+                 Follow &lt;these&gt;: {{ watchlist }} {% for %}</textarea>"
             ),
             "{page}"
         );
+        // Nothing is compiled, so the page shows nothing compiled.
+        assert!(!page.contains("Compiled"), "{page}");
 
         let res = request
             .post("/configurations/1")
@@ -77,13 +65,11 @@ async fn a_configuration_is_written_seen_compiled_and_made_active() {
             .await;
         assert_eq!(location(&res), "/configurations/1");
         let configuration = configurations::Model::find(&ctx.db, 1).await.unwrap();
-        assert_eq!(configuration.name, "Evenings");
-        assert!(!configuration.active);
-        let page = request.get("/configurations/1").await.text();
-        assert!(
-            page.contains("Blank: the schedules' prompts get nothing from this configuration."),
-            "{page}"
+        assert_eq!(
+            (configuration.name.as_str(), configuration.prompt.as_str()),
+            ("Evenings", "")
         );
+        assert!(!configuration.active);
 
         assert_eq!(
             request
