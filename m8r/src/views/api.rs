@@ -44,7 +44,7 @@ pub fn schedule((schedule, repos): &schedules::Listed) -> Value {
         "max_items": schedule.max_items,
         // The paths of the repos' clones.
         "repos": repos.iter().map(|repo| repo.path.as_str()).collect::<Vec<_>>(),
-        "hron": schedule.times().collect::<Vec<_>>(),
+        "when": schedule.times().collect::<Vec<_>>(),
         "enabled": schedule.enabled,
         "command": schedule.command,
         "prompt": schedule.prompt,

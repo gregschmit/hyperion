@@ -133,7 +133,7 @@ its runs at once.
   repo's items.
 - **Max items** cuts that list: a run gets the first ones, and no more than this many. The
   requested items come first, then the urgent ones, then the rest. 0 means all of them.
-- **Hron** says when the schedule runs, in words: `every weekday at 06:00`, `every 12 hours`,
+- **When** is the schedule's times, in words: `every weekday at 06:00`, `every 12 hours`,
   `every monday, thursday at 9:00, 15:00`
   ([hron](https://github.com/simpllyf/hron#expression-syntax) has more). A five-field cron
   expression works too, and m8r puts it in words. Times are on the server's clock, unless you
@@ -155,9 +155,9 @@ its runs at once.
 A schedule's prompt is a [Tera](https://keats.github.io/tera/) template, which m8r compiles
 when the run starts. It can use these, and the schedule's page lists them:
 
-- `{{ m8r_prompt }}`: m8r's own part, which is in the code. It says where the agent is, how it
-  reports what it made, and how it adds, changes and removes watchlist items while it runs,
-  with `curl` commands for m8r's API.
+- `{{ m8r_prompt }}`: m8r's own part, which is in the code. It says where the agent is, that
+  what it prints is its report, how it gives m8r an artifact if it has one, and how it adds,
+  changes and removes watchlist items while it runs, with `curl` commands for m8r's API.
 - `{{ watchlist }}`: the watchlist items that the run gets, one to a line, such as
   `- item 12 (high, requested): https://… Ship by Friday`. They're the items of the run's
   repo, of the schedule's category, in the order above, and no more than its max items. An
@@ -259,12 +259,14 @@ A run:
 
 ### Artifacts
 
-An artifact is something that a run made and chose to report: a link, or a set of files.
+An artifact is something that a run made and chose to report: a link, or a set of files. A
+run needs none: its report is what the agent prints, which the run's page shows.
 
-- **How an agent reports.** `m8r_prompt` names the run's artifact directory,
-  `/var/lib/m8r/artifacts/<run>/`. The agent makes one directory there for each artifact, named
-  for what it is, and puts the artifact's files in it. For something that's already online (a
-  comment it posted, a PR/MR), it puts in one text file that holds only the link.
+- **How an agent gives one.** `m8r_prompt` says how, for an agent that has one. It names the
+  run's artifact directory, `/var/lib/m8r/artifacts/<run>/`. The agent makes one directory
+  there for each artifact, named for what it is, and puts the artifact's files in it. For
+  something that's already online (a comment it posted, a PR/MR), it puts in one text file
+  that holds only the link.
 - **What m8r records.** When the run ends, however it ends, m8r makes one artifact for each
   directory. Files that an agent left loose become one artifact named `report`.
 - **Where they show.** The Runs page, which is the home page, lists each run with its
@@ -341,7 +343,7 @@ m8r task revoke name:duet                        # ends one
   watchlist item whose URL is already there changes that item, and a `PATCH` changes what it
   names. An item's answer has its `repo` and its `category`, which its URL says, and
   `?category=issues` and `?repo_id=1` narrow the list. A repo has a `path` and a `url`. A
-  schedule's `repos` and `hron` are arrays: the repos by the paths of their clones. Its
+  schedule's `repos` and `when` are arrays: the repos by the paths of their clones. Its
   `enabled` is true or false, and its `next` is null while it's false.
   `POST /api/schedules/<id>/run` queues the schedule's runs and answers with them, and
   `/api/runs` can be read. What can't be saved comes back as a 400 with the reason in
@@ -525,7 +527,7 @@ watchlist_items  url (unique), repo → repos ON DELETE RESTRICT,
                  requested, title, checked_at
 
 schedules        name (unique), category (blank|all|issues|pull/merge requests), max_items,
-                 hron (a list, one to a line), enabled, command, prompt
+                 when (a list, one to a line), enabled, command, prompt
 
 schedule_repos   schedule → schedules ON DELETE CASCADE,
                  repo → repos ON DELETE RESTRICT            unique(schedule, repo)

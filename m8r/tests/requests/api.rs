@@ -349,7 +349,7 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
             .authorization_bearer(&token)
             .json(
                 &json!({ "name": "review", "category": REQUESTS, "max_items": 50,
-                "repos": [tests, src], "hron": ["0 6 * * 1-5", "every saturday at 10:00"],
+                "repos": [tests, src], "when": ["0 6 * * 1-5", "every saturday at 10:00"],
                 "command": "claude -p", "prompt": "{{ m8r_prompt }}\n\n{{ watchlist }}" }),
             )
             .await;
@@ -366,7 +366,7 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
                 "category": REQUESTS,
                 "max_items": 50,
                 "repos": [src, tests],
-                "hron": ["every weekday at 06:00", "every saturday at 10:00"],
+                "when": ["every weekday at 06:00", "every saturday at 10:00"],
                 "enabled": true,
                 "command": "claude -p",
                 "prompt": "{{ m8r_prompt }}\n\n{{ watchlist }}",
@@ -383,17 +383,17 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
 
         for (body, why) in [
             (
-                json!({ "name": "triage", "repos": [src], "hron": ["every day at 6am"],
+                json!({ "name": "triage", "repos": [src], "when": ["every day at 6am"],
                 "command": "claude -p" }),
                 "error: unknown keyword 'am'\n  every day at 6am\n                ^^".to_string(),
             ),
             (
-                json!({ "name": "review", "repos": [src], "hron": ["every day at 6:00"],
+                json!({ "name": "review", "repos": [src], "when": ["every day at 6:00"],
                 "command": "claude -p" }),
                 "There's already a schedule \"review\".".to_string(),
             ),
             (
-                json!({ "name": "triage", "repos": [here], "hron": ["every day at 6:00"],
+                json!({ "name": "triage", "repos": [here], "when": ["every day at 6:00"],
                 "command": "claude -p" }),
                 format!("\"{here}\" isn't one of m8r's repos. Add it to the repos first."),
             ),
@@ -411,13 +411,13 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
         let res = request
             .patch(&format!("{schedules}/1"))
             .authorization_bearer(&token)
-            .json(&json!({ "hron": "every 12 hours", "category": "" }))
+            .json(&json!({ "when": "every 12 hours", "category": "" }))
             .await;
         let (status, changed) = answer(&res);
         assert_eq!(status, 200);
         assert_eq!(
             (
-                &changed["hron"],
+                &changed["when"],
                 &changed["category"],
                 &changed["max_items"],
                 &changed["command"],

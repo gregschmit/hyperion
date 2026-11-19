@@ -92,7 +92,7 @@ pub fn schedule_params(repo: &Path, prompt: &str) -> schedules::Params {
     schedules::Params {
         name: "triage".to_string(),
         repos: (&*repo.to_string_lossy()).into(),
-        hron: "every weekday at 06:00".into(),
+        when: "every weekday at 06:00".into(),
         command: "cat".to_string(),
         prompt: prompt.to_string(),
         ..schedules::Params::default()
@@ -128,7 +128,7 @@ pub async fn unchecked(
 ) -> schedules::Model {
     let mut schedule = schedules::ActiveModel::new();
     schedule.name = Set(name.to_string());
-    schedule.hron = Set("every day at 06:00".to_string());
+    schedule.when = Set("every day at 06:00".to_string());
     schedule.command = Set(command.to_string());
     let schedule = schedule.insert(db).await.unwrap();
     for path in repos.lines() {

@@ -182,7 +182,7 @@ async fn a_token_sees_the_tools_of_what_it_covers() {
         let schedule = &schedule.unwrap()["inputSchema"];
         assert_eq!(
             schedule["required"],
-            json!(["name", "repos", "hron", "command"])
+            json!(["name", "repos", "when", "command"])
         );
         assert_eq!(
             schedule["properties"]["category"]["enum"],
@@ -348,14 +348,14 @@ async fn the_other_tools_do_what_the_api_does() {
 
         // A schedule that runs in the first repo, so that repo stays.
         let asked = json!({ "name": "release notes", "category": "all", "max_items": 20,
-            "repos": [src], "hron": ["every 12 hours", "every day at 09:00, 17:00"],
+            "repos": [src], "when": ["every 12 hours", "every day at 09:00, 17:00"],
             "command": "make release-notes" });
         let schedule = call(&request, &mac, "add_schedule", asked).await.unwrap();
         assert_eq!(
             (
                 &schedule["id"],
                 &schedule["name"],
-                &schedule["hron"],
+                &schedule["when"],
                 &schedule["category"],
                 &schedule["max_items"],
                 &schedule["prompt"]
@@ -416,7 +416,7 @@ async fn the_other_tools_do_what_the_api_does() {
                 &json!(20)
             )
         );
-        let bad = json!({ "id": 1, "hron": "whenever" });
+        let bad = json!({ "id": 1, "when": "whenever" });
         assert!(call(&request, &mac, "update_schedule", bad).await.is_err());
         let listed = call(&request, &mac, "list_schedules", json!({}))
             .await

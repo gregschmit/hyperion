@@ -349,13 +349,13 @@ async fn a_tick_queues_the_schedules_that_are_due() {
     let sandbox = Sandbox::new("tick-schedules");
     let ctx = sandbox.context(&boot.app_context, "cat");
     // One that's due every minute, and one whose only time is long gone.
-    for (name, hron) in [
+    for (name, when) in [
         ("triage", "every minute"),
         ("review", "on 2001-01-01 at 00:00"),
     ] {
         let params = schedules::Params {
             name: name.to_string(),
-            hron: hron.into(),
+            when: when.into(),
             ..schedule_params(&sandbox.repo(), "Go.")
         };
         schedule(&ctx, &params).await;
@@ -378,7 +378,7 @@ async fn a_schedule_that_is_not_enabled_runs_only_when_asked() {
     let sandbox = Sandbox::new("tick-not-enabled");
     let ctx = sandbox.context(&boot.app_context, "cat");
     let params = schedules::Params {
-        hron: "every minute".into(),
+        when: "every minute".into(),
         enabled: false,
         ..schedule_params(&sandbox.repo(), "Go.")
     };
@@ -495,7 +495,7 @@ async fn a_run_is_its_schedules_command_with_its_prompt_on_stdin() {
     let command = r#"other-tool "Update the changelog.""#;
     let params = |prompt: &str| schedules::Params {
         name: "other".to_string(),
-        hron: "every minute".into(),
+        when: "every minute".into(),
         command: command.to_string(),
         ..schedule_params(&sandbox.repo(), prompt)
     };

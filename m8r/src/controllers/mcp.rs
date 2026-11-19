@@ -259,7 +259,7 @@ impl Spec {
             "The repos that the runs start in, one run in each: the paths of their clones, as \
              list_repos shows them.",
         );
-        let hron = texts(
+        let when = texts(
             "When it runs, in words: \"every weekday at 06:00\", \"every 12 hours\", \"every \
              day at 09:00, 17:00\". A five-field cron expression works too. With several, it \
              runs at each one's times.",
@@ -320,12 +320,12 @@ impl Spec {
                     "category": run_category,
                     "max_items": max_items,
                     "repos": repos,
-                    "hron": hron,
+                    "when": when,
                     "enabled": enabled,
                     "command": command,
                     "prompt": prompt,
                 }),
-                &["name", "repos", "hron", "command"],
+                &["name", "repos", "when", "command"],
             ),
             "update_schedule" => (
                 json!({
@@ -334,7 +334,7 @@ impl Spec {
                     "category": run_category,
                     "max_items": max_items,
                     "repos": repos,
-                    "hron": hron,
+                    "when": when,
                     "enabled": enabled,
                     "command": command,
                     "prompt": prompt,

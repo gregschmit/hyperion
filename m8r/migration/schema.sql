@@ -67,7 +67,7 @@ CREATE TABLE "schedules" (
   "name" varchar NOT NULL UNIQUE,
   "category" varchar NOT NULL DEFAULT '',
   "max_items" integer NOT NULL DEFAULT 0,
-  "hron" varchar NOT NULL,
+  "when" varchar NOT NULL,
   "command" varchar NOT NULL DEFAULT '',
   "prompt" text NOT NULL DEFAULT '',
   "enabled" boolean NOT NULL DEFAULT TRUE

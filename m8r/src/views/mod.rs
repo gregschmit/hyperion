@@ -203,7 +203,7 @@ pub fn schedule((schedule, repos): &schedules::Listed) -> Value {
         "category": schedule.category,
         "max_items": schedule.max_items,
         "repos": repos.iter().map(|repo| repo.path.as_str()).collect::<Vec<_>>(),
-        "hron": schedule.times().collect::<Vec<_>>(),
+        "when": schedule.times().collect::<Vec<_>>(),
         "enabled": schedule.enabled,
         "command": schedule.command,
         // The first of its times to come. Blank while it's off.

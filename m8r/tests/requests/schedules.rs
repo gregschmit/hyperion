@@ -37,7 +37,7 @@ async fn schedules_are_added_changed_run_and_removed() {
             r#"<label for="name">Name "#,
             r#"<label for="category">Category "#,
             r#"<label for="max_items">Max items "#,
-            r#"<label for="hron">Hron "#,
+            r#"<label for="when">When "#,
             r#"<label for="enabled">Enabled "#,
             r#"<label for="command">Command "#,
             r#"<label for="prompt">Prompt "#,
@@ -77,13 +77,13 @@ async fn schedules_are_added_changed_run_and_removed() {
             "{page}"
         );
 
-        let triage = |repo: &'static str, hron: &'static str, command: &'static str| {
+        let triage = |repo: &'static str, when: &'static str, command: &'static str| {
             [
                 ("name", "triage"),
                 ("category", ""),
                 ("max_items", ""),
                 ("repos", repo),
-                ("hron", hron),
+                ("when", when),
                 ("command", command),
                 ("prompt", "Triage the new issues."),
                 ("enabled", "true"),
@@ -136,7 +136,7 @@ async fn schedules_are_added_changed_run_and_removed() {
                 ("category", REQUESTS),
                 ("max_items", "50"),
                 ("repos", here),
-                ("hron", "every 12 hours"),
+                ("when", "every 12 hours"),
                 ("command", r#"claude -p "Update the <changelog>.""#),
                 ("prompt", "{{ watchlist }}"),
                 ("enabled", "true"),
@@ -149,7 +149,7 @@ async fn schedules_are_added_changed_run_and_removed() {
                 schedule.name.as_str(),
                 schedule.category.as_str(),
                 schedule.max_items(),
-                schedule.hron.as_str(),
+                schedule.when.as_str(),
                 schedule.command.as_str(),
                 schedule.prompt.as_str(),
             ),
@@ -179,7 +179,7 @@ async fn schedules_are_added_changed_run_and_removed() {
         let page = request.get("/schedules").await.text();
         assert!(
             page.contains(
-                "<th>Category</th><th>Max items</th><th>Repos and command</th><th>Hron</th>"
+                "<th>Category</th><th>Max items</th><th>Repos and command</th><th>When</th>"
             ),
             "{page}"
         );
@@ -228,13 +228,13 @@ async fn schedules_are_added_changed_run_and_removed() {
         );
 
         // A time that m8r can't read: hron says where it went wrong.
-        let review = |hron: &'static str, command: &'static str, category: &'static str| {
+        let review = |when: &'static str, command: &'static str, category: &'static str| {
             [
                 ("name", "review"),
                 ("category", category),
                 ("max_items", "0"),
                 ("repos", here),
-                ("hron", hron),
+                ("when", when),
                 ("command", command),
                 ("prompt", ""),
                 ("enabled", "true"),
@@ -382,7 +382,7 @@ async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
                 ("category", category.to_string()),
                 ("max_items", "0".to_string()),
                 ("repos", here.clone()),
-                ("hron", "every day at 9:00".to_string()),
+                ("when", "every day at 9:00".to_string()),
                 ("command", "cat".to_string()),
                 ("prompt", prompt.to_string()),
                 ("enabled", "true".to_string()),
@@ -447,7 +447,7 @@ async fn a_schedule_whose_time_cannot_be_read_says_so() {
         // From before m8r read times in words: a cron expression that hron has no words for.
         let mut old = schedules::ActiveModel::new();
         old.name = Set("triage".to_string());
-        old.hron = Set("*/7 * * * *".to_string());
+        old.when = Set("*/7 * * * *".to_string());
         old.command = Set("claude -p".to_string());
         old.insert(&ctx.db).await.unwrap();
 
@@ -475,18 +475,18 @@ async fn a_schedule_takes_several_repos_and_several_times() {
             3
         );
         assert!(
-            page.contains(r#"<textarea id="hron" name="hron" rows="3""#),
+            page.contains(r#"<textarea id="when" name="when" rows="3""#),
             "{page}"
         );
 
         // A checked box sends its repo. The times are one to a line, and a browser ends a
         // line with a return too.
-        let form = |repos: &[&String], hron: &'static str| {
+        let form = |repos: &[&String], when: &'static str| {
             let mut form = vec![
                 ("name", "triage".to_string()),
                 ("category", String::new()),
                 ("max_items", "0".to_string()),
-                ("hron", hron.to_string()),
+                ("when", when.to_string()),
                 ("command", "cat".to_string()),
                 ("prompt", String::new()),
                 ("enabled", "true".to_string()),

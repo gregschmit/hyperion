@@ -25,12 +25,12 @@
     requested ones first, then the urgent ones, then the rest. 0 for all of them.</small></label>
   <input type="number" id="max_items" name="max_items" value="{{ form.max_items }}" min="0" step="1">
 
-  <label for="hron">Hron <small>when it runs, in words, such as <code>every weekday at 06:00</code>,
+  <label for="when">When <small>in words, such as <code>every weekday at 06:00</code>,
     <code>every 12 hours</code> or <code>every monday, thursday at 9:00, 15:00</code>
     (<a href="https://github.com/simpllyf/hron#expression-syntax">hron</a> has more). A five-field
     cron expression works too. One to a line: the schedule runs at each one's times. The
     server's clock, unless you add a time zone: <code>in America/New_York</code>.</small></label>
-  <textarea id="hron" name="hron" rows="3" placeholder="every weekday at 06:00" required>{{ form.hron }}</textarea>
+  <textarea id="when" name="when" rows="3" placeholder="every weekday at 06:00" required>{{ form.when }}</textarea>
 
   <label for="enabled">Enabled <small>it runs at its times. Uncheck it to stop the schedule for a
     while: it then starts nothing by itself, and "Run now" still works.</small></label>

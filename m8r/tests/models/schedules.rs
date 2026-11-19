@@ -16,11 +16,11 @@ use serial_test::serial;
 
 use crate::support::{self, queue_all, start, watch, ISSUES, REQUESTS};
 
-fn params(name: &str, repo: &str, hron: &str) -> Params {
+fn params(name: &str, repo: &str, when: &str) -> Params {
     Params {
         name: name.to_string(),
         repos: repo.into(),
-        hron: hron.into(),
+        when: when.into(),
         command: "claude -p".to_string(),
         ..Params::default()
     }
@@ -212,7 +212,7 @@ async fn a_schedule_needs_a_name_a_repo_a_time_and_a_command() {
     assert!(saved(params("deploy", &here, "at six")).await.is_err());
     assert_eq!(
         saved(params("deploy", &here, " \n")).await.unwrap_err(),
-        "Give the schedule an hron: when it runs, such as every weekday at 06:00."
+        "Say when the schedule runs, such as every weekday at 06:00."
     );
     let no_command = Params {
         command: "  ".to_string(),
@@ -298,7 +298,7 @@ async fn a_change_to_a_schedule_keeps_what_it_does_not_name() {
     // A change keeps what it doesn't name.
     let moved = Changes {
         category: Some(ISSUES.to_string()),
-        hron: Some("0 7 * * *".into()),
+        when: Some("0 7 * * *".into()),
         ..Changes::default()
     };
     let (changed, repos) = schedules::Model::change(&ctx.db, schedule.id, moved)
@@ -309,7 +309,7 @@ async fn a_change_to_a_schedule_keeps_what_it_does_not_name() {
     assert_eq!(
         (
             changed.name.as_str(),
-            changed.hron.as_str(),
+            changed.when.as_str(),
             changed.command.as_str(),
             changed.prompt.as_str(),
             changed.max_items(),
@@ -352,7 +352,7 @@ async fn a_schedule_is_due_for_the_whole_minute_of_its_time_on_the_servers_clock
         .unwrap()
         .unwrap();
     // Kept as hron writes it, so the page shows how m8r read it.
-    assert_eq!(schedule.hron, "every weekday at 06:30");
+    assert_eq!(schedule.when, "every weekday at 06:30");
     assert_eq!(schedule.command, "claude -p --model opus");
 
     // A tick starts some seconds into its minute.
@@ -513,7 +513,7 @@ async fn a_schedule_runs_at_each_of_its_times() {
         ["every weekday at 06:00, 15:30", "every saturday at 12:00"]
     );
     assert_eq!(
-        schedule.hron,
+        schedule.when,
         "every weekday at 06:00, 15:30\nevery saturday at 12:00"
     );
 

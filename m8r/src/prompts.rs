@@ -7,16 +7,19 @@ use serde_json::{json, Value};
 
 use crate::models::{repos, schedules::Items, watchlist_items};
 
-/// m8r's own part of a prompt: where the agent is, how it reports, and how it changes the
-/// watchlist. A run's environment has the API's address and the token (see `tasks::tick`), so
-/// the prompt holds neither.
+/// m8r's own part of a prompt: where the agent is, that its answer is its report, how it gives
+/// m8r an artifact if it has one, and how it changes the watchlist. A run's environment has the
+/// API's address and the token (see `tasks::tick`), so the prompt holds neither.
 const M8R_PROMPT: &str = "\
 You are running in m8r, a maintainer automation tool. Nobody is here to answer questions, so
-decide for yourself.
+decide for yourself. Your answer is your report: m8r shows what you print to the developer, as
+markdown.
 
-When you finish, report what you made as artifacts. For each one, make a directory in
-{artifacts_dir}, named for what it is. Put the artifact's files in it. If the artifact is
-already online (a comment you posted, a PR/MR), put in one text file that holds only its link.
+If you also have artifacts for the developer, this is how to give them to m8r. An artifact is a
+set of files that you made, or a link to something that is already online (a comment you
+posted, a PR/MR). For each one, make a directory in
+{artifacts_dir}, named for what it is. Put the artifact's files in it, or one text file that
+holds only the link.
 
 ## How to use m8r's watchlist
 
@@ -72,8 +75,8 @@ pub const SAMPLE_ARTIFACTS_DIR: &str = "/var/lib/m8r/artifacts/1";
 pub const VARIABLES: [(&str, &str); 10] = [
     (
         "{{ m8r_prompt }}",
-        "m8r's own part: where the agent is, how it reports what it made, and how it adds, \
-         changes and removes watchlist items while it runs.",
+        "m8r's own part: where the agent is, how it gives m8r an artifact if it has one, and \
+         how it adds, changes and removes watchlist items while it runs.",
     ),
     (
         "{{ watchlist }}",

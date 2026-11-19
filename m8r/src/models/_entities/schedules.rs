@@ -14,7 +14,7 @@ pub struct Model {
     pub name: String,
     pub category: String,
     pub max_items: i64,
-    pub hron: String,
+    pub when: String,
     pub command: String,
     #[sea_orm(column_type = "Text")]
     pub prompt: String,

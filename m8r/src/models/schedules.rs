@@ -107,7 +107,7 @@ pub struct Params {
     pub repos: Lines,
     /// When it runs: hron expressions, or five-field cron expressions. It runs at each one's
     /// times.
-    pub hron: Lines,
+    pub when: Lines,
     /// Whether it runs at its times. Off, it starts nothing by itself.
     pub enabled: bool,
     pub command: String,
@@ -122,7 +122,7 @@ impl Default for Params {
             category: String::new(),
             max_items: 0,
             repos: Lines::default(),
-            hron: Lines::default(),
+            when: Lines::default(),
             enabled: true,
             command: String::new(),
             prompt: String::new(),
@@ -137,7 +137,7 @@ pub struct Changes {
     pub category: Option<String>,
     pub max_items: Option<u32>,
     pub repos: Option<Lines>,
-    pub hron: Option<Lines>,
+    pub when: Option<Lines>,
     pub enabled: Option<bool>,
     pub command: Option<String>,
     pub prompt: Option<String>,
@@ -153,7 +153,7 @@ impl Changes {
                 category: None,
                 max_items: None,
                 repos: None,
-                hron: None,
+                when: None,
                 command: None,
                 prompt: None,
             } => Some(*enabled),
@@ -191,9 +191,9 @@ impl Params {
             repos: changes
                 .repos
                 .unwrap_or_else(|| paths.join("\n").as_str().into()),
-            hron: changes
-                .hron
-                .unwrap_or_else(|| schedule.hron.as_str().into()),
+            when: changes
+                .when
+                .unwrap_or_else(|| schedule.when.as_str().into()),
             enabled: changes.enabled.unwrap_or(schedule.enabled),
             command: changes.command.unwrap_or_else(|| schedule.command.clone()),
             prompt: changes.prompt.unwrap_or_else(|| schedule.prompt.clone()),
@@ -218,12 +218,9 @@ impl Params {
         if self.command.trim().is_empty() {
             return Some("Say which command the schedule runs.".to_string());
         }
-        let mut times = self.hron.iter().peekable();
+        let mut times = self.when.iter().peekable();
         if times.peek().is_none() {
-            return Some(
-                "Give the schedule an hron: when it runs, such as every weekday at 06:00."
-                    .to_string(),
-            );
+            return Some("Say when the schedule runs, such as every weekday at 06:00.".to_string());
         }
         times.find_map(|time| parse(time).err())
     }
@@ -508,7 +505,7 @@ impl Model {
 
     /// When the schedule runs: each of these is an hron or a cron expression.
     pub fn times(&self) -> impl Iterator<Item = &str> {
-        lines(&self.hron)
+        lines(&self.when)
     }
 
     /// Whether the schedule is on, and one of its times comes in the minute of `at`.
@@ -543,12 +540,12 @@ impl ActiveModel {
         // As hron writes them, so the pages show how m8r read them.
         let mut seen = HashSet::new();
         let times: Vec<String> = params
-            .hron
+            .when
             .iter()
             .map(|time| parse(time).map_or_else(|_| time.to_string(), |read| read.to_string()))
             .filter(|time| seen.insert(time.clone()))
             .collect();
-        self.hron = Set(times.join("\n"));
+        self.when = Set(times.join("\n"));
         self.enabled = Set(params.enabled);
         self.command = Set(params.command.trim().to_string());
         self.prompt = Set(params.prompt.clone());

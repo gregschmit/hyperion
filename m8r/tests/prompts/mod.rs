@@ -81,9 +81,15 @@ async fn a_prompt_gets_each_part_where_it_says() {
         .compile("Before.\n{{ m8r_prompt }}\n\nFollow these:\n{{ watchlist }}\nAfter.")
         .unwrap();
 
-    // m8r's own part: where the agent is, where it reports, and how it keeps the watchlist.
+    // m8r's own part: where the agent is, and that what it prints is its report. An artifact
+    // is for an agent that has one, and nothing that every run must make.
     assert!(
         prompt.starts_with("Before.\nYou are running in m8r, a maintainer automation tool."),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Your answer is your report"), "{prompt}");
+    assert!(
+        prompt.contains("If you also have artifacts for the developer, this is how"),
         "{prompt}"
     );
     assert!(
