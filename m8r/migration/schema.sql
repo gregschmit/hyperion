@@ -69,7 +69,8 @@ CREATE TABLE "schedules" (
   "max_items" integer NOT NULL DEFAULT 0,
   "hron" varchar NOT NULL,
   "command" varchar NOT NULL DEFAULT '',
-  "prompt" text NOT NULL DEFAULT ''
+  "prompt" text NOT NULL DEFAULT '',
+  "enabled" boolean NOT NULL DEFAULT TRUE
 );
 
 CREATE TABLE "tokens" (

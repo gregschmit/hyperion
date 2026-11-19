@@ -14,7 +14,8 @@ use crate::{
 };
 
 /// What a schedule's form sends. A repo's checkbox sends `repos` once, so a form can send it
-/// several times, and its number is text.
+/// several times, and its number is text. The box for `enabled` sends it only when it's
+/// checked.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Sent {
@@ -23,6 +24,7 @@ pub struct Sent {
     max_items: String,
     repos: Vec<String>,
     hron: String,
+    enabled: bool,
     command: String,
     prompt: String,
 }
@@ -44,6 +46,7 @@ impl Sent {
             max_items: max_items.unwrap_or_default(),
             repos: self.repos.join("\n").as_str().into(),
             hron: self.hron.as_str().into(),
+            enabled: self.enabled,
             command: self.command,
             prompt: self.prompt,
         };
@@ -181,8 +184,22 @@ pub async fn remove(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Resul
     format::redirect("/schedules")
 }
 
+/// Turn the schedule on: it runs at its times again.
+#[debug_handler]
+pub async fn enable(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Result<Response> {
+    schedules::Model::switch(&ctx.db, id, true).await?;
+    format::redirect("/schedules")
+}
+
+/// Turn the schedule off: it starts nothing at its times, and its runs that wait are dropped.
+#[debug_handler]
+pub async fn disable(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Result<Response> {
+    schedules::Model::switch(&ctx.db, id, false).await?;
+    format::redirect("/schedules")
+}
+
 /// Queue the schedule's runs now, one for each repo, to try its command and prompt. The next
-/// tick starts them.
+/// tick starts them, whether the schedule is on or off.
 #[debug_handler]
 pub async fn run(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Result<Response> {
     let (schedule, repos) = schedules::Model::find(&ctx.db, id).await?;
@@ -198,6 +215,8 @@ pub fn routes() -> Routes {
         .add("/new", get(new))
         .add("/{id}", get(edit))
         .add("/{id}", post(update))
+        .add("/{id}/enable", post(enable))
+        .add("/{id}/disable", post(disable))
         .add("/{id}/remove", post(remove))
         .add("/{id}/run", post(run))
 }

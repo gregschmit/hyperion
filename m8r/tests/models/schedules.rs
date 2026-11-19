@@ -371,6 +371,110 @@ async fn a_schedule_is_due_for_the_whole_minute_of_its_time_on_the_servers_clock
 
 #[tokio::test]
 #[serial]
+async fn a_schedule_that_is_not_enabled_starts_nothing_at_its_times() {
+    let boot = boot_test::<App>().await.unwrap();
+    let db = &boot.app_context.db;
+    let (src, tests) = (format!("{}/src", here()), format!("{}/tests", here()));
+    for path in [&src, &tests] {
+        support::repo(db, path, "").await;
+    }
+    let asked = params("triage", &format!("{src}\n{tests}"), "30 6 * * 1-5");
+    let (schedule, _) = schedules::Model::create(db, &asked).await.unwrap().unwrap();
+    let monday = chicago(16, 6, 30, 0);
+    let status = |run: &runs::Model| {
+        let id = run.id;
+        async move { runs::Model::find(db, id).await.ok().map(|run| run.status) }
+    };
+    // A new schedule is enabled.
+    assert!(schedule.enabled && schedule.is_due(&monday));
+    assert!(schedule.next(&monday).is_some());
+
+    // In one clone its run is in progress, and in the other one waits.
+    let mut queued = queue_all(db, &schedule).await;
+    let in_progress = start(db, queued.remove(0), "p").await;
+    let waiting = queued.remove(0);
+
+    // Off: its time comes and goes. The run that waited is dropped, and the one in progress
+    // goes on.
+    let (off, repos) = schedules::Model::switch(db, schedule.id, false)
+        .await
+        .unwrap();
+    assert!(!off.enabled && !off.is_due(&monday));
+    assert_eq!(off.next(&monday), None);
+    assert_eq!(repos.len(), 2);
+    assert_eq!(status(&waiting).await, None);
+    assert_eq!(status(&in_progress).await.as_deref(), Some("running"));
+
+    // "Run now" is still yours to press. Its runs wait, also when the schedule is saved again
+    // as it is, which is off.
+    let asked_for = queue_all(db, &off).await;
+    let renamed = Changes {
+        name: Some("mornings".to_string()),
+        ..Changes::default()
+    };
+    let (still_off, _) = schedules::Model::change(db, off.id, renamed)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!still_off.enabled);
+    for run in &asked_for {
+        assert_eq!(status(run).await.as_deref(), Some("queued"));
+    }
+
+    // On again, and off with another change: that's checked like any change, and drops the
+    // runs that wait too.
+    let on = Changes {
+        enabled: Some(true),
+        ..Changes::default()
+    };
+    let (on, _) = schedules::Model::change(db, off.id, on)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(on.is_due(&monday));
+    let off_with_cat = Changes {
+        enabled: Some(false),
+        command: Some("cat".to_string()),
+        ..Changes::default()
+    };
+    let (off, _) = schedules::Model::change(db, on.id, off_with_cat)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((off.enabled, off.command.as_str()), (false, "cat"));
+    for run in &asked_for {
+        assert_eq!(status(run).await, None);
+    }
+
+    // A schedule that can't be saved as it is can still be turned off, and on: here, its
+    // prompt doesn't compile.
+    let mut broken = off.into_active_model();
+    broken.prompt = Set("{{ gone }}".to_string());
+    let broken = broken.update(db).await.unwrap();
+    let renamed = Changes {
+        name: Some("evenings".to_string()),
+        ..Changes::default()
+    };
+    let refused = schedules::Model::change(db, broken.id, renamed).await;
+    assert!(refused
+        .unwrap()
+        .unwrap_err()
+        .starts_with("The prompt doesn't compile."));
+    for enabled in [true, false] {
+        let switch = Changes {
+            enabled: Some(enabled),
+            ..Changes::default()
+        };
+        let (switched, _) = schedules::Model::change(db, broken.id, switch)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(switched.enabled, enabled);
+    }
+}
+
+#[tokio::test]
+#[serial]
 async fn a_schedule_can_name_a_time_zone_of_its_own() {
     let boot = boot_test::<App>().await.unwrap();
     let here = repo_here(&boot.app_context.db).await;

@@ -5,6 +5,30 @@
 <p><span class="status {{ run.status }}">{{ run.status }}</span>
   <span class="muted">· created at {{ run.created_at }}{% if run.started_at %} · started at {{ run.started_at }}{% endif %}{% if run.finished_at %} · finished at {{ run.finished_at }}{% endif %}</span></p>
 
+{% if not shared %}
+<details class="share">
+  <summary>Share</summary>
+  <p class="muted">Whoever has this link can read this page until {{ share.until }}, with no
+    session. It opens nothing else of m8r.</p>
+  <input type="text" class="wide mono" value="{{ share.url }}" readonly aria-label="Share link">
+  <p class="muted copied" hidden>Copied to the clipboard.</p>
+</details>
+<script>
+  {
+    // "Share" shows the link, and copies it.
+    const share = document.querySelector('details.share');
+    const link = share.querySelector('input');
+    share.querySelector('summary').addEventListener('click', () => {
+      if (share.open) return;
+      navigator.clipboard?.writeText(link.value).then(() => {
+        share.querySelector('.copied').hidden = false;
+      });
+    });
+    link.addEventListener('focus', () => link.select());
+  }
+</script>
+{% endif %}
+
 {% if run.error %}
 <div class="problem">{{ run.error }}</div>
 {% endif %}
@@ -15,8 +39,12 @@
 <h2>Artifacts</h2>
 <ul class="artifacts">
   {% for artifact in run.artifacts %}
+  {% if shared and artifact.hosted %}
+  <li>{{ artifact.name }} <small>files, which this link doesn't open</small></li>
+  {% else %}
   <li><a href="{{ artifact.href }}">{{ artifact.name }}</a>
     <small>{% if artifact.hosted %}files{% else %}{{ artifact.href }}{% endif %}</small></li>
+  {% endif %}
   {% else %}
   <li class="muted">None.</li>
   {% endfor %}
@@ -24,12 +52,21 @@
 
 <h2>Output</h2>
 {% if run.output %}
-<pre>{{ run.output }}</pre>
-{% elif run.status == "running" %}
+<div class="tabbed">
+  <input type="radio" name="output" id="output-markdown" checked>
+  <label for="output-markdown">Markdown</label>
+  <input type="radio" name="output" id="output-raw">
+  <label for="output-raw">Raw</label>
+  <div class="markdown">{{ output_html | safe }}</div>
+  <div><pre>{{ run.output }}</pre></div>
+</div>
+{% elif run.finished_at %}
+<p class="muted">Nothing.</p>
+{% elif shared %}
+<p class="muted">Nothing yet.</p>
+{% else %}
 <p class="muted">What the command prints shows here when the run ends. To read it now, as it
   comes: <code>m8r task output id:{{ run.id }}</code></p>
-{% else %}
-<p class="muted">Nothing.</p>
 {% endif %}
 
 <h2>Prompt</h2>

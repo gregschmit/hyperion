@@ -355,7 +355,7 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
             .await;
         let (status, added) = answer(&res);
         assert_eq!(status, 200, "{added}");
-        // The times are in words, and the next one is a moment.
+        // The times are in words, and the next one is a moment. A new schedule is enabled.
         let next = added["next"].as_str().unwrap().to_string();
         assert!(next.ends_with('Z') && next.len() == 20, "{next}");
         assert_eq!(
@@ -367,6 +367,7 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
                 "max_items": 50,
                 "repos": [src, tests],
                 "hron": ["every weekday at 06:00", "every saturday at 10:00"],
+                "enabled": true,
                 "command": "claude -p",
                 "prompt": "{{ m8r_prompt }}\n\n{{ watchlist }}",
                 "next": next,
@@ -446,6 +447,26 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
             .json(&json!({ "repos": format!("{tests}\n{src}") }))
             .await;
         assert_eq!(res.json::<Value>()["repos"], json!([src, tests]));
+        // Off, it has no next time. On again, it has one.
+        let switch = |enabled: bool| {
+            let (request, token) = (&request, token.clone());
+            async move {
+                let res = request
+                    .patch(&format!("{schedules}/1"))
+                    .authorization_bearer(&token)
+                    .json(&json!({ "enabled": enabled }))
+                    .await;
+                answer(&res).1
+            }
+        };
+        let off = switch(false).await;
+        assert_eq!(
+            (&off["enabled"], &off["next"], &off["name"]),
+            (&json!(false), &json!(null), &json!("evenings"))
+        );
+        let on = switch(true).await;
+        assert_eq!(on["enabled"], json!(true));
+        assert!(on["next"].is_string(), "{on}");
         let res = request
             .patch(&format!("{schedules}/1"))
             .authorization_bearer(&token)

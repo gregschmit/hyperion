@@ -61,8 +61,24 @@ async fn an_access_link_starts_a_session_any_number_of_times() {
         assert!(cookie.contains("SameSite=Lax"), "{cookie}");
         assert!(cookie.contains("Max-Age=28800"), "{cookie}");
 
-        assert_eq!(request.get("/").await.status_code(), 200);
-        assert_eq!(request.get("/static/m8r.css").await.status_code(), 200);
+        let res = request.get("/").await;
+        assert_eq!(res.status_code(), 200);
+        // A page asks for the stylesheet at an address that changes when the stylesheet does,
+        // so a browser never styles a new page with what it kept of an old one.
+        let page = res.text();
+        let stylesheet = page
+            .split_once(r#"<link rel="stylesheet" href=""#)
+            .unwrap()
+            .1;
+        let stylesheet = stylesheet.split_once('"').unwrap().0;
+        let version = stylesheet.strip_prefix("/static/m8r.css?v=").unwrap();
+        assert!(
+            version.len() == 8 && version.chars().all(|c| c.is_ascii_hexdigit()),
+            "{stylesheet}"
+        );
+        let res = request.get(stylesheet).await;
+        assert_eq!(res.status_code(), 200);
+        assert!(res.text().contains(".tabbed"), "{stylesheet}");
         // The same link works again, and keeps the rest of the address.
         let res = request
             .get(&format!("/runs{}&x=1", link.replacen('/', "", 1)))

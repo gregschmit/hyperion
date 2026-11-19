@@ -45,9 +45,10 @@ pub fn schedule((schedule, repos): &schedules::Listed) -> Value {
         // The paths of the repos' clones.
         "repos": repos.iter().map(|repo| repo.path.as_str()).collect::<Vec<_>>(),
         "hron": schedule.times().collect::<Vec<_>>(),
+        "enabled": schedule.enabled,
         "command": schedule.command,
         "prompt": schedule.prompt,
-        // The first of its times to come.
+        // The first of its times to come. None while it's off.
         "next": next,
     })
 }

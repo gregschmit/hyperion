@@ -1,8 +1,10 @@
 #![allow(clippy::missing_errors_doc)]
+use axum::Extension;
 use loco_rs::prelude::*;
 use serde_json::json;
 
 use crate::{
+    initializers::access::{self, Guest},
     models::{artifacts, runs, schedules},
     views,
 };
@@ -27,16 +29,27 @@ pub async fn index(
     views::page(&v, &ctx, "runs/index.html", "runs", data).await
 }
 
-/// One run: its command, what it reported, what it printed, and the prompt it got.
+/// One run: its command, what it reported, what it printed, and the prompt it got. A guest,
+/// who holds the run's share link, gets the same and nothing more of m8r. Anyone else gets a
+/// share link to hand on.
 #[debug_handler]
 pub async fn show(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
     Path(id): Path<i64>,
+    guest: Option<Extension<Guest>>,
 ) -> Result<Response> {
     let run = runs::Model::find(&ctx.db, id).await?;
     let reported = artifacts::Model::of_run(&ctx.db, run.id).await?;
-    let data = json!({ "run": views::run(&run, &reported) });
+    let mut data = json!({
+        "run": views::run(&run, &reported),
+        "output_html": views::markdown::render(&run.output),
+    });
+    if guest.is_some() {
+        return views::guest_page(&v, "runs/show.html", data);
+    }
+    let (url, until) = access::share_link(&ctx, run.id, access::SHARE_LIMIT.as_secs())?;
+    data["share"] = json!({ "url": url, "until": views::time(&until.into()) });
     views::page(&v, &ctx, "runs/show.html", "runs", data).await
 }
 

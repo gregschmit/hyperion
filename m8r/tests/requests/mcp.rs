@@ -193,6 +193,7 @@ async fn a_token_sees_the_tools_of_what_it_covers() {
             json!("integer")
         );
         assert_eq!(schedule["properties"]["repos"]["type"], json!("array"));
+        assert_eq!(schedule["properties"]["enabled"]["type"], json!("boolean"));
     })
     .await;
 }
@@ -372,6 +373,17 @@ async fn the_other_tools_do_what_the_api_does() {
             )
         );
         assert_eq!(schedule["repos"], json!([src]));
+        // A new schedule is enabled. Off, it has no next time.
+        assert_eq!(schedule["enabled"], json!(true));
+        let off = json!({ "id": 1, "enabled": false });
+        let off = call(&request, &mac, "update_schedule", off).await.unwrap();
+        assert_eq!(
+            (&off["enabled"], &off["next"], &off["name"]),
+            (&json!(false), &json!(null), &json!("release notes"))
+        );
+        let on = json!({ "id": 1, "enabled": true });
+        let on = call(&request, &mac, "update_schedule", on).await.unwrap();
+        assert!(on["next"].is_string(), "{on}");
         let in_use = call(&request, &mac, "remove_repo", json!({ "id": 1 })).await;
         assert!(in_use
             .unwrap_err()

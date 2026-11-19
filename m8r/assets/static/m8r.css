@@ -106,3 +106,35 @@ td input[type="text"], input.wide { width: 100%; }
 /* An error's message can have lines of its own. */
 td.message { white-space: pre-wrap; overflow-wrap: anywhere; }
 ul.artifacts { margin: 0.25rem 0 0; padding-left: 1.2rem; }
+
+/* A run's share link: "Share" opens it. */
+details.share { margin: 0.75rem 0; }
+details.share summary { display: inline-block; color: var(--link); cursor: pointer; }
+details.share p { margin: 0.5rem 0 0.25rem; }
+
+/* Two ways to show one text, and tabs that pick one. No script: a tab is the label of a radio
+   button, and these show the part of the one that's checked. */
+.tabbed > input { position: absolute; opacity: 0; }
+.tabbed > label { display: inline-block; margin: 0 1rem 0 0; font-weight: 400; color: var(--link); cursor: pointer; }
+.tabbed > input:checked + label { color: var(--text); font-weight: 600; cursor: default; }
+.tabbed > input:focus-visible + label { outline: 2px solid var(--link); outline-offset: 2px; }
+.tabbed > div { display: none; }
+.tabbed > input:nth-of-type(1):checked ~ div:nth-of-type(1),
+.tabbed > input:nth-of-type(2):checked ~ div:nth-of-type(2) { display: block; }
+
+/* What a run printed, as markdown. */
+.markdown {
+  margin: 0.5rem 0 1rem;
+  padding: 0.25rem 1rem;
+  overflow-wrap: anywhere;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 { margin: 1rem 0 0.5rem; font-size: 1.05rem; }
+.markdown h1 { font-size: 1.3rem; }
+.markdown h2 { font-size: 1.15rem; }
+.markdown pre { background: light-dark(#fff, #1b1b1b); }
+.markdown table { width: auto; margin: 0.75rem 0; }
+.markdown blockquote { margin: 0.75rem 0; padding-left: 0.9rem; color: var(--muted); border-left: 3px solid var(--line); }
+.markdown li > input { margin-right: 0.35rem; }

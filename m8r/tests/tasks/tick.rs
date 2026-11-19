@@ -373,6 +373,36 @@ async fn a_tick_queues_the_schedules_that_are_due() {
 
 #[tokio::test]
 #[serial]
+async fn a_schedule_that_is_not_enabled_runs_only_when_asked() {
+    let boot = boot_test::<App>().await.unwrap();
+    let sandbox = Sandbox::new("tick-not-enabled");
+    let ctx = sandbox.context(&boot.app_context, "cat");
+    let params = schedules::Params {
+        hron: "every minute".into(),
+        enabled: false,
+        ..schedule_params(&sandbox.repo(), "Go.")
+    };
+    let off = schedule(&ctx, &params).await;
+
+    // Its time comes every minute, and nothing starts. m8r has a schedule, so nothing is
+    // wrong either.
+    tick(&ctx).await;
+    assert!(runs::Model::recent(&ctx.db, 10).await.unwrap().is_empty());
+    assert!(errors(&ctx).await.is_empty());
+
+    // "Run now" queues its run all the same, and a tick starts it.
+    queue_one(&ctx.db, &off).await;
+    tick(&ctx).await;
+    let ran = runs::Model::recent(&ctx.db, 10).await.unwrap();
+    assert_eq!(ran.len(), 1);
+    assert_eq!(
+        (ran[0].status.as_str(), ran[0].output.as_str()),
+        ("ok", "Go.")
+    );
+}
+
+#[tokio::test]
+#[serial]
 async fn a_schedules_error_lasts_until_its_next_run_goes_well() {
     let boot = boot_test::<App>().await.unwrap();
     let sandbox = Sandbox::new("tick-schedule-error");

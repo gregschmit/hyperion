@@ -48,6 +48,8 @@ sha2 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
 rmcp = { version = "3.10", default-features = false, features = ["server", "transport-streamable-http-server"] }
+# What a run printed shows as markdown.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 [[bin]]
 name = "m8r-cli"

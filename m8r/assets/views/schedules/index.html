@@ -6,13 +6,15 @@
   prompt. A schedule has a run for each of its repos, and they start together. A run starts the
   command in its repo's clone, through the login shell of m8r's user, and pipes the prompt to it.
   The prompt gets the watchlist items of that repo: the ones of the schedule's category, and no
-  more than its max items (0: all of them).</p>
+  more than its max items (0: all of them). A schedule that isn't enabled starts nothing at its
+  times, and "Run now" still works.</p>
 <p><a href="/schedules/new">New schedule</a></p>
 <table>
-  <tr><th>Name</th><th>Category</th><th>Max items</th><th>Repos and command</th><th>Hron</th><th>Next</th><th></th></tr>
+  <tr><th>Name</th><th>Enabled</th><th>Category</th><th>Max items</th><th>Repos and command</th><th>Hron</th><th>Next</th><th></th></tr>
   {% for schedule in schedules %}
   <tr>
     <td><a href="/schedules/{{ schedule.id }}">{{ schedule.name }}</a></td>
+    <td>{% if schedule.enabled %}yes{% else %}<span class="status queued">no</span>{% endif %}</td>
     <td class="nowrap">{% if schedule.category %}{{ schedule.category }}{% else %}<span class="muted">no items</span>{% endif %}</td>
     <td>{{ schedule.max_items }}</td>
     <td class="mono">{% for repo in schedule.repos %}{{ repo }}<br>{% endfor %}<small>{{ schedule.command }}</small></td>
@@ -21,11 +23,16 @@
     <td class="actions">
       <form method="get" action="/schedules/{{ schedule.id }}"><button>Edit</button></form>
       <form method="post" action="/schedules/{{ schedule.id }}/run"><button>Run now</button></form>
+      {% if schedule.enabled %}
+      <form method="post" action="/schedules/{{ schedule.id }}/disable"><button>Disable</button></form>
+      {% else %}
+      <form method="post" action="/schedules/{{ schedule.id }}/enable"><button class="primary">Enable</button></form>
+      {% endif %}
       <form method="post" action="/schedules/{{ schedule.id }}/remove"><button class="danger">Remove</button></form>
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="7" class="muted">No schedules.</td></tr>
+  <tr><td colspan="8" class="muted">No schedules.</td></tr>
   {% endfor %}
 </table>
 {% endblock content %}

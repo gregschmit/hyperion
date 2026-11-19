@@ -5,9 +5,14 @@
 //! signed cookie, which the server stops accepting after `auth.session.max_age`), and
 //! redirects to the same page without the token.
 //!
+//! One page opens with no session: a run's, for whoever holds its share link. That link's token
+//! is good for the one run, to read it, until the token says. It opens nothing else.
+//!
 //! The API (`/api`) and the MCP endpoint (`/mcp`) want a token in the `Authorization` header,
 //! and never take a session: another site can make a browser send a cookie, but not a header.
 //! A token is one that `task token` made, or a run's own, which works while the run does.
+
+use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::{
@@ -34,8 +39,15 @@ use crate::{
     settings::Settings,
 };
 
-/// The query parameter that carries an access link's token.
+/// The query parameter that carries a link's token: an access link's, or a share link's.
 const TOKEN: &str = "token";
+
+/// How much of an HMAC-SHA256 a link's token carries. Half of it is plenty to keep anyone
+/// without the secret from making one, and it keeps a link short.
+const SEAL: usize = 16;
+
+/// How long a run's share link works.
+pub const SHARE_LIMIT: Duration = Duration::from_secs(72 * 60 * 60);
 
 /// What a session's user is called. m8r has one user: whoever holds a link.
 const USER: &str = "m8r";
@@ -59,6 +71,11 @@ impl Caller {
         tokens::covers(&self.scope, resource)
     }
 }
+
+/// Who asks for a run's page with its share link: the guard marks the request, so that the
+/// page shows the run and no way to the rest of m8r.
+#[derive(Debug, Clone, Copy)]
+pub struct Guest;
 
 pub struct AccessInitializer;
 
@@ -87,9 +104,6 @@ impl Link {
     const NAME: usize = 8;
     /// The bytes that say the three things above.
     const FACTS: usize = 1 + 4 + Self::NAME;
-    /// How much of the facts' HMAC-SHA256 a token carries. Half of it is plenty to keep
-    /// anyone without the secret from making one, and it keeps a link short.
-    const SEAL: usize = 16;
 
     /// The token: the facts and their seal, as text that fits in an address. 29 bytes, so 39
     /// characters, where a JWT of the same has some 250.
@@ -98,14 +112,14 @@ impl Link {
         bytes.extend(self.expires.to_be_bytes());
         bytes.extend(self.name);
         let seal = Self::seal(secret, &bytes)?.finalize().into_bytes();
-        bytes.extend(&seal[..Self::SEAL]);
+        bytes.extend(&seal[..SEAL]);
         Some(URL_SAFE_NO_PAD.encode(bytes))
     }
 
     /// Read a token that m8r made with this secret. Any other text is none.
     fn read(secret: &str, token: &str) -> Option<Self> {
         let bytes = URL_SAFE_NO_PAD.decode(token).ok()?;
-        if bytes.len() != Self::FACTS + Self::SEAL {
+        if bytes.len() != Self::FACTS + SEAL {
             return None;
         }
         let (facts, seal) = bytes.split_at(Self::FACTS);
@@ -130,17 +144,71 @@ impl Link {
     }
 }
 
+/// What a share link's token says: when the link stops working, in seconds since 1970. The
+/// run that it opens is in the link's address, and the seal covers both, so a token fits no
+/// other run.
+#[derive(Debug, PartialEq, Eq)]
+struct Share {
+    expires: u32,
+}
+
+impl Share {
+    /// The bytes that say when.
+    const FACTS: usize = 4;
+
+    /// The token for run `run_id`: 20 bytes, so 27 characters.
+    fn token(&self, secret: &str, run_id: i64) -> Option<String> {
+        let mut bytes = self.expires.to_be_bytes().to_vec();
+        let seal = self.seal(secret, run_id)?.finalize().into_bytes();
+        bytes.extend(&seal[..SEAL]);
+        Some(URL_SAFE_NO_PAD.encode(bytes))
+    }
+
+    /// Read a token that m8r made with this secret for run `run_id`. Any other text is none.
+    fn read(secret: &str, run_id: i64, token: &str) -> Option<Self> {
+        let bytes = URL_SAFE_NO_PAD.decode(token).ok()?;
+        if bytes.len() != Self::FACTS + SEAL {
+            return None;
+        }
+        let (expires, seal) = bytes.split_at(Self::FACTS);
+        let share = Self {
+            expires: u32::from_be_bytes(expires.try_into().ok()?),
+        };
+        // In constant time: the answer mustn't say how much of a guess was right.
+        share
+            .seal(secret, run_id)?
+            .verify_truncated_left(seal)
+            .ok()?;
+        Some(share)
+    }
+
+    /// The HMAC of the run and the time under m8r's secret. Its first words keep it apart
+    /// from an access link's.
+    fn seal(&self, secret: &str, run_id: i64) -> Option<Hmac<Sha256>> {
+        let mut seal = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
+        seal.update(b"m8r share link\n");
+        seal.update(&run_id.to_be_bytes());
+        seal.update(&self.expires.to_be_bytes());
+        Some(seal)
+    }
+}
+
+/// The time `seconds` from now, as a link's token holds it.
+fn expiry(seconds: u64) -> u32 {
+    let now = u64::try_from(Utc::now().timestamp()).unwrap_or_default();
+    u32::try_from(now.saturating_add(seconds)).unwrap_or(u32::MAX)
+}
+
 /// Make an access link that works for `seconds`, any number of times or just `once`.
 ///
 /// # Errors
 /// When the JWT settings, which hold m8r's secret, are missing.
 pub fn link(ctx: &AppContext, seconds: u64, once: bool) -> Result<String> {
-    let now = u64::try_from(Utc::now().timestamp()).unwrap_or_default();
     let mut name = [0; Link::NAME];
     name.copy_from_slice(hash::random_string(Link::NAME).as_bytes());
     let link = Link {
         once,
-        expires: u32::try_from(now.saturating_add(seconds)).unwrap_or(u32::MAX),
+        expires: expiry(seconds),
         name,
     };
     let token = link
@@ -148,6 +216,27 @@ pub fn link(ctx: &AppContext, seconds: u64, once: bool) -> Result<String> {
         .ok_or_else(|| Error::string("m8r couldn't sign the link"))?;
     let url = Settings::from_context(ctx)?.url;
     Ok(format!("{}/?{TOKEN}={token}", url.trim_end_matches('/')))
+}
+
+/// Make a share link for run `run_id`, and say when it stops working. For `seconds`, it opens
+/// that run's page with no session, to read, and nothing else.
+///
+/// # Errors
+/// When the JWT settings, which hold m8r's secret, are missing.
+pub fn share_link(ctx: &AppContext, run_id: i64, seconds: u64) -> Result<(String, DateTime<Utc>)> {
+    let share = Share {
+        expires: expiry(seconds),
+    };
+    let token = share
+        .token(&ctx.config.get_jwt_config()?.secret, run_id)
+        .ok_or_else(|| Error::string("m8r couldn't sign the link"))?;
+    let until = DateTime::<Utc>::from_timestamp(share.expires.into(), 0).unwrap_or_default();
+    let url = Settings::from_context(ctx)?.url;
+    let link = format!(
+        "{}/runs/{run_id}?{TOKEN}={token}",
+        url.trim_end_matches('/')
+    );
+    Ok((link, until))
 }
 
 /// Make the token that lets run `run_id` use the API. It works while the run is running, and
@@ -213,6 +302,17 @@ async fn guard(State(ctx): State<AppContext>, request: Request, next: Next) -> R
 
     if parts.method == Method::GET {
         if let Some(token) = query_token(&parts) {
+            // A share link's token opens its run's page, session or none.
+            match shared(&ctx, &parts, &token) {
+                Some(true) => {
+                    parts.extensions.insert(Guest);
+                    return for_guest(next.run(Request::from_parts(parts, body)).await);
+                }
+                Some(false) => {
+                    return turn_away("That link to a run has expired. Ask for a new one.", "");
+                }
+                None => {}
+            }
             return match redeem(&ctx, &token).await {
                 Ok(()) => {
                     let session = session.renew().set_user_id(USER);
@@ -321,6 +421,25 @@ async fn redeem(ctx: &AppContext, token: &str) -> std::result::Result<(), String
     Ok(())
 }
 
+/// Whether the request's token is the share link's of the run whose page it asks for, and
+/// if so, whether the link still works. None: it may be an access link's token.
+fn shared(ctx: &AppContext, parts: &Parts, token: &str) -> Option<bool> {
+    let run_id = parts.uri.path().strip_prefix("/runs/")?.parse().ok()?;
+    let secret = &ctx.config.get_jwt_config().ok()?.secret;
+    let share = Share::read(secret, run_id, token)?;
+    Some(Utc::now().timestamp() <= i64::from(share.expires))
+}
+
+/// A guest's page is kept nowhere, and a link on it tells the next site nothing of this
+/// address, which holds the token.
+fn for_guest(page: Response) -> Response {
+    let headers = [
+        (header::CACHE_CONTROL, "no-store"),
+        (header::REFERRER_POLICY, "no-referrer"),
+    ];
+    (headers, page).into_response()
+}
+
 fn query_token(parts: &Parts) -> Option<String> {
     let pair = parts
         .uri
@@ -350,17 +469,21 @@ fn no_store(response: impl IntoResponse) -> impl IntoResponse {
     ([(header::CACHE_CONTROL, "no-store")], response)
 }
 
-/// The page for a request with no session. It stands alone: the stylesheet needs a session
-/// too.
+/// The page for a request with no session, which says how to get one.
 fn refuse(why: &str) -> Response {
+    let how = "<p>Make a link on the server, and open it here:</p><pre>m8r task link</pre>";
+    turn_away(why, how)
+}
+
+/// The page for a request that gets nothing: why, and what to do, as HTML. It stands alone:
+/// the stylesheet needs a session too.
+fn turn_away(why: &str, how: &str) -> Response {
     let page = format!(
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <meta name=\"color-scheme\" content=\"light dark\"><title>m8r</title></head>\
          <body style=\"font-family: system-ui, sans-serif; max-width: 34rem; margin: 4rem auto; \
-         padding: 0 1rem; line-height: 1.5\"><h1>m8r</h1><p>{why}</p>\
-         <p>Make a link on the server, and open it here:</p><pre>m8r task link</pre>\
-         </body></html>\n"
+         padding: 0 1rem; line-height: 1.5\"><h1>m8r</h1><p>{why}</p>{how}</body></html>\n"
     );
     no_store((StatusCode::UNAUTHORIZED, Html(page))).into_response()
 }

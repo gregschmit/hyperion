@@ -91,7 +91,7 @@ fn lines(text: &str) -> impl Iterator<Item = &str> {
 }
 
 /// What a schedule's form and the API send.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Params {
     /// What the schedule is called: what it's for, in your words.
@@ -108,8 +108,26 @@ pub struct Params {
     /// When it runs: hron expressions, or five-field cron expressions. It runs at each one's
     /// times.
     pub hron: Lines,
+    /// Whether it runs at its times. Off, it starts nothing by itself.
+    pub enabled: bool,
     pub command: String,
     pub prompt: String,
+}
+
+impl Default for Params {
+    /// Blank, and on: a schedule runs at its times unless someone turns it off.
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            category: String::new(),
+            max_items: 0,
+            repos: Lines::default(),
+            hron: Lines::default(),
+            enabled: true,
+            command: String::new(),
+            prompt: String::new(),
+        }
+    }
 }
 
 /// What changes on a schedule: only what's there.
@@ -120,8 +138,28 @@ pub struct Changes {
     pub max_items: Option<u32>,
     pub repos: Option<Lines>,
     pub hron: Option<Lines>,
+    pub enabled: Option<bool>,
     pub command: Option<String>,
     pub prompt: Option<String>,
+}
+
+impl Changes {
+    /// On or off, if that's all that these change.
+    fn only_enabled(&self) -> Option<bool> {
+        match self {
+            Self {
+                enabled: Some(enabled),
+                name: None,
+                category: None,
+                max_items: None,
+                repos: None,
+                hron: None,
+                command: None,
+                prompt: None,
+            } => Some(*enabled),
+            _ => None,
+        }
+    }
 }
 
 /// A schedule and its repos: what the pages and the API show.
@@ -156,6 +194,7 @@ impl Params {
             hron: changes
                 .hron
                 .unwrap_or_else(|| schedule.hron.as_str().into()),
+            enabled: changes.enabled.unwrap_or(schedule.enabled),
             command: changes.command.unwrap_or_else(|| schedule.command.clone()),
             prompt: changes.prompt.unwrap_or_else(|| schedule.prompt.clone()),
         }
@@ -373,6 +412,7 @@ impl Model {
             Ok(repos) => repos,
             Err(problem) => return Ok(Err(problem)),
         };
+        let was_enabled = self.enabled;
         let txn = db.begin().await?;
         let mut schedule = self.into_active_model();
         schedule.set(params);
@@ -380,8 +420,14 @@ impl Model {
         schedule.run_in(&txn, &repos).await?;
         txn.commit().await?;
         // A repo that left the schedule leaves nothing behind: no run that waits to start
-        // there, and no error that only a run there could clear.
-        runs::Model::unqueue(db, schedule.id, &repos).await?;
+        // there, and no error that only a run there could clear. A schedule that was turned
+        // off leaves no run that waits at all.
+        let waits_in: &[repos::Model] = if was_enabled && !schedule.enabled {
+            &[]
+        } else {
+            &repos
+        };
+        runs::Model::unqueue(db, schedule.id, waits_in).await?;
         let paths = repos.iter().map(|repo| repo.path.as_str());
         errors::Model::clear_schedule(db, schedule.id, paths).await?;
         Ok(Ok((schedule, repos)))
@@ -396,9 +442,30 @@ impl Model {
         id: i64,
         changes: Changes,
     ) -> ModelResult<Checked<Listed>> {
+        if let Some(enabled) = changes.only_enabled() {
+            return Ok(Ok(Self::switch(db, id, enabled).await?));
+        }
         let listed = Self::find(db, id).await?;
         let params = Params::changed(&listed, changes);
         listed.0.revised(db, &params).await
+    }
+
+    /// Turn schedule `id` on or off, and check nothing else of it: off must work for a
+    /// schedule that can't be saved as it is, too. Off, it starts nothing at its times, and
+    /// its runs that wait are dropped.
+    ///
+    /// # Errors
+    /// `ModelError::EntityNotFound` when there's no such schedule, or when a query fails.
+    pub async fn switch(db: &DatabaseConnection, id: i64, enabled: bool) -> ModelResult<Listed> {
+        let (schedule, repos) = Self::find(db, id).await?;
+        let stopped = schedule.enabled && !enabled;
+        let mut schedule = schedule.into_active_model();
+        schedule.enabled = Set(enabled);
+        let schedule = schedule.update(db).await?;
+        if stopped {
+            runs::Model::unqueue(db, schedule.id, &[]).await?;
+        }
+        Ok((schedule, repos))
     }
 
     /// Remove schedule `id`. Its runs stay in the history.
@@ -444,17 +511,22 @@ impl Model {
         lines(&self.hron)
     }
 
-    /// Whether one of the schedule's times comes in the minute of `at`.
+    /// Whether the schedule is on, and one of its times comes in the minute of `at`.
     #[must_use]
     pub fn is_due(&self, at: &Zoned) -> bool {
-        self.times()
-            .filter_map(|time| parse(time).ok())
-            .any(|schedule| on_clock_of(schedule, at).matches(at))
+        self.enabled
+            && self
+                .times()
+                .filter_map(|time| parse(time).ok())
+                .any(|schedule| on_clock_of(schedule, at).matches(at))
     }
 
-    /// The schedule's next time after `at`, on the clock of `at`.
+    /// The schedule's next time after `at`, on the clock of `at`. None while it's off.
     #[must_use]
     pub fn next(&self, at: &Zoned) -> Option<Zoned> {
+        if !self.enabled {
+            return None;
+        }
         let next = self
             .times()
             .filter_map(|time| on_clock_of(parse(time).ok()?, at).next_from(at))
@@ -477,6 +549,7 @@ impl ActiveModel {
             .filter(|time| seen.insert(time.clone()))
             .collect();
         self.hron = Set(times.join("\n"));
+        self.enabled = Set(params.enabled);
         self.command = Set(params.command.trim().to_string());
         self.prompt = Set(params.prompt.clone());
     }

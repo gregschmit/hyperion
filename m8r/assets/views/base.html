@@ -4,10 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}m8r{% endblock title %}</title>
-  <link rel="stylesheet" href="/static/m8r.css">
+  {% if shared %}
+  <style>{{ styles | safe }}</style>
+  {% else %}
+  <link rel="stylesheet" href="{{ stylesheet }}">
+  {% endif %}
 </head>
 <body>
 <header>
+  {% if shared %}
+  <span class="brand">m8r</span>
+  {% else %}
   <a class="brand" href="/">m8r</a>
   <nav>
     <a href="/runs"{% if section == "runs" %} aria-current="page"{% endif %}>Runs</a>
@@ -16,6 +23,7 @@
     <a href="/repos"{% if section == "repos" %} aria-current="page"{% endif %}>Repos</a>
     <a href="/errors"{% if section == "errors" %} aria-current="page"{% endif %}>Errors</a>
   </nav>
+  {% endif %}
 </header>
 {% if error_count > 0 %}
 <aside class="alert">

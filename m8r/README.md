@@ -51,6 +51,7 @@ Everything runs as one user, `m8r`.
   link says which repo it's in, and whether it's an issue or a PR/MR. m8r asks the forge for
   the rest.
 - **One way in for each kind of caller.** A person gets a session, and a program gets a token.
+  A share link shows one run to someone who has neither.
 - **Errors clear themselves.** What's wrong is in one list, on every page. Nobody dismisses an
   error: what raises one clears it too, when its cause is gone.
 - **Idle until it has a schedule.** m8r installs up, like any other service. It runs nothing
@@ -139,6 +140,9 @@ its runs at once.
   add a time zone: `in America/New_York`. One expression can name several times, as the third
   one does. For times that don't fit one expression, write several, one to a line: the
   schedule runs at each one's times.
+- **Enabled** says whether the schedule runs at its times. Turn it off to stop a schedule for
+  a while: it then starts nothing by itself, and its runs that wait are dropped. A run in
+  progress goes on, and "Run now" still works.
 - **The command** is the exact line that a run starts, through the login shell of m8r's user:
   the model, the effort and the permissions go there. It starts as the agent's command. Any
   command that reads a prompt on stdin fits, so codex or gemini can take claude's place, and
@@ -238,16 +242,19 @@ A run:
   on this host, and `M8R_TOKEN`, a token for the watchlist's items that works while the run
   does. The commands in `m8r_prompt` use both.
 - **The history keeps what ran:** a run's page shows its schedule's name, its command, the
-  prompt it got, and what the command printed. To look closer, become `m8r`, go to the clone,
-  and resume the agent's session: `claude --resume <id>`. Claude Code leaves a `-p` session
-  out of the list that `claude --resume` shows, so take the id from the name of the session's
-  file in `~/.claude/projects/`.
+  prompt it got, and what the command printed. That shows as markdown, and a tab away as it
+  was printed, to copy. To look closer, become `m8r`, go to the clone, and resume the agent's
+  session: `claude --resume <id>`. Claude Code leaves a `-p` session out of the list that
+  `claude --resume` shows, so take the id from the name of the session's file in
+  `~/.claude/projects/`.
 - **A run in progress can be watched.** What its command prints goes to a file as it comes,
   and into the run's row when the run ends. `m8r task runs` lists the runs that aren't over,
   and `m8r task output id:12` prints what run 12 has printed and goes on until the run ends.
   It shows only what the command prints: `claude -p` prints its answer, when it's done. With
   `--output-format stream-json --verbose` in the schedule's command, it prints each step as
   a line of JSON.
+- **A run can be shared.** "Share" on a run's page shows a link to that page, and copies it.
+  The link works for 72 hours for anyone, with no session (see [Access](#access)).
 
 ### Artifacts
 
@@ -291,6 +298,10 @@ Nothing answers without a session or a token.
 - **An access link** starts a session: `m8r task link` prints one. It works any number of
   times for 8 hours. `hours:72` changes that, and `once:true` makes a link that works one time.
   A session lasts 8 hours and can do everything in the pages.
+- **A share link** opens one run's page, to read, for 72 hours: "Share" on that page makes
+  one. Its holder sees what the page shows: the run's command, the prompt it got, what it
+  printed, and its artifacts by name, with their links but not their files. The link starts no
+  session, and opens no other run and nothing else of m8r.
 - **No revoking.** A link is a signed token that m8r doesn't store, so it can't end one. To end
   every link and session, delete the line in `m8r/.env`, run `install`, and restart the units.
 - **A token** is for a program (see below). A session opens no part of the API, and a token
@@ -326,7 +337,8 @@ m8r task revoke name:duet                        # ends one
   watchlist item whose URL is already there changes that item, and a `PATCH` changes what it
   names. An item's answer has its `repo` and its `category`, which its URL says, and
   `?category=issues` and `?repo_id=1` narrow the list. A repo has a `path` and a `url`. A
-  schedule's `repos` and `hron` are arrays: the repos by the paths of their clones.
+  schedule's `repos` and `hron` are arrays: the repos by the paths of their clones. Its
+  `enabled` is true or false, and its `next` is null while it's false.
   `POST /api/schedules/<id>/run` queues the schedule's runs and answers with them, and
   `/api/runs` can be read. What can't be saved comes back as a 400 with the reason in
   `description`.
@@ -401,7 +413,8 @@ The app is in `m8r/` in this repo, and its host files are in `src/` like everyth
   prints, as it comes.
 - `systemctl status m8r-scheduler` shows the processes of the runs in progress: the agents are
   the unit's children.
-- To stop the runs: `sudo systemctl stop m8r-scheduler`.
+- To stop one schedule's runs, disable the schedule. To stop them all:
+  `sudo systemctl stop m8r-scheduler`.
 
 ## Security
 
@@ -419,6 +432,12 @@ wrote. Expect a prompt injection someday.
   `schedules`. Keep links short-lived, and give a token the least that its holder needs.
 - **The watchlist is text from outside.** An agent or Duet can write an item's note, and the
   note goes into the next prompts. A token for `watchlist_items` can do that and no more.
+- **So is what a run printed.** An agent wrote it, maybe after it read a hostile issue. Its
+  page shows it as markdown, with the HTML in it as text and each picture as a link, so
+  nothing in it runs, and the page loads nothing from another site.
+- **A share link shows its run to whoever holds it,** for 72 hours. The prompt on that page
+  has the watchlist items that the run got, with your notes. The link opens nothing else, and
+  changes nothing.
 - **The site is public,** with no IP limits, and every request needs a session or a token. Keep
   Loco, rmcp and their dependencies current.
 
@@ -480,8 +499,13 @@ One stand-in agent runs the commands of `m8r_prompt` against the API on loopback
   wrong. english-to-cron, which Loco's own scheduler uses, guesses.
 - **rmcp**, the Rust SDK of the Model Context Protocol, serves the MCP endpoint. It and hron
   are young: `Cargo.lock` pins the versions that the tests ran with.
-- **The pages** are Tera templates and plain forms, with no frontend build, and one small
-  script, which gives the errors their turns.
+- **pulldown-cmark** reads the markdown that a run printed, for its page. Before that's made
+  into HTML, m8r makes text of the HTML in it and of the links that aren't web or mail
+  addresses, and links of its pictures (see `views::markdown`).
+- **The pages** are Tera templates and plain forms, with no frontend build, and two small
+  scripts: one gives the errors their turns, and one copies a run's share link. A page asks
+  for the stylesheet at an address that changes when the stylesheet does, so a browser never
+  uses an old one for a new page.
 - **A name is the column's.** What a page calls a field is the name of its column, and so is
   what the API and the MCP tools call it: `max_items` is "Max items" on a schedule's page. To
   rename one, rename them all.
@@ -497,7 +521,7 @@ watchlist_items  url (unique), repo → repos ON DELETE RESTRICT,
                  requested, title, checked_at
 
 schedules        name (unique), category (blank|all|issues|pull/merge requests), max_items,
-                 hron (a list, one to a line), command, prompt
+                 hron (a list, one to a line), enabled, command, prompt
 
 schedule_repos   schedule → schedules ON DELETE CASCADE,
                  repo → repos ON DELETE RESTRICT            unique(schedule, repo)

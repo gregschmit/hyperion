@@ -3,6 +3,12 @@ use serial_test::serial;
 
 use crate::support::{self, location, signed_in, watch, REQUESTS};
 
+/// How many of a form's repos are checked.
+fn checked_repos(page: &str) -> usize {
+    let checked = |line: &&str| line.contains(r#"name="repos""#) && line.contains(" checked>");
+    page.lines().filter(checked).count()
+}
+
 fn here() -> String {
     std::env::current_dir()
         .unwrap()
@@ -32,6 +38,7 @@ async fn schedules_are_added_changed_run_and_removed() {
             r#"<label for="category">Category "#,
             r#"<label for="max_items">Max items "#,
             r#"<label for="hron">Hron "#,
+            r#"<label for="enabled">Enabled "#,
             r#"<label for="command">Command "#,
             r#"<label for="prompt">Prompt "#,
         ] {
@@ -51,6 +58,11 @@ async fn schedules_are_added_changed_run_and_removed() {
         }
         assert!(
             page.contains(r#"name="max_items" value="0" min="0" step="1">"#),
+            "{page}"
+        );
+        // A new schedule is enabled.
+        assert!(
+            page.contains(r#"name="enabled" value="true" checked>"#),
             "{page}"
         );
         assert!(
@@ -74,6 +86,7 @@ async fn schedules_are_added_changed_run_and_removed() {
                 ("hron", hron),
                 ("command", command),
                 ("prompt", "Triage the new issues."),
+                ("enabled", "true"),
             ]
         };
         // A clone that's there is no repo until it's one of m8r's.
@@ -126,6 +139,7 @@ async fn schedules_are_added_changed_run_and_removed() {
                 ("hron", "every 12 hours"),
                 ("command", r#"claude -p "Update the <changelog>.""#),
                 ("prompt", "{{ watchlist }}"),
+                ("enabled", "true"),
             ])
             .await;
         assert_eq!(location(&res), "/schedules/1");
@@ -174,6 +188,45 @@ async fn schedules_are_added_changed_run_and_removed() {
             "{page}"
         );
 
+        // The list says whether a schedule is enabled, and turns it off and on. Off, it has no
+        // next time, and its form says so too.
+        assert!(
+            page.contains("<th>Name</th><th>Enabled</th><th>Category</th>"),
+            "{page}"
+        );
+        assert!(page.contains("<td>yes</td>"), "{page}");
+        assert!(
+            page.contains(r#"action="/schedules/1/disable"><button>Disable</button>"#),
+            "{page}"
+        );
+        let res = request.post("/schedules/1/disable").await;
+        assert_eq!(location(&res), "/schedules");
+        let page = request.get("/schedules").await.text();
+        assert!(
+            page.contains(r#"<td><span class="status queued">no</span></td>"#),
+            "{page}"
+        );
+        assert!(page.contains(r#"<td class="nowrap"></td>"#), "{page}");
+        assert!(
+            page.contains(
+                r#"action="/schedules/1/enable"><button class="primary">Enable</button>"#
+            ),
+            "{page}"
+        );
+        let page = request.get("/schedules/1").await.text();
+        assert!(page.contains(r#"name="enabled" value="true">"#), "{page}");
+        let res = request.post("/schedules/1/enable").await;
+        assert_eq!(location(&res), "/schedules");
+        let page = request.get("/schedules/1").await.text();
+        assert!(
+            page.contains(r#"name="enabled" value="true" checked>"#),
+            "{page}"
+        );
+        assert_eq!(
+            request.post("/schedules/9/disable").await.status_code(),
+            404
+        );
+
         // A time that m8r can't read: hron says where it went wrong.
         let review = |hron: &'static str, command: &'static str, category: &'static str| {
             [
@@ -184,6 +237,7 @@ async fn schedules_are_added_changed_run_and_removed() {
                 ("hron", hron),
                 ("command", command),
                 ("prompt", ""),
+                ("enabled", "true"),
             ]
         };
         let res = request
@@ -331,6 +385,7 @@ async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
                 ("hron", "every day at 9:00".to_string()),
                 ("command", "cat".to_string()),
                 ("prompt", prompt.to_string()),
+                ("enabled", "true".to_string()),
             ]
         };
         let res = request
@@ -434,6 +489,7 @@ async fn a_schedule_takes_several_repos_and_several_times() {
                 ("hron", hron.to_string()),
                 ("command", "cat".to_string()),
                 ("prompt", String::new()),
+                ("enabled", "true".to_string()),
             ];
             form.extend(repos.iter().map(|repo| ("repos", (*repo).clone())));
             form
@@ -465,7 +521,7 @@ async fn a_schedule_takes_several_repos_and_several_times() {
             let checked = format!(r#"name="repos" value="{repo}" checked>"#);
             assert!(page.contains(&checked), "{page}");
         }
-        assert_eq!(page.matches(" checked>").count(), 2, "{page}");
+        assert_eq!(checked_repos(&page), 2, "{page}");
         assert!(
             page.contains("required>every weekday at 06:00\nevery saturday at 12:00</textarea>"),
             "{page}"
@@ -483,7 +539,7 @@ async fn a_schedule_takes_several_repos_and_several_times() {
             page.contains("required>every day at 9:00\r\nwhenever</textarea>"),
             "{page}"
         );
-        assert_eq!(page.matches(" checked>").count(), 1, "{page}");
+        assert_eq!(checked_repos(&page), 1, "{page}");
         let (_, kept) = schedules::Model::find(&ctx.db, 1).await.unwrap();
         assert_eq!(kept.len(), 2);
 

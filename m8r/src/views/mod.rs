@@ -1,12 +1,14 @@
 //! What the pages show. The templates are in `assets/views`.
 
 pub mod api;
+pub mod markdown;
 
-use std::time::Duration;
+use std::{sync::LazyLock, time::Duration};
 
 use chrono::{DateTime, Local};
 use loco_rs::prelude::*;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::{
     models::{artifacts, errors, repos, runs, schedules, watchlist_items},
@@ -15,6 +17,16 @@ use crate::{
 
 /// The scheduler ticks every minute. After this long with no tick, it isn't running.
 const TICK_LATE: Duration = Duration::from_secs(150);
+
+/// The stylesheet, for a page that carries its own styles.
+const STYLES: &str = include_str!("../../assets/static/m8r.css");
+
+/// The stylesheet's address, which changes when the stylesheet does. A browser keeps what it
+/// got from an address for a while, and a page needs the styles that it was written with.
+static STYLESHEET: LazyLock<String> = LazyLock::new(|| {
+    let digest = format!("{:x}", Sha256::digest(STYLES.as_bytes()));
+    format!("/static/m8r.css?v={}", &digest[..8])
+});
 
 /// A time as the pages show it: in the server's time zone.
 #[must_use]
@@ -73,9 +85,24 @@ pub async fn page(
         .iter()
         .map(error)
         .collect();
+    data["shared"] = json!(false);
+    data["stylesheet"] = json!(*STYLESHEET);
     data["section"] = json!(section);
     data["error_count"] = json!(open.len());
     data["open_errors"] = json!(open);
+    format::render().view(v, key, data)
+}
+
+/// Render a page for a guest, who holds a share link and no session. The page is all that
+/// the link is for: it has no way to the other pages, and none of m8r's errors. Its styles
+/// are in it, since the stylesheet needs a session too.
+///
+/// # Errors
+/// When the template fails.
+pub fn guest_page(v: &TeraView, key: &str, mut data: Value) -> Result<Response> {
+    data["shared"] = json!(true);
+    data["styles"] = json!(STYLES);
+    data["error_count"] = json!(0);
     format::render().view(v, key, data)
 }
 
@@ -177,8 +204,9 @@ pub fn schedule((schedule, repos): &schedules::Listed) -> Value {
         "max_items": schedule.max_items,
         "repos": repos.iter().map(|repo| repo.path.as_str()).collect::<Vec<_>>(),
         "hron": schedule.times().collect::<Vec<_>>(),
+        "enabled": schedule.enabled,
         "command": schedule.command,
-        // The first of its times to come.
+        // The first of its times to come. Blank while it's off.
         "next": next,
         // A time from before m8r read times in words may be one that it can't read.
         "unreadable": schedule.times().any(|time| schedules::parse(time).is_err()),

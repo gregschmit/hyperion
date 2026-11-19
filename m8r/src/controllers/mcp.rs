@@ -155,7 +155,7 @@ const TOOLS: [Spec; 15] = [
         "schedules",
         Effect::Reads,
         "List the schedules: when each one runs, in which repos, with which command and which \
-         prompt, and its next time.",
+         prompt, whether it's enabled, and its next time.",
     ),
     spec(
         "add_schedule",
@@ -264,6 +264,11 @@ impl Spec {
              day at 09:00, 17:00\". A five-field cron expression works too. With several, it \
              runs at each one's times.",
         );
+        let enabled = json!({
+            "type": "boolean",
+            "description": "Whether it runs at its times. Off, it starts nothing by itself, and \
+                            run_schedule still works.",
+        });
         let command = text("The exact shell line that a run starts, such as \"claude -p\".");
         let prompt = text(
             "What the command gets on stdin: a template that can hold {{ m8r_prompt }}, \
@@ -316,6 +321,7 @@ impl Spec {
                     "max_items": max_items,
                     "repos": repos,
                     "hron": hron,
+                    "enabled": enabled,
                     "command": command,
                     "prompt": prompt,
                 }),
@@ -329,6 +335,7 @@ impl Spec {
                     "max_items": max_items,
                     "repos": repos,
                     "hron": hron,
+                    "enabled": enabled,
                     "command": command,
                     "prompt": prompt,
                 }),

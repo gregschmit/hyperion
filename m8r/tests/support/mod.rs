@@ -39,6 +39,13 @@ pub fn link_path(ctx: &AppContext, seconds: u64, once: bool) -> String {
         .to_string()
 }
 
+/// The path and query of a new share link for run `run_id`.
+pub fn share_path(ctx: &AppContext, run_id: i64, seconds: u64) -> String {
+    let url = Settings::from_context(ctx).unwrap().url;
+    let (link, _) = access::share_link(ctx, run_id, seconds).unwrap();
+    link.strip_prefix(&url).unwrap().to_string()
+}
+
 /// A token for the API and the MCP endpoint that covers `scope`.
 pub async fn token(ctx: &AppContext, name: &str, scope: &str) -> String {
     let made = tokens::Model::create(&ctx.db, name, scope).await;

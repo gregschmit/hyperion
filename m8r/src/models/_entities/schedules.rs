@@ -18,6 +18,7 @@ pub struct Model {
     pub command: String,
     #[sea_orm(column_type = "Text")]
     pub prompt: String,
+    pub enabled: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

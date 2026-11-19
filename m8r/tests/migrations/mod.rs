@@ -75,6 +75,8 @@ async fn an_update_keeps_everything_but_the_configurations() {
         ),
         ("review", 5, "~/git/rxg")
     );
+    // A schedule that was there is enabled: it goes on as it did.
+    assert!(review.enabled);
     let items = watchlist_items::Model::list(&db, Filter::default()).await;
     assert_eq!(items.unwrap().len(), 1);
     let history = runs::Model::recent(&db, 10).await.unwrap();
@@ -99,7 +101,9 @@ async fn an_update_keeps_everything_but_the_configurations() {
     let queued = runs::Model::queue(&db, review, in_repos).await.unwrap();
     assert_eq!((queued[0].id, queued[0].status.as_str()), (2, "queued"));
 
-    // The configurations don't come back, so there's no way back.
+    // The latest step can be taken back. The configurations don't come back, so there's no
+    // way back past that.
+    Migrator::down(&db, Some(1)).await.unwrap();
     let back = Migrator::down(&db, Some(1)).await;
     assert!(back
         .unwrap_err()
@@ -182,8 +186,8 @@ async fn a_new_database_starts_with_no_repos() {
 
     assert!(repos::Model::list(&db).await.unwrap().is_empty());
     assert!(schedules::Model::list(&db).await.unwrap().is_empty());
-    // The latest migration says that it can't be taken back.
-    let back = Migrator::down(&db, Some(1)).await;
+    // A migration that can't be taken back says so.
+    let back = Migrator::down(&db, Some(2)).await;
     assert!(back
         .unwrap_err()
         .to_string()
