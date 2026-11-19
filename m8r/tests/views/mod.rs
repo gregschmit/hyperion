@@ -51,6 +51,80 @@ fn a_table_is_in_a_box_that_scrolls_and_its_words_are_each_in_a_box_that_stays_w
 }
 
 #[test]
+fn a_bare_web_address_is_a_link_to_itself() {
+    // What ends the sentence or closes the brackets around it isn't part of it, and brackets
+    // of its own are. Part of a word is no address, and nor is the start of one alone.
+    assert_eq!(
+        render(
+            "See https://example.com/a_b?c=1&d=2. (Or http://e.example/x_(y)), and \
+             [https://e.example/z]; not xhttp://no.example, https:// or https://<host>/."
+        ),
+        "<p>See <a href=\"https://example.com/a_b?c=1&amp;d=2\">\
+         https://example.com/a_b?c=1&amp;d=2</a>. \
+         (Or <a href=\"http://e.example/x_(y)\">http://e.example/x_(y)</a>), and \
+         [<a href=\"https://e.example/z\">https://e.example/z</a>]; \
+         not xhttp://no.example, https:// or https://&lt;host&gt;/.</p>\n"
+    );
+    // Not where it's a link's text, and not in code.
+    assert_eq!(
+        render(
+            "[https://a.example](https://b.example) <https://c.example> `https://d.example`\n\n\
+             ```\nhttps://e.example\n```\n"
+        ),
+        "<p><a href=\"https://b.example\">https://a.example</a> \
+         <a href=\"https://c.example\">https://c.example</a> \
+         <code>https://d.example</code></p>\n\
+         <pre><code>https://e.example\n</code></pre>\n"
+    );
+    // In HTML, which shows as text, and in a table's cell, where it's a word.
+    assert_eq!(
+        render("<a href=\"https://f.example/?q=1\">f</a>"),
+        "<p>&lt;a href=\"<a href=\"https://f.example/?q=1\">https://f.example/?q=1</a>\"&gt;\
+         f&lt;/a&gt;</p>\n"
+    );
+    assert!(
+        render("| a |\n|---|\n| at https://g.example/a-b |").contains(
+            "<td><span class=\"word\">at</span> <a href=\"https://g.example/a-b\">\
+             <span class=\"word\">https://g.example/a-b</span></a></td>"
+        ),
+        "{}",
+        render("| a |\n|---|\n| at https://g.example/a-b |")
+    );
+}
+
+#[test]
+fn a_note_of_githubs_kind_has_its_kind_as_its_class() {
+    assert_eq!(
+        render("> [!WARNING]\n> Mind the gap.\n\n> [!NOTE]\n> One more.\n\n> A plain quote."),
+        "<blockquote class=\"markdown-alert-warning\">\n<p>Mind the gap.</p>\n</blockquote>\n\
+         <blockquote class=\"markdown-alert-note\">\n<p>One more.</p>\n</blockquote>\n\
+         <blockquote>\n<p>A plain quote.</p>\n</blockquote>\n"
+    );
+}
+
+#[test]
+fn a_footnote_has_a_number_and_a_name_that_nothing_else_on_the_page_has() {
+    assert_eq!(
+        // `output-raw` is the name of a tab on the run's page.
+        render(
+            "A claim.[^1] One more.[^output-raw] None: [^none].\n\n\
+             [^1]: See https://example.com/source.\n\n[^output-raw]: Because."
+        ),
+        "<p>A claim.<sup class=\"footnote-reference\"><a href=\"#footnote-1\">1</a></sup> \
+         One more.<sup class=\"footnote-reference\"><a href=\"#footnote-output-raw\">2</a></sup> \
+         None: [^none].</p>\n\
+         <div class=\"footnote-definition\" id=\"footnote-1\">\
+         <sup class=\"footnote-definition-label\">1</sup>\n\
+         <p>See <a href=\"https://example.com/source\">https://example.com/source</a>.</p>\n\
+         </div>\n\
+         <div class=\"footnote-definition\" id=\"footnote-output-raw\">\
+         <sup class=\"footnote-definition-label\">2</sup>\n\
+         <p>Because.</p>\n\
+         </div>\n"
+    );
+}
+
+#[test]
 fn html_in_what_a_run_printed_is_text() {
     // In a line, and as a block. An agent may have read a hostile issue before it wrote this.
     assert_eq!(

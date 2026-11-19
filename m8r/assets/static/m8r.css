@@ -143,4 +143,19 @@ details.share p { margin: 0.5rem 0 0.25rem; }
 .markdown th, .markdown td { overflow-wrap: normal; }
 .markdown .word { white-space: nowrap; }
 .markdown blockquote { margin: 0.75rem 0; padding-left: 0.9rem; color: var(--muted); border-left: 3px solid var(--line); }
+/* A note of GitHub's kind, such as `> [!WARNING]`. Only it has a class, which says its kind:
+   that's its first line, and its color. */
+.markdown blockquote[class] { color: inherit; border-left-color: var(--kind); }
+.markdown blockquote[class]::before { content: var(--name); font-weight: 600; color: var(--kind); }
+.markdown blockquote[class] > :first-child { margin-top: 0.25rem; }
+.markdown .markdown-alert-note { --name: "Note"; --kind: var(--link); }
+.markdown .markdown-alert-tip { --name: "Tip"; --kind: var(--good); }
+.markdown .markdown-alert-important { --name: "Important"; --kind: light-dark(#8250df, #b392f0); }
+.markdown .markdown-alert-warning { --name: "Warning"; --kind: var(--wait); }
+.markdown .markdown-alert-caution { --name: "Caution"; --kind: var(--bad); }
+/* A footnote: its number, and beside it what it says. The one that a link went to stands out. */
+.markdown sup { line-height: 0; }
+.markdown .footnote-definition { display: grid; grid-template-columns: auto 1fr; column-gap: 0.4rem; margin: 0.5rem 0; font-size: 0.9rem; color: var(--muted); }
+.markdown .footnote-definition > :not(sup) { grid-column: 2; margin: 0 0 0.25rem; }
+.markdown .footnote-definition:target { color: var(--text); }
 .markdown li > input { margin-right: 0.35rem; }

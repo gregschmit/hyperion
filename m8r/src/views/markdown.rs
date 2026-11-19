@@ -4,6 +4,9 @@
 //! viewer's session. So the HTML in the text shows as text, a link goes to a web or a mail
 //! address and nowhere else, and a picture is a link. Nothing in it runs, and the page loads
 //! nothing from another site, so nobody learns that it was read.
+//!
+//! The markdown is GitHub's kind: tables, task lists, struck text, footnotes, notes such as
+//! `> [!WARNING]`, and a bare web address as a link.
 
 use pulldown_cmark::{
     html, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd, TextMergeStream,
@@ -20,8 +23,12 @@ struct Open<'a> {
 /// `text` as HTML, which a page puts in as it is.
 #[must_use]
 pub fn render(text: &str) -> String {
-    let options =
-        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    // `ENABLE_GFM` is for the notes such as `> [!WARNING]`.
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_GFM;
     let mut open: Vec<Open> = Vec::new();
     let events = Parser::new_ext(text, options).flat_map(|event| match event {
         Event::Html(html) | Event::InlineHtml(html) => vec![Event::Text(html)],
@@ -74,6 +81,11 @@ pub fn render(text: &str) -> String {
             }
             events
         }
+        // A footnote's name is the agent's word, and it gets to be an `id` on the page.
+        Event::FootnoteReference(name) => vec![Event::FootnoteReference(footnote(&name))],
+        Event::Start(Tag::FootnoteDefinition(name)) => {
+            vec![Event::Start(Tag::FootnoteDefinition(footnote(&name)))]
+        }
         // What a command prints isn't always markdown, so a line's end shows as one, as in a
         // comment on a forge.
         Event::SoftBreak => vec![Event::HardBreak],
@@ -87,9 +99,96 @@ pub fn render(text: &str) -> String {
         other => vec![other],
     });
     let mut page = String::new();
-    // A word that came in parts is one text again, for `tables`.
-    html::push_html(&mut page, tables(TextMergeStream::new(events)));
+    // An address or a word that came in parts is one text again, for `links` and `tables`.
+    html::push_html(&mut page, tables(links(TextMergeStream::new(events))));
     page
+}
+
+/// `events`, with each web address that's bare in the text as a link to itself, as on GitHub.
+/// Not inside a link, where it's that link's text, and not in a block of code.
+fn links<'a>(events: impl Iterator<Item = Event<'a>>) -> impl Iterator<Item = Event<'a>> {
+    // The links and the blocks of code that are open.
+    let mut around = 0_usize;
+    events.flat_map(move |event| match event {
+        Event::Start(Tag::Link { .. } | Tag::CodeBlock(_)) => {
+            around += 1;
+            vec![event]
+        }
+        Event::End(TagEnd::Link | TagEnd::CodeBlock) => {
+            around = around.saturating_sub(1);
+            vec![event]
+        }
+        Event::Text(text) if around == 0 => addresses(text),
+        other => vec![other],
+    })
+}
+
+/// `text`, with each web address in it as a link to itself.
+fn addresses(text: CowStr) -> Vec<Event> {
+    let mut events = Vec::new();
+    // How much of `text` is in `events`.
+    let mut done = 0;
+    for (start, _) in text.match_indices("http") {
+        // One inside the address before it is part of that.
+        if start < done {
+            continue;
+        }
+        let Some(end) = address_end(&text, start) else {
+            continue;
+        };
+        let address: CowStr = text[start..end].to_string().into();
+        if start > done {
+            events.push(Event::Text(text[done..start].to_string().into()));
+        }
+        events.push(Event::Start(Tag::Link {
+            link_type: LinkType::Autolink,
+            dest_url: address.clone(),
+            title: "".into(),
+            id: "".into(),
+        }));
+        events.push(Event::Text(address));
+        events.push(Event::End(TagEnd::Link));
+        done = end;
+    }
+    if done == 0 {
+        return vec![Event::Text(text)];
+    }
+    if done < text.len() {
+        events.push(Event::Text(text[done..].to_string().into()));
+    }
+    events
+}
+
+/// Where the web address that starts at `start` in `text` ends, if one starts there. The rules
+/// are GitHub's, more or less: an address starts a word, it has no space in it, and what ends
+/// the sentence or closes the brackets around it isn't part of it.
+fn address_end(text: &str, start: usize) -> Option<usize> {
+    let (before, tail) = text.split_at(start);
+    let scheme = ["https://", "http://"]
+        .into_iter()
+        .find(|scheme| tail.starts_with(scheme))?;
+    if before.ends_with(char::is_alphanumeric) {
+        return None;
+    }
+    let len = tail
+        .find(|c: char| c.is_whitespace() || "<>\"".contains(c))
+        .unwrap_or(tail.len());
+    let mut address = &tail[..len];
+    while let Some(last) = address.chars().next_back() {
+        let extra = match last {
+            ')' => address.matches(')').count() > address.matches('(').count(),
+            ']' => address.matches(']').count() > address.matches('[').count(),
+            _ => "?!.,:;*_~'".contains(last),
+        };
+        if !extra {
+            break;
+        }
+        address = &address[..address.len() - last.len_utf8()];
+    }
+    address
+        .get(scheme.len()..)?
+        .starts_with(char::is_alphanumeric)
+        .then_some(start + address.len())
 }
 
 /// `events`, with what a table needs to show well at any width. A line in a cell breaks
@@ -136,6 +235,12 @@ fn words<'a>(text: &str) -> Vec<Event<'a>> {
         }
     }
     events
+}
+
+/// The name on the page of the footnote that the text calls `name`. With this start, it can't
+/// be the name of something else there.
+fn footnote<'a>(name: &str) -> CowStr<'a> {
+    format!("footnote-{name}").into()
 }
 
 /// The start of a link that's kept. One that isn't has no start, and no end.

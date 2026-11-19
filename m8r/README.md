@@ -243,11 +243,12 @@ A run:
 - **What a run prints is its report.** m8r keeps that, and no files. `m8r_prompt` tells the
   agent to put the link to what it made online, such as a comment or a PR/MR, in its answer.
 - **The history keeps what ran:** a run's page shows its schedule's name, its command, the
-  prompt it got, and what the command printed. That shows as markdown, and a tab away as it
-  was printed, to copy. To look closer, become `m8r`, go to the clone, and resume the agent's
-  session: `claude --resume <id>`. Claude Code leaves a `-p` session out of the list that
-  `claude --resume` shows, so take the id from the name of the session's file in
-  `~/.claude/projects/`.
+  prompt it got, and what the command printed. That shows as markdown of GitHub's kind
+  (tables, task lists, footnotes, notes such as `> [!WARNING]`, and a bare web address as a
+  link), and a tab away as it was printed, to copy. To look closer, become `m8r`, go to the
+  clone, and resume the agent's session: `claude --resume <id>`. Claude Code leaves a `-p`
+  session out of the list that `claude --resume` shows, so take the id from the name of the
+  session's file in `~/.claude/projects/`.
 - **A run in progress can be watched.** What its command prints goes to a file as it comes,
   and into the run's row when the run ends. `m8r task runs` lists the runs that aren't over,
   and `m8r task output id:12` prints what run 12 has printed and goes on until the run ends.
@@ -486,9 +487,11 @@ One stand-in agent runs the commands of `m8r_prompt` against the API on loopback
   are young: `Cargo.lock` pins the versions that the tests ran with.
 - **pulldown-cmark** reads the markdown that a run printed, for its page. Before that's made
   into HTML, m8r makes text of the HTML in it and of the links that aren't web or mail
-  addresses, and links of its pictures (see `views::markdown`). In a table, a line breaks
-  between words and never inside one, and a table that's too wide for the page that way
-  scrolls sideways.
+  addresses, and links of its pictures (see `views::markdown`). m8r also makes a link of each
+  bare web address, which pulldown-cmark leaves as text, and puts `footnote-` before a
+  footnote's name, so that it can't be the name of something else on the page. In a table, a
+  line breaks between words and never inside one, and a table that's too wide for the page
+  that way scrolls sideways.
 - **The pages** are Tera templates and plain forms, with no frontend build, and two small
   scripts: one gives the errors their turns, and one copies a run's share link. A page asks
   for the stylesheet at an address that changes when the stylesheet does, so a browser never
