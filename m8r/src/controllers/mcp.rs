@@ -28,7 +28,7 @@ use super::api::runs::RUNS;
 use crate::{
     initializers::access::Caller,
     models::{
-        artifacts, configurations, repos, runs,
+        artifacts, repos, runs,
         schedules::{self, Items},
         watchlist_items::{self, Category},
         Checked,
@@ -85,7 +85,7 @@ const fn spec(
     }
 }
 
-const TOOLS: [Spec; 21] = [
+const TOOLS: [Spec; 15] = [
     spec(
         "list_watchlist_items",
         "List the watchlist",
@@ -188,49 +188,6 @@ const TOOLS: [Spec; 21] = [
          schedules take turns, so they may wait. The answer is the runs.",
     ),
     spec(
-        "list_configurations",
-        "List the configurations",
-        "configurations",
-        Effect::Reads,
-        "List the configurations. Each holds a prompt, the developer's part of every \
-         schedule's prompt, and the runs get the active one's.",
-    ),
-    spec(
-        "add_configuration",
-        "Add a configuration",
-        "configurations",
-        Effect::Adds,
-        "Add a configuration. It isn't active until you activate it.",
-    ),
-    spec(
-        "update_configuration",
-        "Change a configuration",
-        "configurations",
-        Effect::Sets,
-        "Change a configuration's name or prompt. What you leave out stays as it is.",
-    ),
-    spec(
-        "remove_configuration",
-        "Remove a configuration",
-        "configurations",
-        Effect::Removes,
-        "Remove a configuration. If it's the active one, nothing runs after that.",
-    ),
-    spec(
-        "activate_configuration",
-        "Activate a configuration",
-        "configurations",
-        Effect::Sets,
-        "Make a configuration the active one. The one that was active stops being it.",
-    ),
-    spec(
-        "deactivate_configuration",
-        "Deactivate a configuration",
-        "configurations",
-        Effect::Sets,
-        "Make a configuration inactive. With none active, nothing runs.",
-    ),
-    spec(
         "list_runs",
         "List the runs",
         "runs",
@@ -291,7 +248,7 @@ impl Spec {
             "description": "Which watchlist items of its repo a run's prompt gets: all, or a \
                             category's. Blank: no items.",
         });
-        let most = json!({
+        let max_items = json!({
             "type": "integer",
             "minimum": 0,
             "description": "How many items a run gets at most: the first ones, and the \
@@ -310,13 +267,9 @@ impl Spec {
         let command = text("The exact shell line that a run starts, such as \"claude -p\".");
         let prompt = text(
             "What the command gets on stdin: a template that can hold {{ m8r_prompt }}, \
-             {{ config_prompt }}, {{ watchlist }} and {{ requested_watchlist }}.",
+             {{ watchlist }}, {{ requested_watchlist }} and {{ max_items }}.",
         );
-        let name = |of: &str| text(&format!("The {of}'s name."));
-        let config_prompt = text(
-            "The developer's part of every prompt: plain text, which a schedule's prompt puts in \
-             with {{ config_prompt }}.",
-        );
+        let name = text("The schedule's name: what it's for, in a few words.");
         let path = text(
             "The clone: a path from the home of m8r's user, such as ~/git/group/project, or a \
              full path.",
@@ -358,9 +311,9 @@ impl Spec {
             "remove_repo" => (json!({ "id": id("repo") }), &["id"]),
             "add_schedule" => (
                 json!({
-                    "name": name("schedule"),
+                    "name": name,
                     "category": run_category,
-                    "max_items": most,
+                    "max_items": max_items,
                     "repos": repos,
                     "hron": hron,
                     "command": command,
@@ -371,9 +324,9 @@ impl Spec {
             "update_schedule" => (
                 json!({
                     "id": id("schedule"),
-                    "name": name("schedule"),
+                    "name": name,
                     "category": run_category,
-                    "max_items": most,
+                    "max_items": max_items,
                     "repos": repos,
                     "hron": hron,
                     "command": command,
@@ -382,21 +335,6 @@ impl Spec {
                 &["id"],
             ),
             "remove_schedule" | "run_schedule" => (json!({ "id": id("schedule") }), &["id"]),
-            "add_configuration" => (
-                json!({ "name": name("configuration"), "prompt": config_prompt }),
-                &["name"],
-            ),
-            "update_configuration" => (
-                json!({
-                    "id": id("configuration"),
-                    "name": name("configuration"),
-                    "prompt": config_prompt,
-                }),
-                &["id"],
-            ),
-            "remove_configuration" | "activate_configuration" | "deactivate_configuration" => {
-                (json!({ "id": id("configuration") }), &["id"])
-            }
             "list_runs" => (
                 json!({ "limit": {
                     "type": "integer",
@@ -560,38 +498,6 @@ impl Server {
                     queued.push(self.run(&run, false).await?);
                 }
                 json!(queued)
-            }
-            "list_configurations" => {
-                let configurations = configurations::Model::list(db).await?;
-                json!(configurations
-                    .iter()
-                    .map(api::configuration)
-                    .collect::<Vec<_>>())
-            }
-            "add_configuration" => {
-                let params: configurations::Params = parse(arguments)?;
-                let configuration = configurations::Model::create(db, &params).await?;
-                api::configuration(&checked(configuration)?)
-            }
-            "update_configuration" => {
-                let Target { id, rest } = parse::<Target<configurations::Changes>>(arguments)?;
-                let configuration = configurations::Model::change(db, id, rest).await?;
-                api::configuration(&checked(configuration)?)
-            }
-            "remove_configuration" => {
-                let Target { id, .. } = parse::<Target<Nothing>>(arguments)?;
-                configurations::Model::remove(db, id).await?;
-                json!({ "removed": id })
-            }
-            "activate_configuration" => {
-                let Target { id, .. } = parse::<Target<Nothing>>(arguments)?;
-                let configuration = configurations::Model::find(db, id).await?;
-                api::configuration(&configuration.into_active_model().activated(db).await?)
-            }
-            "deactivate_configuration" => {
-                let Target { id, .. } = parse::<Target<Nothing>>(arguments)?;
-                let configuration = configurations::Model::find(db, id).await?;
-                api::configuration(&configuration.into_active_model().deactivated(db).await?)
             }
             "list_runs" => {
                 let filter: RunFilter = parse(arguments)?;

@@ -1,12 +1,11 @@
 //! What a run's command gets on stdin: its schedule's prompt.
 //!
-//! A prompt is a Tera template. This is what it can use, and how m8r compiles it. The active
-//! configuration's prompt is one of those things: plain text, which no one compiles.
+//! A prompt is a Tera template. This is what it can use, and how m8r compiles it.
 
 use loco_rs::prelude::*;
 use serde_json::{json, Value};
 
-use crate::models::{configurations, repos, schedules::Items, watchlist_items};
+use crate::models::{repos, schedules::Items, watchlist_items};
 
 /// m8r's own part of a prompt: where the agent is, how it reports, and how it changes the
 /// watchlist. A run's environment has the API's address and the token (see `tasks::tick`), so
@@ -56,12 +55,10 @@ Remove an item, by its number:
 - Leave the other items' priorities and notes as they are: they are the developer's.
 ";
 
-/// What a new schedule's prompt starts as: m8r's part, yours, and the watchlist. After them,
-/// you say what to do.
+/// What a new schedule's prompt starts as: m8r's part, and the watchlist. After them, you say
+/// what to do.
 pub const STARTER: &str = "\
 {{ m8r_prompt }}
-
-{{ config_prompt }}
 
 The watchlist now:
 {{ watchlist }}
@@ -79,13 +76,10 @@ pub const VARIABLES: [(&str, &str); 10] = [
          changes and removes watchlist items while it runs.",
     ),
     (
-        "{{ config_prompt }}",
-        "The active configuration's prompt: your part of every prompt, as you wrote it.",
-    ),
-    (
         "{{ watchlist }}",
-        "The watchlist items that the run gets, one to a line: its repo's, of the kind that \
-         the schedule takes. The requested ones come first, then the urgent ones.",
+        "The watchlist items that the run gets, one to a line: its repo's, of the schedule's \
+         category. The requested ones come first, then the urgent ones, and the schedule's max \
+         items cuts the list there.",
     ),
     (
         "{{ requested_watchlist }}",
@@ -98,7 +92,12 @@ pub const VARIABLES: [(&str, &str); 10] = [
     ),
     (
         "{{ category }}",
-        "Which items the schedule takes: all, issues or pull/merge requests. Blank with none.",
+        "The schedule's category: all, issues or pull/merge requests. Blank: the run gets no \
+         items.",
+    ),
+    (
+        "{{ max_items }}",
+        "The schedule's max items: how many items the run gets at most. 0: all of them.",
     ),
     (
         "{{ artifacts_dir }}",
@@ -118,14 +117,13 @@ pub const VARIABLES: [(&str, &str); 10] = [
 /// What a prompt is compiled with.
 #[derive(Debug, Clone, Default)]
 pub struct Context {
-    /// The active configuration's prompt: plain text, which goes in as it is. Blank with no
-    /// active configuration.
-    pub config_prompt: String,
-    /// The items that the run gets: its repo's, of the kind that its schedule takes, in the
-    /// order that a run works them in. None with no repo, or for a schedule that takes none.
+    /// The items that the run gets: its repo's, of its schedule's category, in the order that
+    /// a run works them in. None with no repo, or for a schedule that takes none.
     pub watchlist: Vec<watchlist_items::Model>,
-    /// Which items the schedule takes. Blank with none.
+    /// The schedule's category: which items its runs get. Blank with none.
     pub category: String,
+    /// The schedule's max items: how many items a run gets at most. 0: all of them.
+    pub max_items: u32,
     /// The run's repo. None when no run is at hand, and no repo is chosen yet.
     pub repo: Option<repos::Model>,
     /// Where the run reports its artifacts.
@@ -134,7 +132,7 @@ pub struct Context {
 
 impl Context {
     /// What a prompt gets now, for a run in `repo` of a schedule that takes `items`, and
-    /// `most` of them at most (0: all of them).
+    /// `max_items` of them at most (0: all of them).
     ///
     /// # Errors
     /// When a query fails.
@@ -142,10 +140,9 @@ impl Context {
         db: &DatabaseConnection,
         repo: Option<&repos::Model>,
         items: Items,
-        most: u32,
+        max_items: u32,
         artifacts_dir: &str,
     ) -> ModelResult<Self> {
-        let active = configurations::Model::active(db).await?;
         let category = match items {
             Items::None => None,
             Items::All => Some(None),
@@ -153,20 +150,20 @@ impl Context {
         };
         let watchlist = match (repo, category) {
             (Some(repo), Some(category)) => {
-                watchlist_items::Model::of_repo(db, repo.id, category, most.into()).await?
+                watchlist_items::Model::of_repo(db, repo.id, category, max_items.into()).await?
             }
             _ => Vec::new(),
         };
         Ok(Self {
-            config_prompt: active.map(|it| it.prompt).unwrap_or_default(),
             watchlist,
             category: items.as_str().to_string(),
+            max_items,
             repo: repo.cloned(),
             artifacts_dir: artifacts_dir.to_string(),
         })
     }
 
-    /// Compile `prompt`, which says where m8r's part and the configuration's go.
+    /// Compile `prompt`, which says where m8r's part and the watchlist go.
     ///
     /// # Errors
     /// Tera's message, when the prompt doesn't compile.
@@ -192,12 +189,11 @@ impl Context {
         );
         context.insert("requested_watchlist", &lines(requested.iter().copied()));
         context.insert("category", &self.category);
+        context.insert("max_items", &self.max_items);
         context.insert("repo", repo);
         context.insert("repo_url", repo_url);
         context.insert("artifacts_dir", &self.artifacts_dir);
         context.insert("m8r_prompt", self.m8r_prompt().trim_end());
-        // Plain text: a value goes in as it is, whatever braces it has.
-        context.insert("config_prompt", self.config_prompt.trim_end());
         tera::Tera::one_off(prompt, &context, autoescape)
             .map_err(|err| format!("The prompt doesn't compile.\n{err}"))
     }

@@ -37,6 +37,12 @@ impl Settings {
         self.data.join("artifacts").join(run_id.to_string())
     }
 
+    /// The file that gets what run `id` prints, for as long as the run takes.
+    #[must_use]
+    pub fn output_file(&self, run_id: i64) -> PathBuf {
+        self.artifacts_dir(run_id).with_extension("out")
+    }
+
     /// The file that the tick that has a run in progress keeps locked.
     #[must_use]
     pub fn lock_file(&self) -> PathBuf {

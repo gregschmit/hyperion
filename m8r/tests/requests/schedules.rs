@@ -1,7 +1,7 @@
 use m8r::models::{runs, schedules};
 use serial_test::serial;
 
-use crate::support::{self, configure, location, signed_in, watch, REQUESTS};
+use crate::support::{self, location, signed_in, watch, REQUESTS};
 
 fn here() -> String {
     std::env::current_dir()
@@ -19,13 +19,24 @@ async fn schedules_are_added_changed_run_and_removed() {
         assert!(page.contains("No schedules."), "{page}");
         // What's missing is in the alert, on every page.
         assert!(
-            page.contains("<strong>configuration:</strong> No configuration is active"),
+            page.contains("<strong>schedules:</strong> There&#39;s no schedule"),
             "{page}"
         );
 
         // The form starts with the agent's command and with every item, and its prompt with
         // m8r's own parts. m8r has no repo yet, and the form says where to add one.
         let page = request.get("/schedules/new").await.text();
+        // A field goes by the name of its column.
+        for label in [
+            r#"<label for="name">Name "#,
+            r#"<label for="category">Category "#,
+            r#"<label for="max_items">Max items "#,
+            r#"<label for="hron">Hron "#,
+            r#"<label for="command">Command "#,
+            r#"<label for="prompt">Prompt "#,
+        ] {
+            assert!(page.contains(label), "{label}: {page}");
+        }
         assert!(
             page.contains(r#"name="command" class="wide mono" value="cat""#),
             "{page}"
@@ -44,7 +55,8 @@ async fn schedules_are_added_changed_run_and_removed() {
         );
         assert!(
             page.contains(
-                "{{ m8r_prompt }}\n\n{{ config_prompt }}\n\nThe watchlist now:\n{{ watchlist }}"
+                "<textarea id=\"prompt\" name=\"prompt\" rows=\"14\">{{ m8r_prompt }}\n\n\
+                 The watchlist now:\n{{ watchlist }}"
             ),
             "{page}"
         );
@@ -122,7 +134,7 @@ async fn schedules_are_added_changed_run_and_removed() {
             (
                 schedule.name.as_str(),
                 schedule.category.as_str(),
-                schedule.most(),
+                schedule.max_items(),
                 schedule.hron.as_str(),
                 schedule.command.as_str(),
                 schedule.prompt.as_str(),
@@ -152,7 +164,13 @@ async fn schedules_are_added_changed_run_and_removed() {
         assert!(page.contains(&checked), "{page}");
         let page = request.get("/schedules").await.text();
         assert!(
-            page.contains("pull/merge requests<br><small>50 at most</small>"),
+            page.contains(
+                "<th>Category</th><th>Max items</th><th>Repos and command</th><th>Hron</th>"
+            ),
+            "{page}"
+        );
+        assert!(
+            page.contains("<td class=\"nowrap\">pull/merge requests</td>\n    <td>50</td>"),
             "{page}"
         );
 
@@ -187,17 +205,17 @@ async fn schedules_are_added_changed_run_and_removed() {
             .await;
         let page = res.text();
         assert!(
-            page.contains("A schedule&#39;s runs get all the watchlist items of their repo"),
+            page.contains("A schedule&#39;s category is all, issues or pull/merge requests"),
             "{page}"
         );
-        // Its cutoff is a number, and it runs in a repo.
+        // Its max items is a number, and it runs in a repo.
         let mut many = review("every day at 6:00", "cat", REQUESTS);
         many[2] = ("max_items", "many");
         let res = request.post("/schedules/1").form(&many).await;
         assert_eq!(res.status_code(), 200);
         let page = res.text();
         assert!(
-            page.contains("The most items is a whole number, or 0 for all of them."),
+            page.contains("Max items is a whole number: 0 for all of them."),
             "{page}"
         );
         let nowhere: Vec<_> = review("every day at 6:00", "cat", REQUESTS)
@@ -261,7 +279,6 @@ async fn schedules_are_added_changed_run_and_removed() {
 async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
     signed_in(|request, ctx| async move {
         let here = here();
-        configure(&ctx, "Write in plain words, for {{ category }} readers.").await;
         // The clone that the tests run in has an issue and a PR, and another repo has an MR.
         support::repo(&ctx.db, &here, "https://github.com/o/r").await;
         watch(&ctx, "https://github.com/o/r/issues/1").await;
@@ -272,12 +289,12 @@ async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
         let page = request.get("/schedules/new").await.text();
         for variable in [
             "{{ m8r_prompt }}",
-            "{{ config_prompt }}",
             "{{ watchlist }}",
             "{{ requested_watchlist }}",
             "{{ repo }}",
             "{{ repo_url }}",
             "{{ category }}",
+            "{{ max_items }}",
             "{{ artifacts_dir }}",
             "{% for item in watchlist_items %}",
             "{% for item in requested_watchlist_items %}",
@@ -287,9 +304,8 @@ async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
                 "{variable}: {page}"
             );
         }
-        // And the starting prompt shows compiled: m8r's part, with a sample artifact directory,
-        // and the configuration's as it was written, which is plain text. With no repo chosen
-        // yet, it gets no items.
+        // And the starting prompt shows compiled: m8r's part, with a sample artifact
+        // directory, and the watchlist. With no repo chosen yet, it gets no items.
         assert!(
             page.contains("<pre>You are running in m8r, a maintainer automation tool."),
             "{page}"
@@ -299,10 +315,6 @@ async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
             "{page}"
         );
         assert!(page.contains("## How to use m8r&#39;s watchlist"), "{page}");
-        assert!(
-            page.contains("Write in plain words, for {{ category }} readers."),
-            "{page}"
-        );
         assert!(
             page.contains("With no repo chosen, it gets no items."),
             "{page}"
@@ -475,22 +487,18 @@ async fn a_schedule_takes_several_repos_and_several_times() {
         let (_, kept) = schedules::Model::find(&ctx.db, 1).await.unwrap();
         assert_eq!(kept.len(), 2);
 
-        // "Run now" queues a run in each repo, and the report has a part for each.
+        // "Run now" queues a run in each repo, and the runs page lists each.
         let res = request.post("/schedules/1/run").await;
         assert_eq!(location(&res), "/runs");
         let queued = runs::Model::next_batch(&ctx.db).await.unwrap();
         let repos: Vec<_> = queued.iter().map(|run| run.repo.as_str()).collect();
         assert_eq!(repos, [src.as_str(), tests.as_str()]);
-        let page = request.get("/").await.text();
+        let page = request.get("/runs").await.text();
         for repo in [&src, &tests] {
-            assert!(
-                page.contains(&format!(
-                    r#"<a href="/schedules/1">triage</a> in <span class="mono">{repo}</span>"#
-                )),
-                "{page}"
-            );
+            let run = format!(r#"<td class="mono">{repo}<br><small>cat</small></td>"#);
+            assert!(page.contains(&run), "{page}");
         }
-        assert_eq!(page.matches("It hasn't run yet.").count(), 2, "{page}");
+        assert_eq!(page.matches("<td>triage</td>").count(), 2, "{page}");
     })
     .await;
 }

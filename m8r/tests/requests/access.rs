@@ -23,7 +23,7 @@ async fn nothing_answers_without_a_session() {
             "/",
             "/runs",
             "/watchlist",
-            "/configurations/new",
+            "/schedules/new",
             "/static/m8r.css",
             "/nope",
         ] {
@@ -232,7 +232,6 @@ async fn a_token_covers_what_its_scope_names() {
             ("/api/watchlist_items", true, false),
             ("/api/repos", false, true),
             ("/api/schedules", false, false),
-            ("/api/configurations", false, false),
             ("/api/runs", false, true),
         ] {
             let expected = |covered: bool| if covered { 200 } else { 403 };

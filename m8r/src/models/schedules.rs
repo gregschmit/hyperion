@@ -149,7 +149,7 @@ impl Params {
             category: changes
                 .category
                 .unwrap_or_else(|| schedule.category.clone()),
-            max_items: changes.max_items.unwrap_or_else(|| schedule.most()),
+            max_items: changes.max_items.unwrap_or_else(|| schedule.max_items()),
             repos: changes
                 .repos
                 .unwrap_or_else(|| paths.join("\n").as_str().into()),
@@ -168,8 +168,8 @@ impl Params {
         }
         if Items::parse(&self.category).is_none() {
             return Some(
-                "A schedule's runs get all the watchlist items of their repo, the issues or the \
-                 pull/merge requests. Blank: no items."
+                "A schedule's category is all, issues or pull/merge requests: the watchlist \
+                 items of their repo that its runs get. Blank: no items."
                     .to_string(),
             );
         }
@@ -181,7 +181,10 @@ impl Params {
         }
         let mut times = self.hron.iter().peekable();
         if times.peek().is_none() {
-            return Some("Say when the schedule runs, such as every weekday at 06:00.".to_string());
+            return Some(
+                "Give the schedule an hron: when it runs, such as every weekday at 06:00."
+                    .to_string(),
+            );
         }
         times.find_map(|time| parse(time).err())
     }
@@ -430,9 +433,9 @@ impl Model {
         Items::parse(&self.category).unwrap_or(Items::None)
     }
 
-    /// How many items a run gets at most. 0: all of them.
+    /// How many items a run gets at most, as a count. 0: all of them.
     #[must_use]
-    pub fn most(&self) -> u32 {
+    pub fn max_items(&self) -> u32 {
         u32::try_from(self.max_items).unwrap_or_default()
     }
 

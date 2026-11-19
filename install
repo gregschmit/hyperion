@@ -178,9 +178,9 @@ install_m8r_user() {
   useradd --create-home --user-group --shell /bin/bash m8r
 }
 
-# Build m8r, give it a secret and a place for its data, and start it. A new m8r is up but
-# unconfigured: it runs nothing until someone opens an access link (`m8r task link`) and
-# configures it. A running m8r is not restarted.
+# Build m8r, give it a secret and a place for its data, and start it. A new m8r is up with
+# nothing to do: it runs nothing until someone opens an access link (`m8r task link`) and adds
+# a schedule. A running m8r is not restarted.
 install_m8r() {
   local env_file="$REPO/m8r/.env"
   local bin="$REPO/m8r/target/release/m8r-cli"
@@ -224,7 +224,7 @@ install_m8r() {
   fi
 
   if ! systemctl -q is-enabled m8r-web m8r-scheduler 2>/dev/null; then
-    echo "m8r:         up, and unconfigured. Next, see m8r/README.md (Deploying)."
+    echo "m8r:         up, with nothing to do yet. Next, see m8r/README.md (Deploying)."
   elif [ "$before" != "$(stat -c %Y "$bin")" ]; then
     echo "m8r:         rebuilt. Restart it: systemctl restart m8r-web m8r-scheduler"
   fi

@@ -3,7 +3,6 @@
 pub mod prelude;
 
 pub mod artifacts;
-pub mod configurations;
 pub mod errors;
 pub mod repos;
 pub mod runs;

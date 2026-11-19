@@ -12,7 +12,7 @@ use m8r::{
 };
 use serial_test::serial;
 
-use crate::support::{self, configure};
+use crate::support;
 
 const REQUESTS: Items = Items::Of(Category::Requests);
 const ISSUES: Items = Items::Of(Category::Issues);
@@ -56,14 +56,14 @@ async fn watchlist(ctx: &AppContext) -> (repos::Model, repos::Model) {
     (one, two)
 }
 
-/// What a prompt gets in `repo`, for a schedule that takes `items`, and `most` of them.
+/// What a prompt gets in `repo`, for a schedule that takes `items`, and `max_items` of them.
 async fn context(
     ctx: &AppContext,
     repo: Option<&repos::Model>,
     items: Items,
-    most: u32,
+    max_items: u32,
 ) -> Context {
-    let loaded = Context::load(&ctx.db, repo, items, most, "/x").await;
+    let loaded = Context::load(&ctx.db, repo, items, max_items, "/x").await;
     loaded.unwrap()
 }
 
@@ -73,16 +73,12 @@ async fn a_prompt_gets_each_part_where_it_says() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
     let (repo, _) = watchlist(ctx).await;
-    configure(ctx, "Write to the reviewers in plain words.\n").await;
 
     let context = Context::load(&ctx.db, Some(&repo), REQUESTS, 0, "/data/artifacts/9")
         .await
         .unwrap();
     let prompt = context
-        .compile(
-            "Before.\n{{ m8r_prompt }}\n\n{{ config_prompt }}\nFollow these:\n\
-             {{ watchlist }}\nAfter.",
-        )
+        .compile("Before.\n{{ m8r_prompt }}\n\nFollow these:\n{{ watchlist }}\nAfter.")
         .unwrap();
 
     // m8r's own part: where the agent is, where it reports, and how it keeps the watchlist.
@@ -98,37 +94,17 @@ async fn a_prompt_gets_each_part_where_it_says() {
         prompt.contains("\n## How to use m8r's watchlist\n"),
         "{prompt}"
     );
-    // Then yours. Then the repo's items of the category: the one that someone asked for
-    // first, then the urgent one. Nothing is escaped: a prompt isn't HTML.
+    // Then the repo's items of the category: the one that someone asked for first, then the
+    // urgent one. Nothing is escaped: a prompt isn't HTML.
     assert!(
         prompt.ends_with(
             "they are the developer's.\n\n\
-             Write to the reviewers in plain words.\n\
              Follow these:\n\
              - item 3 (medium, requested): https://git.example.com/g/p/-/merge_requests/3\n\
              - item 2 (high): https://git.example.com/g/p/-/merge_requests/2 Ship by <Friday>\n\
              After."
         ),
         "{prompt}"
-    );
-}
-
-#[tokio::test]
-#[serial]
-async fn the_configurations_prompt_goes_in_as_it_was_written() {
-    let boot = boot_test::<App>().await.unwrap();
-    let ctx = &boot.app_context;
-    let (repo, _) = watchlist(ctx).await;
-    // It's plain text, and no template: what looks like a tag is text too, and so is what
-    // Tera couldn't read.
-    let written = "Use {{ watchlist }} and {{ m8r_prompt }}.\n\
-                   {% for %} {{ nope }} ${{ github.sha }} <b>";
-    configure(ctx, written).await;
-    let context = context(ctx, Some(&repo), REQUESTS, 0).await;
-
-    assert_eq!(
-        context.compile("[{{ config_prompt }}]").unwrap(),
-        format!("[{written}]")
     );
 }
 
@@ -226,9 +202,14 @@ async fn the_requested_items_are_first_and_have_a_list_of_their_own() {
     );
     assert_eq!(all.compile(ids).unwrap(), "3/3241");
 
-    // A schedule's cutoff keeps the first items, so what someone asked for is in.
+    // A schedule's max items keeps the first ones, so what someone asked for is in. A prompt
+    // can say the number, and can tell when there's none.
+    let limit = "{% if max_items %}{{ max_items }} at most{% else %}all{% endif %}";
+    assert_eq!(all.compile(limit).unwrap(), "all");
+    assert_eq!(all.compile("{{ max_items }}").unwrap(), "0");
     let two_at_most = context(ctx, Some(&one), Items::All, 2).await;
     assert_eq!(two_at_most.compile(ids).unwrap(), "3/32");
+    assert_eq!(two_at_most.compile(limit).unwrap(), "2 at most");
     let one_issue = context(ctx, Some(&one), ISSUES, 1).await;
     assert_eq!(one_issue.compile(ids).unwrap(), "/4");
     // Nobody asked for anything in the other repo, and a prompt can tell.
@@ -298,34 +279,23 @@ async fn m8rs_part_says_how_to_change_the_watchlist_and_holds_no_secret() {
 async fn a_prompt_says_where_each_part_goes_or_goes_without_it() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
-    configure(ctx, "Write in plain words.\n").await;
     let context = context(ctx, None, Items::All, 0).await;
 
     assert_eq!(context.compile("Just triage.").unwrap(), "Just triage.");
     assert_eq!(context.compile("").unwrap(), "");
     // A part ends where its text does, so the prompt says what comes between two.
     assert_eq!(
-        context.compile("{{ config_prompt }}\n\nTriage.").unwrap(),
-        "Write in plain words.\n\nTriage."
+        context.compile("{{ watchlist }}\n\nTriage.").unwrap(),
+        "(nothing)\n\nTriage."
     );
 
-    // A new schedule's prompt holds m8r's part, yours and the watchlist, in this order.
+    // A new schedule's prompt holds m8r's part and the watchlist, in this order.
     let starter = context.compile(STARTER).unwrap();
     assert!(starter.starts_with("You are running in m8r"), "{starter}");
     assert!(
-        starter.ends_with(
-            "they are the developer's.\n\nWrite in plain words.\n\n\
-             The watchlist now:\n(nothing)\n\n"
-        ),
+        starter.ends_with("they are the developer's.\n\nThe watchlist now:\n(nothing)\n\n"),
         "{starter}"
     );
-
-    // With no active configuration, that part is blank.
-    let none = Context {
-        config_prompt: String::new(),
-        ..context
-    };
-    assert_eq!(none.compile("[{{ config_prompt }}]").unwrap(), "[]");
 }
 
 #[tokio::test]
@@ -341,9 +311,8 @@ async fn a_prompt_that_does_not_compile_says_why() {
         "{unknown}"
     );
     assert!(unknown.contains("nope"), "{unknown}");
-    // The names from before are no names now.
-    assert!(context.compile("{{ system_message }}").is_err());
-    assert!(context.compile("{{ skill }}").is_err());
+    // m8r has no text of yours for every prompt: a schedule's prompt is all of it.
+    assert!(context.compile("{{ config_prompt }}").is_err());
 }
 
 #[tokio::test]
@@ -352,11 +321,11 @@ async fn every_variable_that_the_pages_name_is_one_that_compiles() {
     let boot = boot_test::<App>().await.unwrap();
     let ctx = &boot.app_context;
     let (repo, _) = watchlist(ctx).await;
-    configure(ctx, "Yours.").await;
     let context = context(ctx, Some(&repo), Items::All, 0).await;
 
     let names: Vec<_> = VARIABLES.iter().map(|(name, _)| *name).collect();
-    assert_eq!(names[..2], ["{{ m8r_prompt }}", "{{ config_prompt }}"]);
+    assert_eq!(names[..2], ["{{ m8r_prompt }}", "{{ watchlist }}"]);
+    assert!(names.contains(&"{{ max_items }}"));
     for (variable, meaning) in VARIABLES {
         // The loop's page text has an ellipsis for its body.
         let template = variable.replace('…', "{{ item.url }}");

@@ -7,9 +7,7 @@ use std::{
 
 use loco_rs::prelude::*;
 use m8r::models::{
-    configurations, errors, repos,
-    runs::{self, Status},
-    schedules, tokens,
+    errors, repos, runs, schedules, tokens,
     watchlist_items::{self, Filter},
 };
 use migration::{schema, Migrator, MigratorTrait};
@@ -29,95 +27,79 @@ async fn empty(name: &str) -> DatabaseConnection {
         .unwrap()
 }
 
-/// What a database of the third release holds: a schedule in a category, items, runs, an
-/// error of the schedule and one of a tool, and a token.
-const THIRD_RELEASE: &str = "
-    INSERT INTO configurations (name, active, prompt) VALUES ('Mine', TRUE, 'Be brief.');
-    INSERT INTO schedules (operation, repos, hron, command, prompt, category_id) VALUES
-      ('review', '~/git/rxg', 'every weekday at 06:00', 'claude -p', '{{ watchlist }}', 2);
-    INSERT INTO watchlist_items (url, category_id, review_requested) VALUES
-      ('https://git.example.com/rgnets/rxg/-/merge_requests/1', 2, TRUE),
-      ('https://git.example.com/rgnets/rxg/-/issues/2', 1, FALSE);
-    INSERT INTO runs (operation, repo, command, status, schedule_id) VALUES
-      ('review', '~/git/rxg', 'claude -p', 'failed', 1),
-      ('review', '~/git/rxg', 'claude -p', 'queued', 1);
+/// What a database of the fourth release holds: a repo, a schedule in it, an item, a run, the
+/// schedule's error, a configuration that isn't active, the error that says so, and a token.
+const FOURTH_RELEASE: &str = "
+    INSERT INTO configurations (name, active, prompt) VALUES ('Mine', FALSE, 'Be brief.');
+    INSERT INTO repos (path, url) VALUES ('~/git/rxg', 'https://git.example.com/rgnets/rxg');
+    INSERT INTO schedules (name, category, max_items, hron, command, prompt) VALUES
+      ('review', 'pull/merge requests', 5, 'every weekday at 06:00', 'claude -p',
+       '{{ watchlist }}');
+    INSERT INTO schedule_repos (schedule_id, repo_id) VALUES (1, 1);
+    INSERT INTO watchlist_items (url, repo_id, category, requested) VALUES
+      ('https://git.example.com/rgnets/rxg/-/merge_requests/1', 1, 'pull/merge requests', TRUE);
+    INSERT INTO runs (name, repo, command, status, schedule_id, repo_id) VALUES
+      ('review', '~/git/rxg', 'claude -p', 'failed', 1, 1);
     INSERT INTO errors (subject, message, run_id) VALUES
       ('schedule 1 in ~/git/rxg', 'Run 1 (review) failed: it broke', 1),
-      ('gh', 'm8r finds no such command.', NULL);
+      ('configuration', 'No configuration is active, so nothing runs.', NULL);
     INSERT INTO tokens (name, digest, scope) VALUES ('duet', 'a', 'watchlist_items');";
 
+/// The ids in `table`, or an error if there's no such table.
+async fn ids(db: &DatabaseConnection, table: &str) -> Result<usize, DbErr> {
+    let all = Query::select()
+        .column(Alias::new("id"))
+        .from(Alias::new(table))
+        .to_owned();
+    Ok(db.query_all(&all).await?.len())
+}
+
 #[tokio::test]
-async fn an_update_keeps_the_history_and_starts_the_schedules_and_the_watchlist_new() {
-    let db = empty("third-release").await;
-    // The third release: a schedule had an operation, a category and its clones' paths, and
-    // an item had a category. Neither named a repo.
-    Migrator::up(&db, Some(3)).await.unwrap();
-    db.execute_unprepared(THIRD_RELEASE).await.unwrap();
+async fn an_update_keeps_everything_but_the_configurations() {
+    let db = empty("fourth-release").await;
+    // The fourth release: m8r ran nothing until a configuration was active.
+    Migrator::up(&db, Some(4)).await.unwrap();
+    db.execute_unprepared(FOURTH_RELEASE).await.unwrap();
 
     Migrator::up(&db, None).await.unwrap();
 
-    // m8r has no repo yet, so no schedule and no item: those are yours to add again.
-    assert!(repos::Model::list(&db).await.unwrap().is_empty());
-    assert!(schedules::Model::list(&db).await.unwrap().is_empty());
-    let all = watchlist_items::Model::list(&db, Filter::default()).await;
-    assert!(all.unwrap().is_empty());
-
-    // The rest is there. The history has each run, by the name that its schedule had, with no
-    // schedule and no repo.
-    let active = configurations::Model::active(&db).await.unwrap().unwrap();
-    assert_eq!(active.prompt, "Be brief.");
-    assert_eq!(tokens::Model::list(&db).await.unwrap().len(), 1);
-    let history = runs::Model::recent(&db, 10).await.unwrap();
-    let runs: Vec<_> = history
-        .iter()
-        .map(|run| {
-            assert_eq!((run.schedule_id, run.repo_id), (None, None));
-            (run.name.as_str(), run.repo.as_str(), run.status.as_str())
-        })
-        .collect();
+    // The schedule with its repo, the watchlist, the history and the token are there.
+    let scheduled = schedules::Model::list(&db).await.unwrap();
+    assert_eq!(scheduled.len(), 1);
+    let (review, in_repos) = &scheduled[0];
     assert_eq!(
-        runs,
-        [
-            ("review", "~/git/rxg", "queued"),
-            ("review", "~/git/rxg", "failed")
-        ]
+        (
+            review.name.as_str(),
+            review.max_items,
+            in_repos[0].path.as_str()
+        ),
+        ("review", 5, "~/git/rxg")
     );
-    // The error of the schedule that's gone is over, and the list keeps it. The tool's stays.
+    let items = watchlist_items::Model::list(&db, Filter::default()).await;
+    assert_eq!(items.unwrap().len(), 1);
+    let history = runs::Model::recent(&db, 10).await.unwrap();
+    assert_eq!(
+        (history[0].schedule_id, history[0].repo_id),
+        (Some(1), Some(1))
+    );
+    assert_eq!(tokens::Model::list(&db).await.unwrap().len(), 1);
+
+    // The configurations are gone, and the error that asked for one is over: the list keeps
+    // it. The schedule's error stays.
+    assert!(ids(&db, "configurations").await.is_err());
     let open = errors::Model::open(&db).await.unwrap();
     assert_eq!(open.len(), 1);
-    assert_eq!(open[0].subject, "gh");
+    assert_eq!(open[0].subject, "schedule 1 in ~/git/rxg");
     let kept = errors::Model::list(&db, 10).await.unwrap();
     assert_eq!(kept.len(), 2);
+    assert_eq!(kept[1].subject, "configuration");
     assert!(kept[1].cleared_at.is_some());
 
-    // And the new tables work with the old ones: a repo, an item in it, a schedule there, and
-    // a run of it beside the history.
-    let mut repo = repos::ActiveModel::new();
-    repo.path = Set("~/git/rxg".to_string());
-    repo.url = Set("https://git.example.com/rgnets/rxg".to_string());
-    let repo = repo.insert(&db).await.unwrap();
-    let item = watchlist_items::Params {
-        url: "https://git.example.com/rgnets/rxg/-/merge_requests/1".to_string(),
-        ..watchlist_items::Params::default()
-    };
-    let (item, _) = watchlist_items::Model::create(&db, &item)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!((item.id, item.repo_id), (1, repo.id));
-    let mut review = schedules::ActiveModel::new();
-    review.name = Set("review".to_string());
-    review.hron = Set("every weekday at 06:00".to_string());
-    let review = review.insert(&db).await.unwrap();
-    let queued = runs::Model::queue(&db, &review, std::slice::from_ref(&repo)).await;
-    let run = queued.unwrap().remove(0).into_active_model();
-    let run = run
-        .finished(&db, Status::Ok, String::new(), String::new())
-        .await
-        .unwrap();
-    assert_eq!((run.id, run.repo_id), (3, Some(repo.id)));
+    // And the schedule runs with what's there.
+    let queued = runs::Model::queue(&db, review, in_repos).await.unwrap();
+    assert_eq!((queued[0].id, queued[0].status.as_str()), (2, "queued"));
 
-    // The schedules and the watchlist of before are gone, so there's no way back.
+    // The configurations don't come back, so there's no way back.
     let back = Migrator::down(&db, Some(1)).await;
     assert!(back
         .unwrap_err()
@@ -128,8 +110,8 @@ async fn an_update_keeps_the_history_and_starts_the_schedules_and_the_watchlist_
 #[tokio::test]
 async fn a_migration_runs_on_connections_that_know_the_schema_from_before() {
     // The app's pool has several connections, and each keeps the schema that it read last.
-    // SQLite takes a quoted name that it doesn't know for text, so a query for a column that
-    // another connection just made must not go wrong on a connection that hasn't seen it.
+    // SQLite takes a quoted name that it doesn't know for text, so a query after a migration
+    // must not go wrong on a connection that hasn't seen the change.
     let dir = std::env::current_dir().unwrap().join("target/test-data");
     fs::create_dir_all(&dir).unwrap();
     let file = dir.join("several-connections.sqlite");
@@ -137,16 +119,12 @@ async fn a_migration_runs_on_connections_that_know_the_schema_from_before() {
     let mut options = sea_orm::ConnectOptions::new(format!("sqlite://{}?mode=rwc", file.display()));
     options.min_connections(3).max_connections(3);
     let db = Database::connect(options).await.unwrap();
-    Migrator::up(&db, Some(3)).await.unwrap();
-    db.execute_unprepared(THIRD_RELEASE).await.unwrap();
+    Migrator::up(&db, Some(4)).await.unwrap();
+    db.execute_unprepared(FOURTH_RELEASE).await.unwrap();
     // Every connection reads the schema as it is now.
     let look = || async {
-        for table in ["schedules", "watchlist_items", "runs", "errors"] {
-            let seen = Query::select()
-                .column(Alias::new("id"))
-                .from(Alias::new(table))
-                .to_owned();
-            db.query_all(&seen).await.unwrap();
+        for table in ["configurations", "schedules", "runs", "errors"] {
+            ids(&db, table).await.unwrap();
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     };
@@ -158,9 +136,8 @@ async fn a_migration_runs_on_connections_that_know_the_schema_from_before() {
 
     // Whichever connection answers, it reads what the migration made.
     let read = || async {
-        assert!(schedules::Model::list(&db).await.unwrap().is_empty());
-        let items = watchlist_items::Model::list(&db, Filter::default()).await;
-        assert!(items.unwrap().is_empty());
+        assert!(ids(&db, "configurations").await.is_err());
+        assert_eq!(schedules::Model::list(&db).await.unwrap().len(), 1);
         let history = runs::Model::recent(&db, 10).await.unwrap();
         assert_eq!(history[0].name, "review");
         assert_eq!(errors::Model::open(&db).await.unwrap().len(), 1);
@@ -173,41 +150,29 @@ async fn a_migration_runs_on_connections_that_know_the_schema_from_before() {
 #[tokio::test]
 async fn a_migration_that_fails_changes_nothing() {
     let db = empty("fails").await;
-    Migrator::up(&db, Some(3)).await.unwrap();
-    // Something is in the way of a late step: a table of that name, with other columns.
-    db.execute_unprepared(THIRD_RELEASE).await.unwrap();
-    db.execute_unprepared("CREATE TABLE schedule_repos (id integer PRIMARY KEY)")
-        .await
-        .unwrap();
+    Migrator::up(&db, Some(4)).await.unwrap();
+    db.execute_unprepared(FOURTH_RELEASE).await.unwrap();
+    // Something is in the way of a late step: no error can be cleared.
+    db.execute_unprepared(
+        "CREATE TRIGGER in_the_way BEFORE UPDATE ON errors
+         BEGIN SELECT RAISE(ABORT, 'in the way'); END",
+    )
+    .await
+    .unwrap();
 
     assert!(Migrator::up(&db, None).await.is_err());
 
-    // The database is still the third release's, whole: the m8r that runs goes on with it.
-    let old = |table: &'static str, column: &'static str| {
-        Query::select()
-            .column(Alias::new(column))
-            .from(Alias::new(table))
-            .to_owned()
-    };
-    for (table, column, rows) in [
-        ("schedules", "operation", 1),
-        ("watchlist_items", "review_requested", 2),
-        ("categories", "name", 2),
-        ("runs", "operation", 2),
-    ] {
-        let kept = db.query_all(&old(table, column)).await;
-        assert_eq!(kept.unwrap().len(), rows, "{table}.{column}");
-    }
-    assert!(db.query_all(&old("repos", "path")).await.is_err());
+    // The database is still the fourth release's, whole: the m8r that runs goes on with it.
+    assert_eq!(ids(&db, "configurations").await.unwrap(), 1);
     assert_eq!(errors::Model::open(&db).await.unwrap().len(), 2);
 
     // With that out of the way, the same migration goes through.
-    db.execute_unprepared("DROP TABLE schedule_repos")
+    db.execute_unprepared("DROP TRIGGER in_the_way")
         .await
         .unwrap();
     Migrator::up(&db, None).await.unwrap();
-    assert!(repos::Model::list(&db).await.unwrap().is_empty());
-    assert_eq!(runs::Model::recent(&db, 10).await.unwrap().len(), 2);
+    assert!(ids(&db, "configurations").await.is_err());
+    assert_eq!(errors::Model::open(&db).await.unwrap().len(), 1);
 }
 
 #[tokio::test]

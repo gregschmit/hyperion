@@ -9,8 +9,7 @@ use m8r::{
 use serial_test::serial;
 
 use crate::support::{
-    self, configure, queue_all, queue_one, schedule, schedule_params, start, watch, Sandbox, GH,
-    REQUESTS,
+    self, queue_all, queue_one, schedule, schedule_params, start, watch, Sandbox, GH, REQUESTS,
 };
 
 async fn tick(ctx: &AppContext) {
@@ -73,7 +72,6 @@ async fn a_tick_runs_the_oldest_queued_run_with_its_compiled_prompt() {
         r#"echo '{"title": "An open one", "state": "opened"}'"#,
     );
     let ctx = sandbox.context(&boot.app_context, "cat");
-    configure(&ctx, "The developer likes short reviews.\n").await;
     // The run's repo has an issue and a PR, and another repo has an MR.
     repo(&ctx, &sandbox.repo(), "https://github.com/o/r").await;
     repo(
@@ -92,7 +90,7 @@ async fn a_tick_runs_the_oldest_queued_run_with_its_compiled_prompt() {
         category: REQUESTS.to_string(),
         ..schedule_params(
             &sandbox.repo(),
-            "{{ m8r_prompt }}\n\n{{ config_prompt }}\n\nReview these:\n{{ watchlist }}",
+            "{{ m8r_prompt }}\n\nReview these:\n{{ watchlist }}",
         )
     };
     let reviews = schedule(&ctx, &params).await;
@@ -114,7 +112,7 @@ async fn a_tick_runs_the_oldest_queued_run_with_its_compiled_prompt() {
     );
     assert!(
         run.prompt.ends_with(
-            "they are the developer's.\n\nThe developer likes short reviews.\n\n\
+            "they are the developer's.\n\n\
              Review these:\n\
              - item 2 (medium): https://github.com/o/r/pull/2"
         ),
@@ -144,7 +142,6 @@ async fn a_run_reports_artifacts_even_when_the_agent_fails() {
     let sandbox = Sandbox::new("tick-artifacts");
     sandbox.tool("reporter", REPORTER);
     let ctx = sandbox.context(&boot.app_context, "reporter 3");
-    configure(&ctx, "").await;
     let run = queue(&ctx, &sandbox, "{{ m8r_prompt }}").await;
 
     tick(&ctx).await;
@@ -205,7 +202,6 @@ async fn a_runs_agent_keeps_the_watchlist_with_the_commands_of_m8rs_prompt() {
     // The pages are up, where the run's environment says.
     sandbox.serve(boot.router.clone().unwrap());
     let ctx = sandbox.context(&boot.app_context, "keeper");
-    configure(&ctx, "").await;
     // The run's repo has two PRs, and another repo has an MR.
     repo(&ctx, &sandbox.repo(), "https://github.com/o/r").await;
     let merged = watch(&ctx, "https://github.com/o/r/pull/1").await;
@@ -308,15 +304,7 @@ async fn a_run_fails_at_once_when_it_cannot_start() {
         run.error
     };
 
-    // No configuration is active.
-    let run = queue(&ctx, &sandbox, "Triage.").await;
-    assert_eq!(
-        failed(ctx.clone(), run).await,
-        "No configuration is active."
-    );
-
     // The schedule went while its run waited.
-    configure(&ctx, "").await;
     let run = queue(&ctx, &sandbox, "Triage.").await;
     schedules::Model::remove(&ctx.db, run.schedule_id.unwrap())
         .await
@@ -356,28 +344,23 @@ async fn a_run_fails_at_once_when_it_cannot_start() {
 
 #[tokio::test]
 #[serial]
-async fn a_tick_queues_the_schedules_that_are_due_once_configured() {
+async fn a_tick_queues_the_schedules_that_are_due() {
     let boot = boot_test::<App>().await.unwrap();
     let sandbox = Sandbox::new("tick-schedules");
     let ctx = sandbox.context(&boot.app_context, "cat");
     // One that's due every minute, and one whose only time is long gone.
-    for (operation, hron) in [
+    for (name, hron) in [
         ("triage", "every minute"),
         ("review", "on 2001-01-01 at 00:00"),
     ] {
         let params = schedules::Params {
-            name: operation.to_string(),
+            name: name.to_string(),
             hron: hron.into(),
             ..schedule_params(&sandbox.repo(), "Go.")
         };
         schedule(&ctx, &params).await;
     }
 
-    // Unconfigured, m8r is idle.
-    tick(&ctx).await;
-    assert!(runs::Model::recent(&ctx.db, 10).await.unwrap().is_empty());
-
-    configure(&ctx, "").await;
     tick(&ctx).await;
     let queued = runs::Model::recent(&ctx.db, 10).await.unwrap();
     assert_eq!(queued.len(), 1);
@@ -395,7 +378,6 @@ async fn a_schedules_error_lasts_until_its_next_run_goes_well() {
     let sandbox = Sandbox::new("tick-schedule-error");
     // The command isn't there yet: the developer still has to install it.
     let ctx = sandbox.context(&boot.app_context, "claude -p");
-    configure(&ctx, "").await;
     let run = queue(&ctx, &sandbox, "Triage.").await;
     let (schedule, _) = schedules::Model::find(&ctx.db, run.schedule_id.unwrap())
         .await
@@ -450,27 +432,19 @@ async fn a_tick_says_what_m8r_needs_before_anything_runs() {
     let sandbox = Sandbox::new("tick-setup");
     let ctx = sandbox.context(&boot.app_context, "cat");
 
-    // A new m8r has no configuration and no schedule.
-    tick(&ctx).await;
-    assert_eq!(errors(&ctx).await, ["configuration", "schedules"]);
-
-    // Each error goes when what it's about is there.
-    let active = configure(&ctx, "").await;
+    // A new m8r has no schedule.
     tick(&ctx).await;
     assert_eq!(errors(&ctx).await, ["schedules"]);
+
+    // The error goes when there's one.
     let only = schedule(&ctx, &schedule_params(&sandbox.repo(), "Go.")).await;
     tick(&ctx).await;
     assert!(errors(&ctx).await.is_empty());
 
     // And it's back when that goes.
-    active
-        .into_active_model()
-        .deactivated(&ctx.db)
-        .await
-        .unwrap();
     schedules::Model::remove(&ctx.db, only.id).await.unwrap();
     tick(&ctx).await;
-    assert_eq!(errors(&ctx).await, ["configuration", "schedules"]);
+    assert_eq!(errors(&ctx).await, ["schedules"]);
 }
 
 /// A command that isn't an agent's: it says what it was started with and what it got.
@@ -488,7 +462,6 @@ async fn a_run_is_its_schedules_command_with_its_prompt_on_stdin() {
     sandbox.tool("other-tool", OTHER);
     // The agent's command is another one: a run uses its schedule's.
     let ctx = sandbox.context(&boot.app_context, "false");
-    configure(&ctx, "").await;
     let command = r#"other-tool "Update the changelog.""#;
     let params = |prompt: &str| schedules::Params {
         name: "other".to_string(),
@@ -601,7 +574,7 @@ async fn the_pages_say_when_the_scheduler_does_not_tick() {
             &ctx,
             "runs/index.html",
             "runs",
-            serde_json::json!({ "runs": [] }),
+            serde_json::json!({ "runs": [], "setup": false }),
         )
         .await
         .unwrap();
@@ -632,7 +605,6 @@ async fn one_run_at_a_time() {
     let boot = boot_test::<App>().await.unwrap();
     let sandbox = Sandbox::new("tick-lock");
     let ctx = sandbox.context(&boot.app_context, "cat");
-    configure(&ctx, "").await;
     let settings = Settings::from_context(&ctx).unwrap();
     fs::create_dir_all(&settings.data).unwrap();
 
@@ -690,7 +662,6 @@ async fn a_schedules_runs_start_together_one_in_each_of_its_repos() {
     let sandbox = Sandbox::new("tick-together");
     sandbox.tool("meet", MEET);
     let ctx = sandbox.context(&boot.app_context, "cat");
-    configure(&ctx, "").await;
     let clones = [
         sandbox.repo(),
         sandbox.another_repo("second"),
@@ -739,7 +710,6 @@ async fn each_of_a_schedules_repos_has_an_error_of_its_own() {
     let sandbox = Sandbox::new("tick-repo-errors");
     sandbox.tool("picky", PICKY);
     let ctx = sandbox.context(&boot.app_context, "cat");
-    configure(&ctx, "").await;
     let (good, bad) = (sandbox.repo(), sandbox.another_repo("second"));
     fs::write(bad.join("broken"), "").unwrap();
     let params = schedules::Params {
@@ -796,7 +766,6 @@ async fn each_run_gets_the_items_of_its_own_repo() {
     let boot = boot_test::<App>().await.unwrap();
     let sandbox = Sandbox::new("tick-repo-items");
     let ctx = sandbox.context(&boot.app_context, "cat");
-    configure(&ctx, "").await;
     let (one, two) = (sandbox.repo(), sandbox.another_repo("second"));
     repo(&ctx, &one, "https://github.com/o/r").await;
     repo(&ctx, &two, "https://git.example.com/g/p").await;
@@ -831,7 +800,8 @@ async fn each_run_gets_the_items_of_its_own_repo() {
             .into(),
         ..schedule_params(
             &one,
-            "{{ repo_url }}\nFirst:\n{{ requested_watchlist }}\nAll:\n{{ watchlist }}",
+            "{{ repo_url }}\nFirst:\n{{ requested_watchlist }}\n\
+             All, {{ max_items }} at most:\n{{ watchlist }}",
         )
     };
     let both = schedule(&ctx, &params).await;
@@ -847,7 +817,7 @@ async fn each_run_gets_the_items_of_its_own_repo() {
         "https://github.com/o/r\n\
          First:\n\
          - item 2 (medium, requested): https://github.com/o/r/pull/2\n\
-         All:\n\
+         All, 2 at most:\n\
          - item 2 (medium, requested): https://github.com/o/r/pull/2\n\
          - item 3 (high): https://github.com/o/r/issues/3"
     );
@@ -857,7 +827,7 @@ async fn each_run_gets_the_items_of_its_own_repo() {
         "https://git.example.com/g/p\n\
          First:\n\
          (nothing)\n\
-         All:\n\
+         All, 2 at most:\n\
          - item 4 (medium): https://git.example.com/g/p/-/merge_requests/4"
     );
 }

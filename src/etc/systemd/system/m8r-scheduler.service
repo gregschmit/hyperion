@@ -1,6 +1,6 @@
 # m8r's scheduler: every minute it runs m8r's tick task, which starts the agent runs (see
 # /srv/hyperion/m8r/README.md). The agents run as m8r, in this unit. install enables and starts
-# it. A new m8r has no configuration, so the ticks have nothing to run.
+# it. A new m8r has no schedule, so the ticks have nothing to run.
 [Unit]
 Description=m8r scheduler and agent runs
 Wants=network-online.target

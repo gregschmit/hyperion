@@ -112,8 +112,8 @@ impl Params {
         let path = self.path.trim();
         if path.is_empty() {
             return Ok(Err(
-                "Say where the clone is: a path from the home of m8r's user, such as \
-                 ~/git/group/project."
+                "Give the repo a path: where its clone is, from the home of m8r's user, such \
+                 as ~/git/group/project."
                     .to_string(),
             ));
         }

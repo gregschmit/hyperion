@@ -7,8 +7,8 @@ You set up one Unix user the way you set up any computer of yours: dotfiles, age
 logins, clones. m8r runs your commands and prompts there on a schedule, in the repos that you
 name: to triage issues, to review PRs/MRs, to develop, or for anything else. It keeps a
 watchlist of the issues and PRs/MRs that you follow, which you, your agents and Claude Duet
-all keep current, and gives each run the items of its own repo. And it shows what each
-schedule's latest run reported.
+all keep current, and gives each run the items of its own repo. And it lists the runs, with
+what each one printed and reported.
 
 It's a [Loco](https://loco.rs) app (Rust) with a SQLite database, up on hyperion at
 `m8r.schmit.net`. [AGENTS.md](AGENTS.md) points coding agents at Loco's own skill, in
@@ -41,8 +41,8 @@ Everything runs as one user, `m8r`.
 - **Your environment.** A run is a command of yours, as a rule your agent CLI. It starts as the
   `m8r` user, with the tools, logins and skills that you set up in that user's home. m8r
   installs none of them, and looks for none.
-- **Your prompts.** A schedule's prompt is yours. m8r's own part and your configuration's go
-  where the prompt says, and the pages show exactly what an agent gets.
+- **Your prompts.** A schedule's prompt is yours. m8r's own part and the watchlist go where
+  the prompt says, and the pages show exactly what an agent gets.
 - **m8r knows where, and the prompt says what.** m8r knows the repos, which items are in
   which, and which run gets which, so an agent starts in one repo with that repo's items.
   What to do with them is the prompt's to say.
@@ -53,8 +53,8 @@ Everything runs as one user, `m8r`.
 - **One way in for each kind of caller.** A person gets a session, and a program gets a token.
 - **Errors clear themselves.** What's wrong is in one list, on every page. Nobody dismisses an
   error: what raises one clears it too, when its cause is gone.
-- **Idle until you configure it.** m8r installs up, like any other service. It runs nothing
-  without an active configuration and a schedule.
+- **Idle until it has a schedule.** m8r installs up, like any other service. It runs nothing
+  until you add a schedule.
 
 ## Deploying
 
@@ -66,8 +66,8 @@ On hyperion, [install](../install) does m8r's part. It:
 - migrates the database in `/var/lib/m8r`;
 - enables and starts `m8r-web` (the pages) and `m8r-scheduler` (the runs).
 
-m8r is then up, and unconfigured: it runs nothing until you configure it. Your part, in this
-order:
+m8r is then up, with nothing to do: it runs nothing until it has a schedule. Your part, in
+this order:
 
 1. Add `m8r.schmit.net` to public DNS.
 2. Load the new site and the firewall rules that keep the `m8r` user off the LAN:
@@ -94,9 +94,8 @@ order:
    - Log each of them in.
    - Clone the repos to maintain.
 
-5. In the pages: add the repos, write a configuration and make it active, add a schedule, and
-   press "Run now". Until there's an active configuration and a schedule, every page says that
-   each is missing.
+5. In the pages: add the repos, add a schedule, and press "Run now". Until there's a schedule,
+   every page says that it's missing.
 
 The agent's command starts as `claude -p --dangerously-skip-permissions`: nobody is there to
 approve a tool call. Each schedule has a command of its own. To start every new schedule with
@@ -110,12 +109,12 @@ units.
 A repo is a clone in the home of m8r's user, and the project on its forge. m8r works in the
 repos that it has: a schedule runs in some of them, and a watchlist item is in one.
 
-- **The clone** is a path from that home: `~/git/group/project`. A full path works too. Clone
-  the repo as `m8r` first: m8r adds a repo only for a directory that's there.
-- **The project** is its URL on GitHub or GitLab: `https://git.example.com/group/project`.
+- **The path** is where the clone is, from that home: `~/git/group/project`. A full path works
+  too. Clone the repo as `m8r` first: m8r adds a repo only for a directory that's there.
+- **The URL** is the project's, on GitHub or GitLab: `https://git.example.com/group/project`.
   Leave it blank, and m8r reads it from the clone's `origin`. Write it yourself when the
   clone's origin isn't the project that you follow, as with a fork.
-- **A repo with no project** takes no watchlist items. A schedule can still run in it.
+- **A repo with no URL** takes no watchlist items. A schedule can still run in it.
 - **A repo that's in use stays:** take its items off the watchlist and its schedules off it
   before you remove it. Its runs stay in the history.
 
@@ -128,11 +127,12 @@ its runs at once.
   schedule's runs.
 - **The repos** are the ones that the command starts in. Each time the schedule runs, a run
   starts in each of them, side by side.
-- **The watchlist** says which items a run's prompt gets: all the items of the run's repo, its
-  issues, its pull/merge requests, or none. A run never gets another repo's items.
-- **Most items** cuts that list: a run gets the first ones, and no more than this many. The
+- **The category** says which watchlist items a run's prompt gets: `all` the items of the
+  run's repo, its `issues`, its `pull/merge requests`, or none. A run never gets another
+  repo's items.
+- **Max items** cuts that list: a run gets the first ones, and no more than this many. The
   requested items come first, then the urgent ones, then the rest. 0 means all of them.
-- **The times** are in words: `every weekday at 06:00`, `every 12 hours`,
+- **Hron** says when the schedule runs, in words: `every weekday at 06:00`, `every 12 hours`,
   `every monday, thursday at 9:00, 15:00`
   ([hron](https://github.com/simpllyf/hron#expression-syntax) has more). A five-field cron
   expression works too, and m8r puts it in words. Times are on the server's clock, unless you
@@ -154,19 +154,18 @@ when the run starts. It can use these, and the schedule's page lists them:
 - `{{ m8r_prompt }}`: m8r's own part, which is in the code. It says where the agent is, how it
   reports what it made, and how it adds, changes and removes watchlist items while it runs,
   with `curl` commands for m8r's API.
-- `{{ config_prompt }}`: the active configuration's prompt. That's your part of every prompt:
-  what every agent should know, whatever its schedule. It's plain text, and it goes in as you
-  wrote it.
 - `{{ watchlist }}`: the watchlist items that the run gets, one to a line, such as
-  `- item 12 (high, requested): https://… Ship by Friday`. They're the items of the run's repo
-  that the schedule takes, in the order above, cut at the schedule's most. The number is
-  what the API's commands take. With no items, it's `(nothing)`.
+  `- item 12 (high, requested): https://… Ship by Friday`. They're the items of the run's
+  repo, of the schedule's category, in the order above, and no more than its max items. An
+  item's number is what the API's commands take. With no items, it's `(nothing)`.
 - `{{ requested_watchlist }}`: only the requested ones of those items, the same way. They're
   in `watchlist` too, at its top.
 - `{{ repo }}` and `{{ repo_url }}`: the run's repo, as the path of its clone and as the URL of
   its project. The URL is blank if m8r doesn't know it.
-- `{{ category }}`: which items the schedule takes: `all`, `issues` or `pull/merge requests`.
-  Blank with none.
+- `{{ category }}`: the schedule's category: `all`, `issues` or `pull/merge requests`. Blank
+  with none.
+- `{{ max_items }}`: the schedule's max items. It's 0 when a run gets all of them, so a prompt
+  can say `{% if max_items %}Do no more than {{ max_items }} of them.{% endif %}`.
 - `{{ artifacts_dir }}`: the directory where the run reports its artifacts.
 - `{% for item in watchlist_items %}` and `{% for item in requested_watchlist_items %}`: the
   same two lists, to write the lines yourself. Each item has `id`, `url`, `category`,
@@ -177,8 +176,6 @@ A new schedule's prompt starts as this, and then you say what to do:
 ```
 {{ m8r_prompt }}
 
-{{ config_prompt }}
-
 The watchlist now:
 {{ watchlist }}
 
@@ -187,8 +184,6 @@ The watchlist now:
 A schedule's page shows its prompt compiled as a run in the first of its repos would get it,
 with the watchlist as it is now, and a run's page shows the prompt it got. m8r refuses to save
 a prompt that doesn't compile, and shows Tera's error.
-
-**Configurations** hold `config_prompt`. One is active, or none, and then nothing runs.
 
 ### The watchlist
 
@@ -215,9 +210,8 @@ The scheduler runs the `tick` task every minute, each time in a process of its o
 
 1. clears the scheduler's own error, asks whether m8r is set up, and looks at the repos (see
    [Errors](#errors));
-2. queues the runs of each schedule whose time comes in this minute, if a configuration is
-   active: one run for each of the schedule's repos. It skips a repo where the schedule's run
-   is already waiting;
+2. queues the runs of each schedule whose time comes in this minute: one run for each of the
+   schedule's repos. It skips a repo where the schedule's run is already waiting;
 3. asks the forges about the watchlist, and looks whether a run could reach m8r's API;
 4. takes the run lock. If another tick holds it, runs are in progress, and this tick stops;
 5. fails any run still marked `running`: the tick that held it died;
@@ -227,8 +221,8 @@ The scheduler runs the `tick` task every minute, each time in a process of its o
 A run:
 
 1. takes its schedule and its repo as they are now, and compiles the prompt with that repo's
-   items. It fails here if no configuration is active, if its schedule or its repo is gone, if
-   its clone isn't there, or if the prompt doesn't compile;
+   items. It fails here if its schedule or its repo is gone, if its clone isn't there, or if
+   the prompt doesn't compile;
 2. starts the command through the login shell, in its clone, with the prompt on stdin. The
    login shell gives it the `PATH` and environment that you get when you become `m8r`;
 3. ends when the command does. m8r kills a run that passes two hours, and whatever the run
@@ -245,9 +239,17 @@ A run:
   does. The commands in `m8r_prompt` use both.
 - **The history keeps what ran:** a run's page shows its schedule's name, its command, the
   prompt it got, and what the command printed. To look closer, become `m8r`, go to the clone,
-  and `claude --resume`.
+  and resume the agent's session: `claude --resume <id>`. Claude Code leaves a `-p` session
+  out of the list that `claude --resume` shows, so take the id from the name of the session's
+  file in `~/.claude/projects/`.
+- **A run in progress can be watched.** What its command prints goes to a file as it comes,
+  and into the run's row when the run ends. `m8r task runs` lists the runs that aren't over,
+  and `m8r task output id:12` prints what run 12 has printed and goes on until the run ends.
+  It shows only what the command prints: `claude -p` prints its answer, when it's done. With
+  `--output-format stream-json --verbose` in the schedule's command, it prints each step as
+  a line of JSON.
 
-### The report and the artifacts
+### Artifacts
 
 An artifact is something that a run made and chose to report: a link, or a set of files.
 
@@ -257,9 +259,8 @@ An artifact is something that a run made and chose to report: a link, or a set o
   comment it posted, a PR/MR), it puts in one text file that holds only the link.
 - **What m8r records.** When the run ends, however it ends, m8r makes one artifact for each
   directory. Files that an agent left loose become one artifact named `report`.
-- **The report** is the home page: for each schedule and each of its repos, what its latest
-  run there reported. That stays until the schedule's next run there is over. A run that
-  couldn't start takes nothing's place.
+- **Where they show.** The Runs page, which is the home page, lists each run with its
+  artifacts, and a run's own page has them too.
 - **Hosted files are inert.** An agent wrote them, maybe after it read a hostile issue, and they
   open inside your session. So m8r serves them with a `Content-Security-Policy` that allows
   styles and images and nothing else, and shows text files, markdown too, as plain text.
@@ -276,7 +277,6 @@ Nobody clears an error by hand. Whatever raises one clears it too:
   links to the run that failed.
 - **`repo <path>`:** the repo's clone isn't there, or its `origin` names a project that
   another repo has. A tick raises it, and clears it when it's put right.
-- **`configuration`:** no configuration is active. It clears when one is.
 - **`schedules`:** there's no schedule. It clears when there's one.
 - **`scheduler`:** a page found no tick for a few minutes. The next tick clears it.
 - **`API`:** a tick couldn't reach m8r's pages as a run would, so an agent can't change the
@@ -308,9 +308,9 @@ m8r task revoke name:duet                        # ends one
 ```
 
 - **A scope** says what a token covers: `all`, or one or more of `watchlist_items`, `repos`,
-  `schedules`, `configurations` and `runs`, with commas between them. A token
-  for `schedules` can write a command, which runs as `m8r`: give each token the least it needs.
-  m8r keeps a token's SHA-256, and not the token.
+  `schedules` and `runs`, with commas between them. A token for `schedules` can write a
+  command, which runs as `m8r`: give each token the least it needs. m8r keeps a token's
+  SHA-256, and not the token.
 - **The API** takes and gives JSON:
 
   ```sh
@@ -322,14 +322,14 @@ m8r task revoke name:duet                        # ends one
   curl -X DELETE https://m8r.schmit.net/api/watchlist_items/1 -H "Authorization: Bearer $TOKEN"
   ```
 
-  `repos`, `schedules` and `configurations` work the same way. A `POST` of a watchlist item
-  whose URL is already there changes that item, and a `PATCH` changes what it names. An
-  item's answer has its `repo` and its `category`, which its URL says, and
+  `repos` and `schedules` work the same way. A column goes by its own name. A `POST` of a
+  watchlist item whose URL is already there changes that item, and a `PATCH` changes what it
+  names. An item's answer has its `repo` and its `category`, which its URL says, and
   `?category=issues` and `?repo_id=1` narrow the list. A repo has a `path` and a `url`. A
   schedule's `repos` and `hron` are arrays: the repos by the paths of their clones.
-  `POST /api/schedules/<id>/run` queues the schedule's runs and answers with them,
-  `POST /api/configurations/<id>/activate` and `/deactivate` do what they say, and `/api/runs`
-  can be read. What can't be saved comes back as a 400 with the reason in `description`.
+  `POST /api/schedules/<id>/run` queues the schedule's runs and answers with them, and
+  `/api/runs` can be read. What can't be saved comes back as a 400 with the reason in
+  `description`.
 - **The MCP endpoint** is the same work as tools (`list_watchlist_items`,
   `add_watchlist_item`, and so on), over streamable HTTP with no sessions. A client sees the
   tools of its token's resources, and no others. Each tool says whether it only reads and
@@ -397,7 +397,11 @@ The app is in `m8r/` in this repo, and its host files are in `src/` like everyth
 - `m8r doctor` checks the config and the database. It calls the loopback binding unsafe. Here
   that's on purpose: nginx is in front.
 - `m8r task tick` does now what the scheduler does every minute.
-- To stop the runs, make no configuration active, or `sudo systemctl stop m8r-scheduler`.
+- `m8r task runs` lists the runs that aren't over, and `m8r task output id:12` prints what one
+  prints, as it comes.
+- `systemctl status m8r-scheduler` shows the processes of the runs in progress: the agents are
+  the unit's children.
+- To stop the runs: `sudo systemctl stop m8r-scheduler`.
 
 ## Security
 
@@ -478,6 +482,9 @@ One stand-in agent runs the commands of `m8r_prompt` against the API on loopback
   are young: `Cargo.lock` pins the versions that the tests ran with.
 - **The pages** are Tera templates and plain forms, with no frontend build, and one small
   script, which gives the errors their turns.
+- **A name is the column's.** What a page calls a field is the name of its column, and so is
+  what the API and the MCP tools call it: `max_items` is "Max items" on a schedule's page. To
+  rename one, rename them all.
 
 `migration/schema.sql` has the schema itself. In short, what the database holds, beside Loco's
 `id`, `created_at` and `updated_at`:
@@ -488,8 +495,6 @@ repos            path (unique), url (blank, or one repo's)
 watchlist_items  url (unique), repo → repos ON DELETE RESTRICT,
                  category (issues|pull/merge requests), priority (medium|high), note,
                  requested, title, checked_at
-
-configurations   name, active (one at most), prompt
 
 schedules        name (unique), category (blank|all|issues|pull/merge requests), max_items,
                  hron (a list, one to a line), command, prompt
@@ -526,4 +531,4 @@ used_links       token_id (unique), expires_at
   and a worktree for each.
 - **Setup in the app:** a dotfiles repo and credentials that m8r installs for you, and the
   choice of an existing database.
-- **The report by email,** with an access link.
+- **A digest by email:** what the day's runs reported, with an access link.

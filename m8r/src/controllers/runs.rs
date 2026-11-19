@@ -3,14 +3,14 @@ use loco_rs::prelude::*;
 use serde_json::json;
 
 use crate::{
-    models::{artifacts, runs},
+    models::{artifacts, runs, schedules},
     views,
 };
 
 /// How many runs the page lists.
 const RUNS: u64 = 200;
 
-/// The queue and the history.
+/// The queue and the history, with what each run reported. It's the home page too.
 #[debug_handler]
 pub async fn index(
     ViewEngine(v): ViewEngine<TeraView>,
@@ -21,10 +21,13 @@ pub async fn index(
         let reported = artifacts::Model::of_run(&ctx.db, run.id).await?;
         rows.push(views::run(&run, &reported));
     }
-    views::page(&v, &ctx, "runs/index.html", "runs", json!({ "runs": rows })).await
+    // A new m8r has nothing to list, so the page says how to set it up.
+    let setup = rows.is_empty() && schedules::Model::list(&ctx.db).await?.is_empty();
+    let data = json!({ "runs": rows, "setup": setup });
+    views::page(&v, &ctx, "runs/index.html", "runs", data).await
 }
 
-/// One run: its command, the prompt it got, what it printed, and what it reported.
+/// One run: its command, what it reported, what it printed, and the prompt it got.
 #[debug_handler]
 pub async fn show(
     ViewEngine(v): ViewEngine<TeraView>,
@@ -39,7 +42,7 @@ pub async fn show(
 
 pub fn routes() -> Routes {
     Routes::new()
-        .prefix("/runs")
         .add("/", get(index))
-        .add("/{id}", get(show))
+        .add("/runs", get(index))
+        .add("/runs/{id}", get(show))
 }

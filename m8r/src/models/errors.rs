@@ -6,12 +6,10 @@ use chrono::{Duration, Utc};
 use loco_rs::prelude::*;
 use sea_orm::SqlErr;
 
-use super::{configurations, schedules};
+use super::schedules;
 
 pub type Errors = Entity;
 
-/// No configuration is active. `check_setup` raises it and clears it.
-pub const CONFIGURATION: &str = "configuration";
 /// There's no schedule. `check_setup` raises it and clears it.
 pub const SCHEDULES: &str = "schedules";
 /// The scheduler doesn't tick. A page raises it, and a tick clears it.
@@ -194,16 +192,13 @@ impl Model {
         }
     }
 
-    /// m8r runs nothing without an active configuration and a schedule. Each is an error
-    /// while it's missing. Every tick asks, and so does every page, so that the error goes as
-    /// soon as you look after you put it right.
+    /// m8r runs nothing without a schedule, which is an error while it's missing. Every tick
+    /// asks, and so does every page, so that the error goes as soon as you look after you put
+    /// it right.
     ///
     /// # Errors
     /// When a query fails.
     pub async fn check_setup(db: &DatabaseConnection) -> ModelResult<()> {
-        let configured = configurations::Model::active(db).await?.is_some();
-        let problem = "No configuration is active, so nothing runs. Make one, and make it active.";
-        Self::set(db, CONFIGURATION, (!configured).then_some(problem)).await?;
         let scheduled = schedules::Entity::find().count(db).await? > 0;
         let problem = "There's no schedule, so nothing runs. Add one.";
         Self::set(db, SCHEDULES, (!scheduled).then_some(problem)).await

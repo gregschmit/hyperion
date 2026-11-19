@@ -1,6 +1,5 @@
 pub mod _entities;
 pub mod artifacts;
-pub mod configurations;
 pub mod errors;
 pub mod repos;
 pub mod runs;

@@ -2,17 +2,17 @@ use loco_rs::prelude::*;
 use m8r::models::{errors, runs::Status, schedules};
 use serial_test::serial;
 
-use crate::support::{configure, queue, queue_one, signed_in, start};
+use crate::support::{queue, queue_one, signed_in, start};
 
 #[tokio::test]
 #[serial]
 async fn every_page_shows_the_open_errors_and_one_page_lists_them_all() {
     signed_in(|request, ctx| async move {
         let db = &ctx.db;
-        // A new m8r: no tick came yet, nothing is configured, and nothing is scheduled.
+        // A new m8r: no tick came yet, and nothing is scheduled.
         let page = request.get("/watchlist").await.text();
         assert!(
-            page.contains(r#"<a class="count" href="/errors">3 errors</a>"#),
+            page.contains(r#"<a class="count" href="/errors">2 errors</a>"#),
             "{page}"
         );
         // The alert holds them all, and shows the first: its script shows the others in turn.
@@ -21,22 +21,15 @@ async fn every_page_shows_the_open_errors_and_one_page_lists_them_all() {
             "{page}"
         );
         assert!(
-            page.contains(
-                "<li hidden><strong>configuration:</strong> No configuration is active, so \
-                 nothing runs."
-            ),
-            "{page}"
-        );
-        assert!(
             page.contains("<li hidden><strong>schedules:</strong> There&#39;s no schedule"),
             "{page}"
         );
         assert!(page.contains("setInterval"), "{page}");
 
-        // Nobody clears an error: there's no button for it.
+        // Nobody clears an error: there's no button for it. A column goes by its name.
         let page = request.get("/errors").await.text();
         assert!(
-            page.contains(r#"<a href="/configurations">configuration</a>"#),
+            page.contains("<th>Created at</th><th>Subject</th><th>Message</th><th>Cleared at</th>"),
             "{page}"
         );
         assert!(
@@ -44,30 +37,23 @@ async fn every_page_shows_the_open_errors_and_one_page_lists_them_all() {
             "{page}"
         );
         let open = r#"<span class="status failed">not yet</span>"#;
-        assert_eq!(page.matches(open).count(), 3, "{page}");
+        assert_eq!(page.matches(open).count(), 2, "{page}");
         assert!(!page.contains("<button"), "{page}");
 
-        // It goes when what it's about is put right, at the next look. The list keeps it.
-        configure(&ctx, "").await;
-        let page = request.get("/errors").await.text();
-        assert!(
-            page.contains(r#"<a class="count" href="/errors">2 errors</a>"#),
-            "{page}"
-        );
-        assert!(!page.contains("<strong>configuration:</strong>"), "{page}");
-        assert!(
-            page.contains(r#"<a href="/configurations">configuration</a>"#),
-            "{page}"
-        );
-        assert_eq!(page.matches(open).count(), 2, "{page}");
-
-        // The first schedule clears the other. One error needs no script to take turns.
+        // It goes when what it's about is put right, at the next look. The list keeps it. One
+        // error needs no script to take turns.
         let run = queue(db, "review", "~/git/rxg", "claude -p").await;
         let page = request.get("/errors").await.text();
         assert!(
             page.contains(r#"<a class="count" href="/errors">1 error</a>"#),
             "{page}"
         );
+        assert!(!page.contains("<strong>schedules:</strong>"), "{page}");
+        assert!(
+            page.contains(r#"<a href="/schedules">schedules</a>"#),
+            "{page}"
+        );
+        assert_eq!(page.matches(open).count(), 1, "{page}");
         assert!(!page.contains("setInterval"), "{page}");
 
         // A run fails: the error of its schedule in its repo leads to the run, where it can be

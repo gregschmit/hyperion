@@ -11,7 +11,7 @@ use tokio::task::JoinSet;
 
 use crate::{
     initializers::access,
-    models::{artifacts, configurations, errors, repos, runs, schedules, watchlist_items, Checked},
+    models::{artifacts, errors, repos, runs, schedules, watchlist_items, Checked},
     prompts,
     settings::{self, Settings},
     tools,
@@ -93,12 +93,8 @@ fn lock(path: &Path) -> Result<Option<File>> {
     }
 }
 
-/// Queue the runs of each schedule whose time has come: one for each of its repos. With no
-/// active configuration, nothing runs.
+/// Queue the runs of each schedule whose time has come: one for each of its repos.
 async fn queue_due(ctx: &AppContext) -> Result<()> {
-    if configurations::Model::active(&ctx.db).await?.is_none() {
-        return Ok(());
-    }
     // The server's clock: a schedule's times are on it, unless the schedule names a time zone.
     let now = Zoned::now();
     for (schedule, repos) in schedules::Model::list(&ctx.db).await? {
@@ -162,7 +158,8 @@ async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Resul
             access::run_token(ctx, run.id, limit.as_secs() + 60)?,
         ),
     ];
-    let printed = dir.with_extension("out");
+    // `task output` reads this file while the run is in progress.
+    let printed = settings.output_file(run.id);
     let end = tools::run_command(
         &settings.shell,
         &run.command,
@@ -212,15 +209,13 @@ async fn prepare(
     };
     let (schedule, _) = schedules::Model::find(&ctx.db, schedule_id).await?;
     let repo = repos::Model::find(&ctx.db, repo_id).await?;
-    if configurations::Model::active(&ctx.db).await?.is_none() {
-        return Ok(Err("No configuration is active.".to_string()));
-    }
     if !repo.dir().is_dir() {
         return Ok(Err(format!("{} isn't a directory.", repo.path)));
     }
     let artifacts_dir = artifacts_dir.to_string_lossy();
-    let (items, most) = (schedule.items(), schedule.most());
-    let context = prompts::Context::load(&ctx.db, Some(&repo), items, most, &artifacts_dir).await?;
+    let (items, max_items) = (schedule.items(), schedule.max_items());
+    let context =
+        prompts::Context::load(&ctx.db, Some(&repo), items, max_items, &artifacts_dir).await?;
     Ok(context
         .compile(&schedule.prompt)
         .map(|prompt| (schedule, repo, prompt)))

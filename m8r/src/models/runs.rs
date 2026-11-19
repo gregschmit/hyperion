@@ -55,25 +55,15 @@ impl Model {
             .await?)
     }
 
-    /// The latest run of schedule `schedule_id` in repo `repo_id` that ran and is over. What it
-    /// reported is what the schedule has to show for that repo, until its next run there is
-    /// over.
+    /// The runs that aren't over, oldest first: the ones in progress, and the ones that wait.
     ///
     /// # Errors
     /// When the query fails.
-    pub async fn latest_of(
-        db: &DatabaseConnection,
-        schedule_id: i64,
-        repo_id: i64,
-    ) -> ModelResult<Option<Self>> {
+    pub async fn unfinished(db: &DatabaseConnection) -> ModelResult<Vec<Self>> {
         Ok(Entity::find()
-            .filter(Column::ScheduleId.eq(schedule_id))
-            .filter(Column::RepoId.eq(repo_id))
-            .filter(Column::Status.is_in([Status::Ok.as_str(), Status::Failed.as_str()]))
-            // A run that couldn't start reported nothing, and takes nothing's place.
-            .filter(Column::StartedAt.is_not_null())
-            .order_by_desc(Column::Id)
-            .one(db)
+            .filter(Column::Status.is_in([Status::Queued.as_str(), Status::Running.as_str()]))
+            .order_by_asc(Column::Id)
+            .all(db)
             .await?)
     }
 

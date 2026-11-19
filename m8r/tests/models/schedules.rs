@@ -14,7 +14,7 @@ use m8r::{
 };
 use serial_test::serial;
 
-use crate::support::{self, configure, queue_all, start, watch, ISSUES, REQUESTS};
+use crate::support::{self, queue_all, start, watch, ISSUES, REQUESTS};
 
 fn params(name: &str, repo: &str, hron: &str) -> Params {
     Params {
@@ -212,7 +212,7 @@ async fn a_schedule_needs_a_name_a_repo_a_time_and_a_command() {
     assert!(saved(params("deploy", &here, "at six")).await.is_err());
     assert_eq!(
         saved(params("deploy", &here, " \n")).await.unwrap_err(),
-        "Say when the schedule runs, such as every weekday at 06:00."
+        "Give the schedule an hron: when it runs, such as every weekday at 06:00."
     );
     let no_command = Params {
         command: "  ".to_string(),
@@ -225,25 +225,25 @@ async fn a_schedule_needs_a_name_a_repo_a_time_and_a_command() {
 
     // It takes every item of its repo, a category's, or none: then its runs get no items.
     // And it can take only the first ones.
-    let review = |name: &str, category: &str, most: u32| Params {
+    let review = |name: &str, category: &str, max_items: u32| Params {
         category: category.to_string(),
-        max_items: most,
+        max_items,
         ..params(name, &here, "every day at 9:00")
     };
     let schedule = saved(review("review", REQUESTS, 50)).await.unwrap();
     assert_eq!(schedule.items(), Items::Of(Category::Requests));
     assert_eq!(
-        (schedule.category.as_str(), schedule.most()),
+        (schedule.category.as_str(), schedule.max_items()),
         (REQUESTS, 50)
     );
     let schedule = saved(review("everything", " all ", 0)).await.unwrap();
-    assert_eq!((schedule.items(), schedule.most()), (Items::All, 0));
+    assert_eq!((schedule.items(), schedule.max_items()), (Items::All, 0));
     let schedule = saved(review("nothing", " ", 0)).await.unwrap();
     assert_eq!(schedule.items(), Items::None);
     assert!(saved(review("epics", "Epic", 0))
         .await
         .unwrap_err()
-        .starts_with("A schedule's runs get all the watchlist items of their repo"));
+        .starts_with("A schedule's category is all, issues or pull/merge requests"));
 
     // Its prompt compiles with what a run would get.
     let prompted = |name: &str, prompt: &str| Params {
@@ -286,7 +286,7 @@ async fn a_change_to_a_schedule_keeps_what_it_does_not_name() {
     let here = repo_here(&ctx.db).await;
     watch(ctx, "https://github.com/o/r/issues/1").await;
     let asked = Params {
-        prompt: "{{ config_prompt }}".to_string(),
+        prompt: "{{ watchlist }}".to_string(),
         max_items: 5,
         ..params("triage", &here, "every day at 9:00")
     };
@@ -312,13 +312,13 @@ async fn a_change_to_a_schedule_keeps_what_it_does_not_name() {
             changed.hron.as_str(),
             changed.command.as_str(),
             changed.prompt.as_str(),
-            changed.most(),
+            changed.max_items(),
         ),
         (
             "triage",
             "every day at 07:00",
             "claude -p",
-            "{{ config_prompt }}",
+            "{{ watchlist }}",
             5
         )
     );
@@ -335,19 +335,9 @@ async fn a_change_to_a_schedule_keeps_what_it_does_not_name() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        (changed.name.as_str(), changed.items(), changed.most()),
+        (changed.name.as_str(), changed.items(), changed.max_items()),
         ("mornings", Items::None, 0)
     );
-
-    // The active configuration's prompt is plain text: whatever it holds, a prompt that
-    // places it compiles.
-    configure(ctx, "{{ nope }} {% for %}").await;
-    let again = Changes {
-        command: Some("cat".to_string()),
-        ..Changes::default()
-    };
-    let changed = schedules::Model::change(&ctx.db, schedule.id, again).await;
-    assert_eq!(changed.unwrap().unwrap().0.command, "cat");
 }
 
 #[tokio::test]

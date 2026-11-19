@@ -53,7 +53,7 @@ pub async fn show(
         .map(|file| json!({ "name": file, "href": format!("/artifacts/{id}/{}", encode(file)) }))
         .collect();
     let data = json!({ "name": artifact.name, "run_id": artifact.run_id, "files": files });
-    views::page(&v, &ctx, "artifacts/show.html", "report", data).await
+    views::page(&v, &ctx, "artifacts/show.html", "runs", data).await
 }
 
 /// One file of a hosted artifact.

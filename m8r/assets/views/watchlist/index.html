@@ -11,13 +11,13 @@
 
 {% if has_problem %}<div class="problem">{{ problem }}</div>{% endif %}
 <form class="row" method="post" action="/watchlist">
-  <input type="url" name="url" value="{{ form.url }}" placeholder="https://git.example.com/group/project/-/merge_requests/123" required>
+  <input type="url" name="url" value="{{ form.url }}" placeholder="https://git.example.com/group/project/-/merge_requests/123" aria-label="URL" required>
   <select name="priority" aria-label="Priority">
     <option value="medium"{% if form.priority != "high" %} selected{% endif %}>medium</option>
     <option value="high"{% if form.priority == "high" %} selected{% endif %}>high</option>
   </select>
   <label class="check"><input type="checkbox" name="requested" value="true"{% if form.requested %} checked{% endif %}> requested</label>
-  <input type="text" name="note" value="{{ form.note }}" placeholder="Why you follow it">
+  <input type="text" name="note" value="{{ form.note }}" placeholder="Why you follow it" aria-label="Note">
   <button class="primary">Add</button>
 </form>
 
@@ -36,7 +36,7 @@
 </nav>
 
 <table>
-  <tr><th>Repo</th><th>Priority</th><th>Item</th><th>Title</th><th>Requested</th><th>Note</th><th></th></tr>
+  <tr><th>Repo</th><th>Priority</th><th>URL</th><th>Title</th><th>Requested</th><th>Note</th><th></th></tr>
   {% for item in items %}
   <tr>
     <td class="mono">{{ item.repo }}</td>

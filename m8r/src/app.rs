@@ -16,8 +16,8 @@ use std::path::Path;
 use crate::{
     controllers, initializers,
     models::{
-        artifacts, configurations, errors, repos, runs, schedule_repos, schedules, tokens,
-        used_links, watchlist_items,
+        artifacts, errors, repos, runs, schedule_repos, schedules, tokens, used_links,
+        watchlist_items,
     },
     tasks,
 };
@@ -66,18 +66,15 @@ impl Hooks for App {
 
     fn routes(ctx: &AppContext) -> AppRoutes {
         AppRoutes::empty() // controller routes below
-            .add_route(controllers::report::routes())
             .add_route(controllers::runs::routes())
             .add_route(controllers::watchlist::routes())
             .add_route(controllers::schedules::routes())
             .add_route(controllers::repos::routes())
-            .add_route(controllers::configurations::routes())
             .add_route(controllers::errors::routes())
             .add_route(controllers::artifacts::routes())
             .add_route(controllers::api::watchlist_items::routes())
             .add_route(controllers::api::repos::routes())
             .add_route(controllers::api::schedules::routes())
-            .add_route(controllers::api::configurations::routes())
             .add_route(controllers::api::runs::routes())
             .add_route(controllers::mcp::routes(ctx))
     }
@@ -93,6 +90,8 @@ impl Hooks for App {
         tasks.register(tasks::token::Token);
         tasks.register(tasks::tokens::Tokens);
         tasks.register(tasks::revoke::Revoke);
+        tasks.register(tasks::runs::Runs);
+        tasks.register(tasks::output::Output);
         // tasks-inject (do not remove)
     }
 
@@ -104,7 +103,6 @@ impl Hooks for App {
         truncate_table(&ctx.db, schedules::Entity).await?;
         // Last of these: a repo that has items or schedules stays.
         truncate_table(&ctx.db, repos::Entity).await?;
-        truncate_table(&ctx.db, configurations::Entity).await?;
         truncate_table(&ctx.db, tokens::Entity).await?;
         truncate_table(&ctx.db, used_links::Entity).await?;
         truncate_table(&ctx.db, errors::Entity).await?;

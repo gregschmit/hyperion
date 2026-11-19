@@ -8,13 +8,7 @@ pub type Tokens = Entity;
 
 /// What a token can cover. Each is a part of the API, `/api/<resource>`, and a set of the MCP
 /// endpoint's tools.
-pub const RESOURCES: [&str; 5] = [
-    "watchlist_items",
-    "repos",
-    "schedules",
-    "configurations",
-    "runs",
-];
+pub const RESOURCES: [&str; 4] = ["watchlist_items", "repos", "schedules", "runs"];
 
 /// The scope that covers every resource.
 pub const ALL: &str = "all";

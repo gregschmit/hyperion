@@ -11,7 +11,7 @@ use loco_rs::{app::AppContext, prelude::*, TestServer};
 use m8r::{
     initializers::access,
     models::{
-        configurations, repos, runs, schedule_repos, schedules, tokens,
+        repos, runs, schedule_repos, schedules, tokens,
         watchlist_items::{self, Forge},
     },
     settings::Settings,
@@ -77,17 +77,6 @@ pub async fn watch(ctx: &AppContext, url: &str) -> watchlist_items::Model {
     };
     let listed = watchlist_items::Model::create(&ctx.db, &params).await;
     listed.unwrap().unwrap().0
-}
-
-/// Make a configuration with this prompt, and make it active.
-pub async fn configure(ctx: &AppContext, prompt: &str) -> configurations::Model {
-    let params = configurations::Params {
-        name: "Test".to_string(),
-        prompt: prompt.to_string(),
-    };
-    let made = configurations::Model::create(&ctx.db, &params).await;
-    let configuration = made.unwrap().unwrap().into_active_model();
-    configuration.activated(&ctx.db).await.unwrap()
 }
 
 /// What a schedule needs, for a test to change: one called `triage` in the clone at `repo`, on

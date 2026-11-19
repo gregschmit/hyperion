@@ -3,7 +3,7 @@
 use loco_rs::prelude::*;
 use serde_json::{json, Value};
 
-use crate::models::{artifacts, configurations, repos, runs, schedules, watchlist_items};
+use crate::models::{artifacts, repos, runs, schedules, watchlist_items};
 
 fn time(at: Option<&DateTimeWithTimeZone>) -> Option<String> {
     at.map(DateTimeWithTimeZone::to_rfc3339)
@@ -52,16 +52,6 @@ pub fn schedule((schedule, repos): &schedules::Listed) -> Value {
     })
 }
 
-#[must_use]
-pub fn configuration(configuration: &configurations::Model) -> Value {
-    json!({
-        "id": configuration.id,
-        "name": configuration.name,
-        "active": configuration.active,
-        "prompt": configuration.prompt,
-    })
-}
-
 /// A run in a list: all but its prompt and what it printed, which are long.
 #[must_use]
 pub fn run(run: &runs::Model, artifacts: &[artifacts::Model], pages: &str) -> Value {
@@ -91,7 +81,7 @@ pub fn run(run: &runs::Model, artifacts: &[artifacts::Model], pages: &str) -> Va
         "command": run.command,
         "status": run.status,
         "error": run.error,
-        "queued_at": time(Some(&run.created_at)),
+        "created_at": time(Some(&run.created_at)),
         "started_at": time(run.started_at.as_ref()),
         "finished_at": time(run.finished_at.as_ref()),
         "artifacts": artifacts,

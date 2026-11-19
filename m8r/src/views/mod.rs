@@ -83,7 +83,6 @@ pub async fn page(
 pub fn error(error: &errors::Model) -> Value {
     // Where the error can be looked into, or put right.
     let href = match error.subject.as_str() {
-        errors::CONFIGURATION => "/configurations".to_string(),
         errors::SCHEDULES => "/schedules".to_string(),
         subject if subject.starts_with("repo ") => "/repos".to_string(),
         _ => error
@@ -97,7 +96,7 @@ pub fn error(error: &errors::Model) -> Value {
         // The alert has room for a line.
         "summary": error.message.lines().next().unwrap_or_default(),
         "href": href,
-        "since": time(&error.created_at),
+        "created_at": time(&error.created_at),
         "open": error.cleared_at.is_none(),
         "cleared_at": time_or_blank(error.cleared_at.as_ref()),
     })
@@ -126,7 +125,7 @@ pub fn run(run: &runs::Model, artifacts: &[artifacts::Model]) -> Value {
         "repo": run.repo,
         "command": run.command,
         "status": run.status,
-        "queued_at": time(&run.created_at),
+        "created_at": time(&run.created_at),
         "started_at": time_or_blank(run.started_at.as_ref()),
         "finished_at": time_or_blank(run.finished_at.as_ref()),
         "prompt": run.prompt,

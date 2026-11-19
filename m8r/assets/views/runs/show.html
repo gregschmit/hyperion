@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Run {{ run.id }}: {{ run.name }} in <span class="mono">{{ run.repo }}</span></h1>
 <p><span class="status {{ run.status }}">{{ run.status }}</span>
-  <span class="muted">· queued {{ run.queued_at }}{% if run.started_at %} · started {{ run.started_at }}{% endif %}{% if run.finished_at %} · finished {{ run.finished_at }}{% endif %}</span></p>
+  <span class="muted">· created at {{ run.created_at }}{% if run.started_at %} · started at {{ run.started_at }}{% endif %}{% if run.finished_at %} · finished at {{ run.finished_at }}{% endif %}</span></p>
 
 {% if run.error %}
 <div class="problem">{{ run.error }}</div>
@@ -22,9 +22,16 @@
   {% endfor %}
 </ul>
 
-<h2>What it printed</h2>
-{% if run.output %}<pre>{{ run.output }}</pre>{% else %}<p class="muted">Nothing{% if run.status == "running" %} yet: it shows when the run ends{% endif %}.</p>{% endif %}
+<h2>Output</h2>
+{% if run.output %}
+<pre>{{ run.output }}</pre>
+{% elif run.status == "running" %}
+<p class="muted">What the command prints shows here when the run ends. To read it now, as it
+  comes: <code>m8r task output id:{{ run.id }}</code></p>
+{% else %}
+<p class="muted">Nothing.</p>
+{% endif %}
 
-<h2>The prompt it got</h2>
+<h2>Prompt</h2>
 {% if run.prompt %}<pre>{{ run.prompt }}</pre>{% else %}<p class="muted">None yet: m8r compiles it when the run starts.</p>{% endif %}
 {% endblock content %}

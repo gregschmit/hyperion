@@ -2,26 +2,26 @@
 {% block title %}Repos · m8r{% endblock title %}
 {% block content %}
 <h1>Repos</h1>
-<p class="muted">The repos that m8r works in. A repo is a clone in the home of m8r's user, and
-  the project on its forge. A schedule runs in repos, and a watchlist item is in the repo whose
-  project its URL names.</p>
+<p class="muted">The repos that m8r works in. A repo is a clone in the home of m8r's user, at its
+  path, and the project on its forge, at its URL. A schedule runs in repos, and a watchlist item
+  is in the repo whose project its own URL names.</p>
 <p class="muted">Clone a repo as the <code>m8r</code> user, and then add it here by its path.
-  Leave the project blank, and m8r reads it from the clone's <code>origin</code>. A repo with no
-  project takes no watchlist items.</p>
+  Leave the URL blank, and m8r reads it from the clone's <code>origin</code>. A repo with no
+  URL takes no watchlist items.</p>
 
 {% if has_problem %}<div class="problem">{{ problem }}</div>{% endif %}
 <form class="row" method="post" action="/repos">
-  <input type="text" name="path" class="mono" value="{{ form.path }}" placeholder="~/git/group/project" aria-label="Clone" required>
-  <input type="text" name="url" value="{{ form.url }}" placeholder="https://git.example.com/group/project, or blank" aria-label="Project">
+  <input type="text" name="path" class="mono" value="{{ form.path }}" placeholder="~/git/group/project" aria-label="Path" required>
+  <input type="text" name="url" value="{{ form.url }}" placeholder="https://git.example.com/group/project, or blank" aria-label="URL">
   <button class="primary">Add</button>
 </form>
 
 <table>
-  <tr><th>Clone</th><th>Project</th><th>Watchlist</th><th>Schedules</th><th></th></tr>
+  <tr><th>Path</th><th>URL</th><th>Watchlist items</th><th>Schedules</th><th></th></tr>
   {% for repo in repos %}
   <tr>
-    <td><input type="text" name="path" class="mono" value="{{ repo.path }}" form="repo-{{ repo.id }}" aria-label="Clone" required></td>
-    <td><input type="text" name="url" value="{{ repo.url }}" form="repo-{{ repo.id }}" placeholder="m8r doesn't know it" aria-label="Project"></td>
+    <td><input type="text" name="path" class="mono" value="{{ repo.path }}" form="repo-{{ repo.id }}" aria-label="Path" required></td>
+    <td><input type="text" name="url" value="{{ repo.url }}" form="repo-{{ repo.id }}" placeholder="m8r doesn't know it" aria-label="URL"></td>
     <td class="nowrap"><a href="/watchlist?repo_id={{ repo.id }}">{{ repo.items }} {% if repo.items == 1 %}item{% else %}items{% endif %}</a></td>
     <td class="nowrap">{{ repo.schedules }}</td>
     <td class="actions">

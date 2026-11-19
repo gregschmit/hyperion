@@ -14,18 +14,18 @@
   <p class="muted">m8r has no repos yet. <a href="/repos">Add one</a> first.</p>
   {% endfor %}
 
-  <label for="category">Watchlist <small>which items of its repo a run's prompt gets</small></label>
+  <label for="category">Category <small>which watchlist items of its repo a run's prompt gets</small></label>
   <select id="category" name="category">
     {% for choice in choices %}
     <option value="{{ choice.value }}"{% if form.category == choice.value %} selected{% endif %}>{{ choice.name }}</option>
     {% endfor %}
   </select>
 
-  <label for="max_items">Most items <small>a run gets the first ones: the requested items, then
-    the urgent ones, then the rest. 0 for all of them.</small></label>
+  <label for="max_items">Max items <small>how many of those items a run gets at most: the
+    requested ones first, then the urgent ones, then the rest. 0 for all of them.</small></label>
   <input type="number" id="max_items" name="max_items" value="{{ form.max_items }}" min="0" step="1">
 
-  <label for="hron">When <small>in words, such as <code>every weekday at 06:00</code>,
+  <label for="hron">Hron <small>when it runs, in words, such as <code>every weekday at 06:00</code>,
     <code>every 12 hours</code> or <code>every monday, thursday at 9:00, 15:00</code>
     (<a href="https://github.com/simpllyf/hron#expression-syntax">hron</a> has more). A five-field
     cron expression works too. One to a line: the schedule runs at each one's times. The

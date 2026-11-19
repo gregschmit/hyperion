@@ -50,8 +50,13 @@ async fn repos_are_added_changed_and_removed() {
             .await;
         assert_eq!(location(&res), "/repos");
         let page = request.get("/repos").await.text();
+        // A column goes by its name.
+        assert!(
+            page.contains("<th>Path</th><th>URL</th><th>Watchlist items</th><th>Schedules</th>"),
+            "{page}"
+        );
         let row = format!(
-            r#"name="path" class="mono" value="{src}" form="repo-1" aria-label="Clone" required>"#
+            r#"name="path" class="mono" value="{src}" form="repo-1" aria-label="Path" required>"#
         );
         assert!(page.contains(&row), "{page}");
         assert!(

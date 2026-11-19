@@ -5,7 +5,7 @@ use m8r::app::App;
 use serde_json::{json, Value};
 use serial_test::serial;
 
-use crate::support::{self, configure, token, watch, ISSUES, REQUESTS};
+use crate::support::{self, token, watch, ISSUES, REQUESTS};
 
 /// Send one JSON-RPC message, as an MCP client does.
 async fn send(request: &TestServer, token: &str, message: &Value) -> axum_test::TestResponse {
@@ -141,7 +141,7 @@ async fn a_token_sees_the_tools_of_what_it_covers() {
             ]
         );
         let all = tools(&request, &mac).await;
-        assert_eq!(all.len(), 21);
+        assert_eq!(all.len(), 15);
 
         // Each tool says what it is, what it takes, and what it does to m8r.
         for tool in &all {
@@ -324,7 +324,6 @@ async fn the_other_tools_do_what_the_api_does() {
         let mac = token(&ctx, "mac", "all").await;
         let here = std::env::current_dir().unwrap();
         let here = here.to_string_lossy();
-        configure(&ctx, "").await;
 
         // Repos: a clone that's there, and its project.
         let (src, tests) = (format!("{here}/src"), format!("{here}/tests"));
@@ -450,58 +449,6 @@ async fn the_other_tools_do_what_the_api_does() {
         assert_eq!(removed, Ok(json!({ "removed": 1 })));
         let missing = call(&request, &mac, "run_schedule", json!({ "id": 1 })).await;
         assert_eq!(missing, Err("m8r has nothing with that id.".to_string()));
-
-        // Configurations: the one from before is active.
-        let asked = json!({ "name": "Evenings", "prompt": "Report." });
-        let evenings = call(&request, &mac, "add_configuration", asked)
-            .await
-            .unwrap();
-        assert_eq!(
-            (&evenings["id"], &evenings["active"]),
-            (&json!(2), &json!(false))
-        );
-        let nameless = json!({ "id": 2, "name": " " });
-        let refused = call(&request, &mac, "update_configuration", nameless).await;
-        assert_eq!(refused, Err("Give the configuration a name.".to_string()));
-        // Its prompt is plain text, so any text will do.
-        let rewritten = json!({ "id": 2, "prompt": "Report. {{ nope }}" });
-        let kept = call(&request, &mac, "update_configuration", rewritten).await;
-        assert_eq!(kept.unwrap()["prompt"], json!("Report. {{ nope }}"));
-        let renamed = json!({ "id": 2, "name": "Nights" });
-        let nights = call(&request, &mac, "update_configuration", renamed)
-            .await
-            .unwrap();
-        assert_eq!(
-            (&nights["name"], &nights["prompt"]),
-            (&json!("Nights"), &json!("Report. {{ nope }}"))
-        );
-        let active = call(&request, &mac, "activate_configuration", json!({ "id": 2 })).await;
-        assert_eq!(active.unwrap()["active"], json!(true));
-        let listed = call(&request, &mac, "list_configurations", json!({}))
-            .await
-            .unwrap();
-        let state: Vec<_> = listed
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|it| {
-                (
-                    it["name"].as_str().unwrap(),
-                    it["active"].as_bool().unwrap(),
-                )
-            })
-            .collect();
-        assert_eq!(state, [("Nights", true), ("Test", false)]);
-        let idle = call(
-            &request,
-            &mac,
-            "deactivate_configuration",
-            json!({ "id": 2 }),
-        )
-        .await;
-        assert_eq!(idle.unwrap()["active"], json!(false));
-        let removed = call(&request, &mac, "remove_configuration", json!({ "id": 2 })).await;
-        assert_eq!(removed, Ok(json!({ "removed": 2 })));
     })
     .await;
 }

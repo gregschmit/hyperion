@@ -9,6 +9,7 @@ mod m20261113_221654_init;
 mod m20261116_193236_watchlist_prompts_and_api;
 mod m20261116_230607_errors_and_prompt_names;
 mod m20261118_205252_repos_and_schedule_names;
+mod m20261119_050100_drop_configurations;
 pub struct Migrator;
 
 /// The same migrations, with the trait's own `up`. `Migrator::up` runs that one and then does
@@ -23,6 +24,7 @@ impl MigratorTrait for Migrations {
             Box::new(m20261116_193236_watchlist_prompts_and_api::Migration),
             Box::new(m20261116_230607_errors_and_prompt_names::Migration),
             Box::new(m20261118_205252_repos_and_schedule_names::Migration),
+            Box::new(m20261119_050100_drop_configurations::Migration),
             // inject-above (do not remove this comment)
         ]
     }

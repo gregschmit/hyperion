@@ -285,8 +285,8 @@ async fn a_run_gets_its_repos_items_and_the_first_of_them() {
         let listed = watchlist_items::Model::create(db, &asked).await;
         listed.unwrap().unwrap();
     }
-    let got = |repo_id: i64, category: Option<Category>, most: u64| async move {
-        let items = watchlist_items::Model::of_repo(db, repo_id, category, most).await;
+    let got = |repo_id: i64, category: Option<Category>, max_items: u64| async move {
+        let items = watchlist_items::Model::of_repo(db, repo_id, category, max_items).await;
         let ids: Vec<i64> = items.unwrap().iter().map(|item| item.id).collect();
         ids
     };

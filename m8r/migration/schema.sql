@@ -13,16 +13,6 @@ CREATE TABLE "artifacts" (
 );
 CREATE UNIQUE INDEX "idx_artifacts_run_name" ON "artifacts" ("run_id", "name");
 
-CREATE TABLE "configurations" (
-  "created_at" timestamp_with_timezone_text NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  "updated_at" timestamp_with_timezone_text NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  "id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
-  "name" varchar NOT NULL,
-  "active" boolean NOT NULL DEFAULT FALSE,
-  "prompt" text NOT NULL DEFAULT ''
-);
-CREATE UNIQUE INDEX idx_configurations_one_active ON configurations (active) WHERE active;
-
 CREATE TABLE "errors" (
   "created_at" timestamp_with_timezone_text NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updated_at" timestamp_with_timezone_text NOT NULL DEFAULT CURRENT_TIMESTAMP,

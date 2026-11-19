@@ -341,8 +341,8 @@ impl Model {
     }
 
     /// The items that a run in repo `repo_id` gets: the repo's, of `category` or of both. The
-    /// requested ones come first, then the urgent ones, and `most` cuts the list there (0:
-    /// all of them).
+    /// requested ones come first, then the urgent ones, and `max_items` cuts the list there
+    /// (0: all of them).
     ///
     /// # Errors
     /// When the query fails.
@@ -350,7 +350,7 @@ impl Model {
         db: &DatabaseConnection,
         repo_id: i64,
         category: Option<Category>,
-        most: u64,
+        max_items: u64,
     ) -> ModelResult<Vec<Self>> {
         let mut items = Entity::find().filter(Column::RepoId.eq(repo_id));
         if let Some(category) = category {
@@ -360,9 +360,9 @@ impl Model {
             .order_by_desc(Column::Requested)
             .order_by_asc(Column::Priority)
             .order_by_asc(Column::Id);
-        Ok(match most {
+        Ok(match max_items {
             0 => items.all(db).await?,
-            most => items.limit(most).all(db).await?,
+            max_items => items.limit(max_items).all(db).await?,
         })
     }
 

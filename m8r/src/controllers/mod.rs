@@ -1,9 +1,7 @@
 pub mod api;
 pub mod artifacts;
-pub mod configurations;
 pub mod errors;
 pub mod mcp;
-pub mod report;
 pub mod repos;
 pub mod runs;
 pub mod schedules;

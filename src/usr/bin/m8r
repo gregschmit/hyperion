@@ -11,6 +11,8 @@
 #   m8r task tokens           list the tokens
 #   m8r task revoke name:duet end a token
 #   m8r task tick             do now what the scheduler does every minute
+#   m8r task runs             list the runs that aren't over
+#   m8r task output id:12     print what run 12 prints, as it comes, until the run ends
 #   m8r doctor                check the config and the database
 #   m8r <command> [args]      any other command of m8r-cli: see `m8r --help`
 

@@ -350,7 +350,7 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
             .json(
                 &json!({ "name": "review", "category": REQUESTS, "max_items": 50,
                 "repos": [tests, src], "hron": ["0 6 * * 1-5", "every saturday at 10:00"],
-                "command": "claude -p", "prompt": "{{ config_prompt }}\n\n{{ watchlist }}" }),
+                "command": "claude -p", "prompt": "{{ m8r_prompt }}\n\n{{ watchlist }}" }),
             )
             .await;
         let (status, added) = answer(&res);
@@ -368,7 +368,7 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
                 "repos": [src, tests],
                 "hron": ["every weekday at 06:00", "every saturday at 10:00"],
                 "command": "claude -p",
-                "prompt": "{{ config_prompt }}\n\n{{ watchlist }}",
+                "prompt": "{{ m8r_prompt }}\n\n{{ watchlist }}",
                 "next": next,
             })
         );
@@ -555,109 +555,6 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
 
 #[tokio::test]
 #[serial]
-async fn configurations_are_listed_added_changed_made_active_and_removed() {
-    with_token(|request, _ctx, token| async move {
-        let configurations = "/api/configurations";
-        let res = request
-            .post(configurations)
-            .authorization_bearer(&token)
-            .json(&json!({ "name": "Mornings", "prompt": "Report to {{ artifacts_dir }}." }))
-            .await;
-        let one = json!({
-            "id": 1,
-            "name": "Mornings",
-            "active": false,
-            "prompt": "Report to {{ artifacts_dir }}.",
-        });
-        assert_eq!(answer(&res), (200, one.clone()));
-        let res = request
-            .post(configurations)
-            .authorization_bearer(&token)
-            .json(&json!({ "name": "Evenings" }))
-            .await;
-        assert_eq!(res.json::<Value>()["prompt"], json!(""));
-        let res = request
-            .post(configurations)
-            .authorization_bearer(&token)
-            .json(&json!({ "prompt": "x" }))
-            .await;
-        assert_eq!(answer(&res), bad_request("Give the configuration a name."));
-
-        // A change is checked like the rest, and keeps what it doesn't name. The prompt is
-        // plain text, so any text will do.
-        let res = request
-            .patch(&format!("{configurations}/1"))
-            .authorization_bearer(&token)
-            .json(&json!({ "name": " " }))
-            .await;
-        assert_eq!(answer(&res), bad_request("Give the configuration a name."));
-        let any = json!("{{ nope }} {% for %}");
-        let res = request
-            .patch(&format!("{configurations}/1"))
-            .authorization_bearer(&token)
-            .json(&json!({ "prompt": any }))
-            .await;
-        let (status, rewritten) = answer(&res);
-        assert_eq!((status, &rewritten["prompt"]), (200, &any));
-        let res = request
-            .patch(&format!("{configurations}/1"))
-            .authorization_bearer(&token)
-            .json(&json!({ "name": "Weekdays" }))
-            .await;
-        let (_, renamed) = answer(&res);
-        assert_eq!(
-            (&renamed["name"], &renamed["prompt"]),
-            (&json!("Weekdays"), &any)
-        );
-
-        // One is active, or none.
-        let active = |id: u8| {
-            let request = &request;
-            let token = token.clone();
-            async move {
-                let path = format!("{configurations}/{id}");
-                let res = request.get(&path).authorization_bearer(&token).await;
-                res.json::<Value>()["active"].as_bool().unwrap()
-            }
-        };
-        let res = request
-            .post(&format!("{configurations}/1/activate"))
-            .authorization_bearer(&token)
-            .await;
-        assert_eq!(res.json::<Value>()["active"], json!(true));
-        request
-            .post(&format!("{configurations}/2/activate"))
-            .authorization_bearer(&token)
-            .await;
-        assert_eq!((active(1).await, active(2).await), (false, true));
-        // The active one comes first.
-        let res = request
-            .get(configurations)
-            .authorization_bearer(&token)
-            .await;
-        assert_eq!(res.json::<Value>()[0]["name"], json!("Evenings"));
-        let res = request
-            .post(&format!("{configurations}/2/deactivate"))
-            .authorization_bearer(&token)
-            .await;
-        assert_eq!(res.json::<Value>()["active"], json!(false));
-
-        let res = request
-            .delete(&format!("{configurations}/1"))
-            .authorization_bearer(&token)
-            .await;
-        assert_eq!(answer(&res), (200, json!({})));
-        let res = request
-            .post(&format!("{configurations}/1/activate"))
-            .authorization_bearer(&token)
-            .await;
-        assert_eq!(answer(&res), not_found());
-    })
-    .await;
-}
-
-#[tokio::test]
-#[serial]
 async fn runs_are_listed_and_shown_with_their_artifacts() {
     with_token(|request, ctx, token| async move {
         let first = queue(&ctx.db, "review", "/home/m8r/git/rxg", "claude -p").await;
@@ -742,7 +639,10 @@ async fn runs_are_listed_and_shown_with_their_artifacts() {
                 &listed["artifacts"]
             )
         );
-        assert!(whole["started_at"].as_str().unwrap().contains('T'));
+        // Its times are moments, by the names of their columns.
+        for time in ["created_at", "started_at", "finished_at"] {
+            assert!(whole[time].as_str().unwrap().contains('T'), "{time}");
+        }
 
         let res = request
             .get("/api/runs/9")

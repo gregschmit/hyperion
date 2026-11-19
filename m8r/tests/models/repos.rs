@@ -135,7 +135,7 @@ async fn a_repo_is_a_clone_that_is_there_and_a_project_of_its_own() {
     };
 
     let nowhere = problem(params(Path::new(" "), "")).await;
-    assert!(nowhere.starts_with("Say where the clone is"), "{nowhere}");
+    assert!(nowhere.starts_with("Give the repo a path"), "{nowhere}");
     let missing = problem(params(&sandbox.path("no-such-clone"), "")).await;
     assert!(missing.contains("isn't a directory there"), "{missing}");
     let no_project = problem(params(&one, "https://git.example.com/project")).await;

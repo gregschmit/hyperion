@@ -14,6 +14,14 @@ async fn the_watchlist_is_added_to_changed_and_removed_from() {
         assert!(page.contains("Nothing here."), "{page}");
         // An item's URL says what it is and where it is, so the form asks for neither.
         assert!(!page.contains(r#"name="category""#), "{page}");
+        // A column goes by its name.
+        assert!(
+            page.contains(
+                "<th>Repo</th><th>Priority</th><th>URL</th><th>Title</th><th>Requested</th>\
+                 <th>Note</th>"
+            ),
+            "{page}"
+        );
 
         // Not an issue or a PR/MR: the form comes back with what was typed.
         let res = request

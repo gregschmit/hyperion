@@ -31,17 +31,17 @@ impl Sent {
     /// What was sent, as a schedule takes it, and what's wrong with the number, if it isn't
     /// one.
     fn params(self) -> (Params, Option<String>) {
-        let most = match self.max_items.trim() {
+        let max_items = match self.max_items.trim() {
             "" => Ok(0),
             text => text.parse(),
         };
-        let problem = most
+        let problem = max_items
             .is_err()
-            .then(|| "The most items is a whole number, or 0 for all of them.".to_string());
+            .then(|| "Max items is a whole number: 0 for all of them.".to_string());
         let params = Params {
             name: self.name,
             category: self.category,
-            max_items: most.unwrap_or_default(),
+            max_items: max_items.unwrap_or_default(),
             repos: self.repos.join("\n").as_str().into(),
             hron: self.hron.as_str().into(),
             command: self.command,
