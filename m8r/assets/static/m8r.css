@@ -134,6 +134,13 @@ details.share p { margin: 0.5rem 0 0.25rem; }
 .markdown h1 { font-size: 1.3rem; }
 .markdown h2 { font-size: 1.15rem; }
 .markdown pre { background: light-dark(#fff, #1b1b1b); }
-.markdown table { width: auto; margin: 0.75rem 0; }
+/* In a table, a line breaks between words and nowhere else. `anywhere` would let a column get
+   narrower than a word, and a browser breaks a line after a hyphen too, so each word of a
+   cell is in a box that stays on one line. A table that's too wide for the page that way
+   scrolls sideways, in its box. */
+.markdown .scroll { margin: 0.75rem 0; overflow-x: auto; }
+.markdown table { width: auto; }
+.markdown th, .markdown td { overflow-wrap: normal; }
+.markdown .word { white-space: nowrap; }
 .markdown blockquote { margin: 0.75rem 0; padding-left: 0.9rem; color: var(--muted); border-left: 3px solid var(--line); }
 .markdown li > input { margin-right: 0.35rem; }

@@ -5,7 +5,9 @@
 //! address and nowhere else, and a picture is a link. Nothing in it runs, and the page loads
 //! nothing from another site, so nobody learns that it was read.
 
-use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    html, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd, TextMergeStream,
+};
 
 /// A link or a picture that's open, from its start to its end.
 struct Open<'a> {
@@ -85,8 +87,55 @@ pub fn render(text: &str) -> String {
         other => vec![other],
     });
     let mut page = String::new();
-    html::push_html(&mut page, events);
+    // A word that came in parts is one text again, for `tables`.
+    html::push_html(&mut page, tables(TextMergeStream::new(events)));
     page
+}
+
+/// `events`, with what a table needs to show well at any width. A line in a cell breaks
+/// between words and nowhere else, so each word is in a box that a style keeps on one line: a
+/// browser breaks a line after a hyphen too, and no style can stop that for a cell as a whole.
+/// Words may then need more width than the page has, so the table is in a box that scrolls.
+fn tables<'a>(events: impl Iterator<Item = Event<'a>>) -> impl Iterator<Item = Event<'a>> {
+    let mut in_cell = false;
+    events.flat_map(move |event| match event {
+        Event::Start(Tag::Table(_)) => vec![Event::Html("<div class=\"scroll\">".into()), event],
+        Event::End(TagEnd::Table) => vec![event, Event::Html("</div>\n".into())],
+        Event::Start(Tag::TableCell) => {
+            in_cell = true;
+            vec![event]
+        }
+        Event::End(TagEnd::TableCell) => {
+            in_cell = false;
+            vec![event]
+        }
+        Event::Text(text) if in_cell => words(&text),
+        Event::Code(code) if in_cell => {
+            let mut events = vec![Event::Html("<code>".into())];
+            events.extend(words(&code));
+            events.push(Event::Html("</code>".into()));
+            events
+        }
+        other => vec![other],
+    })
+}
+
+/// `text`, with each of its words in a box of its own. The spaces stay between the boxes,
+/// where a line may break.
+fn words<'a>(text: &str) -> Vec<Event<'a>> {
+    let mut events = Vec::new();
+    for piece in text.split_inclusive(char::is_whitespace) {
+        let (word, space) = piece.split_at(piece.trim_end().len());
+        if !word.is_empty() {
+            events.push(Event::Html("<span class=\"word\">".into()));
+            events.push(Event::Text(word.to_string().into()));
+            events.push(Event::Html("</span>".into()));
+        }
+        if !space.is_empty() {
+            events.push(Event::Text(space.to_string().into()));
+        }
+    }
+    events
 }
 
 /// The start of a link that's kept. One that isn't has no start, and no end.

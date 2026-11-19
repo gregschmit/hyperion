@@ -14,8 +14,11 @@ fn what_a_run_printed_shows_as_markdown() {
          <p>Some <strong>bold</strong>, <code>code</code> and <del>gone</del>.</p>\n\
          <ul>\n<li><input disabled=\"\" type=\"checkbox\" checked=\"\"/>\ndone</li>\n\
          <li>open</li>\n</ul>\n\
-         <table><thead><tr><th>a</th><th>b</th></tr></thead><tbody>\n\
-         <tr><td>1</td><td>2</td></tr>\n</tbody></table>\n\
+         <div class=\"scroll\"><table><thead><tr>\
+         <th><span class=\"word\">a</span></th><th><span class=\"word\">b</span></th>\
+         </tr></thead><tbody>\n\
+         <tr><td><span class=\"word\">1</span></td><td><span class=\"word\">2</span></td></tr>\n\
+         </tbody></table>\n</div>\n\
          <pre><code class=\"language-rust\">let a = \"&lt;b&gt;\";\n</code></pre>\n"
     );
     // What a command prints isn't always markdown: its lines stay lines.
@@ -24,6 +27,27 @@ fn what_a_run_printed_shows_as_markdown() {
         "<p>step 1<br />\nstep 2</p>\n<p>done</p>\n"
     );
     assert_eq!(render(""), "");
+}
+
+#[test]
+fn a_table_is_in_a_box_that_scrolls_and_its_words_are_each_in_a_box_that_stays_whole() {
+    assert_eq!(
+        render(
+            "| MR | Why |\n|---|---|\n\
+             | [!12](https://e.example/12) | DOM-only `pull --ff-only` a<b>c |\n\ntext-safe"
+        ),
+        // A word is what's between two spaces: in a link, in code, and when it came in parts,
+        // as one with HTML in it does. Outside a table, a line breaks where the browser likes.
+        "<div class=\"scroll\"><table><thead><tr>\
+         <th><span class=\"word\">MR</span></th><th><span class=\"word\">Why</span></th>\
+         </tr></thead><tbody>\n<tr>\
+         <td><a href=\"https://e.example/12\"><span class=\"word\">!12</span></a></td>\
+         <td><span class=\"word\">DOM-only</span> \
+         <code><span class=\"word\">pull</span> <span class=\"word\">--ff-only</span></code> \
+         <span class=\"word\">a&lt;b&gt;c</span></td>\
+         </tr>\n</tbody></table>\n</div>\n\
+         <p>text-safe</p>\n"
+    );
 }
 
 #[test]

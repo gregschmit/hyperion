@@ -486,7 +486,9 @@ One stand-in agent runs the commands of `m8r_prompt` against the API on loopback
   are young: `Cargo.lock` pins the versions that the tests ran with.
 - **pulldown-cmark** reads the markdown that a run printed, for its page. Before that's made
   into HTML, m8r makes text of the HTML in it and of the links that aren't web or mail
-  addresses, and links of its pictures (see `views::markdown`).
+  addresses, and links of its pictures (see `views::markdown`). In a table, a line breaks
+  between words and never inside one, and a table that's too wide for the page that way
+  scrolls sideways.
 - **The pages** are Tera templates and plain forms, with no frontend build, and two small
   scripts: one gives the errors their turns, and one copies a run's share link. A page asks
   for the stylesheet at an address that changes when the stylesheet does, so a browser never
