@@ -13,6 +13,7 @@ mod m20261119_050100_drop_configurations;
 mod m20261119_054135_add_enabled_to_schedules;
 mod m20261119_064819_rename_hron_to_when_on_schedules;
 mod m20261119_070730_drop_artifacts;
+mod m20261119_072132_rename_ok_status_to_done;
 pub struct Migrator;
 
 /// The same migrations, with the trait's own `up`. `Migrator::up` runs that one and then does
@@ -31,6 +32,7 @@ impl MigratorTrait for Migrations {
             Box::new(m20261119_054135_add_enabled_to_schedules::Migration),
             Box::new(m20261119_064819_rename_hron_to_when_on_schedules::Migration),
             Box::new(m20261119_070730_drop_artifacts::Migration),
+            Box::new(m20261119_072132_rename_ok_status_to_done::Migration),
             // inject-above (do not remove this comment)
         ]
     }

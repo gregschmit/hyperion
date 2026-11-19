@@ -584,7 +584,7 @@ async fn runs_are_listed_and_shown() {
             .into_active_model()
             .finished(
                 &ctx.db,
-                m8r::models::runs::Status::Ok,
+                m8r::models::runs::Status::Done,
                 "What it printed.".to_string(),
                 String::new(),
             )
@@ -614,7 +614,7 @@ async fn runs_are_listed_and_shown() {
         let listed = &runs[1];
         assert_eq!(listed.get("prompt"), None);
         assert_eq!(listed.get("output"), None);
-        assert_eq!(listed["status"], json!("ok"));
+        assert_eq!(listed["status"], json!("done"));
         assert_eq!(
             (&listed["name"], &listed["repo"], &listed["command"]),
             (

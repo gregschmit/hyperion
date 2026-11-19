@@ -23,7 +23,7 @@ async fn the_runs_that_are_not_over_are_listed_on_the_command_line() {
     // One run is over, one is in progress, and one waits.
     let over = start(db, queue(db, "docs", "/a", "cat").await, "p").await;
     over.into_active_model()
-        .finished(db, Status::Ok, String::new(), String::new())
+        .finished(db, Status::Done, String::new(), String::new())
         .await
         .unwrap();
     let in_progress = start(db, queue(db, "review", "/b", "cat").await, "p").await;

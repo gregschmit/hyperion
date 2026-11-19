@@ -83,7 +83,7 @@ form.row input[type="text"], form.row input[type="url"] { flex: 1 1 14rem; min-w
 td input[type="text"], input.wide { width: 100%; }
 
 .status { font-weight: 600; }
-.status.ok { color: var(--good); }
+.status.done { color: var(--good); }
 .status.failed { color: var(--bad); }
 .status.running, .status.queued { color: var(--wait); }
 .high { color: var(--bad); font-weight: 600; }

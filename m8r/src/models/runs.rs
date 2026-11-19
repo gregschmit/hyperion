@@ -10,7 +10,7 @@ pub type Runs = Entity;
 pub enum Status {
     Queued,
     Running,
-    Ok,
+    Done,
     Failed,
 }
 
@@ -20,7 +20,7 @@ impl Status {
         match self {
             Self::Queued => "queued",
             Self::Running => "running",
-            Self::Ok => "ok",
+            Self::Done => "done",
             Self::Failed => "failed",
         }
     }

@@ -95,7 +95,7 @@ async fn a_tick_runs_the_oldest_queued_run_with_its_compiled_prompt() {
     tick(&ctx).await;
 
     let run = runs::Model::find(&ctx.db, run.id).await.unwrap();
-    assert_eq!(run.status, "ok", "{}", run.error);
+    assert_eq!(run.status, "done", "{}", run.error);
     assert!(run.started_at.is_some() && run.finished_at.is_some());
     // `cat` prints its prompt back.
     assert_eq!(run.output, run.prompt);
@@ -192,7 +192,7 @@ async fn a_runs_agent_keeps_the_watchlist_with_the_commands_of_m8rs_prompt() {
     tick(&ctx).await;
 
     let run = runs::Model::find(&ctx.db, run.id).await.unwrap();
-    assert_eq!(run.status, "ok", "{} {}", run.error, run.output);
+    assert_eq!(run.status, "done", "{} {}", run.error, run.output);
     // It read the list of its own repo: the requested item first, and no other repo's.
     assert!(
         run.output
@@ -338,7 +338,7 @@ async fn a_tick_queues_the_schedules_that_are_due() {
     assert_eq!(queued.len(), 1);
     assert_eq!(
         (queued[0].name.as_str(), queued[0].status.as_str()),
-        ("triage", "ok")
+        ("triage", "done")
     );
     assert_eq!(queued[0].output, "Go.");
 }
@@ -369,7 +369,7 @@ async fn a_schedule_that_is_not_enabled_runs_only_when_asked() {
     assert_eq!(ran.len(), 1);
     assert_eq!(
         (ran[0].status.as_str(), ran[0].output.as_str()),
-        ("ok", "Go.")
+        ("done", "Go.")
     );
 }
 
@@ -478,7 +478,7 @@ async fn a_run_is_its_schedules_command_with_its_prompt_on_stdin() {
 
     let ran = runs::Model::recent(&ctx.db, 10).await.unwrap();
     assert_eq!(ran.len(), 1);
-    assert_eq!(ran[0].status, "ok", "{}", ran[0].error);
+    assert_eq!(ran[0].status, "done", "{}", ran[0].error);
     assert_eq!(ran[0].command, command);
     assert_eq!(ran[0].prompt, "");
     assert_eq!(
@@ -638,7 +638,7 @@ async fn one_run_at_a_time() {
     assert_eq!(cut_off.error, "m8r stopped while the run was in progress");
     assert_eq!(
         runs::Model::find(&ctx.db, waiting.id).await.unwrap().status,
-        "ok"
+        "done"
     );
 }
 
@@ -686,7 +686,7 @@ async fn a_schedules_runs_start_together_one_in_each_of_its_repos() {
     // Each command ended well, and it could only because the others ran at the same time.
     for (run, repo) in queued.iter().zip(&repos) {
         let run = runs::Model::find(&ctx.db, run.id).await.unwrap();
-        assert_eq!(run.status, "ok", "{} {}", run.error, run.output);
+        assert_eq!(run.status, "done", "{} {}", run.error, run.output);
         assert_eq!(&run.repo, repo);
         let clone = std::path::Path::new(&run.repo).file_name().unwrap();
         assert_eq!(run.output, format!("met in {}\n", clone.to_string_lossy()));
@@ -737,7 +737,7 @@ async fn each_of_a_schedules_repos_has_an_error_of_its_own() {
     tick(&ctx).await;
     assert_eq!(
         statuses(ctx.clone(), queued.clone()).await,
-        ["ok", "failed"]
+        ["done", "failed"]
     );
     let open = errors::Model::open(&ctx.db).await.unwrap();
     assert_eq!(open.len(), 1);
@@ -758,7 +758,7 @@ async fn each_of_a_schedules_repos_has_an_error_of_its_own() {
     fs::remove_file(bad.join("broken")).unwrap();
     let queued = queue_all(&ctx.db, &both).await;
     tick(&ctx).await;
-    assert_eq!(statuses(ctx.clone(), queued).await, ["ok", "ok"]);
+    assert_eq!(statuses(ctx.clone(), queued).await, ["done", "done"]);
     assert!(errors(&ctx).await.is_empty());
 }
 

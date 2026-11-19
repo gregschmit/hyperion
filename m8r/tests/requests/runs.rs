@@ -22,7 +22,7 @@ async fn reviewed(db: &DatabaseConnection, name: &str) -> runs::Model {
         "# Review\n\nLooks **good**. See [my comment]({COMMENT}).\n\n<script>alert(1)</script>\n"
     );
     run.into_active_model()
-        .finished(db, Status::Ok, printed, String::new())
+        .finished(db, Status::Done, printed, String::new())
         .await
         .unwrap()
 }
@@ -208,6 +208,12 @@ async fn a_share_link_opens_its_runs_page_and_nothing_else() {
 
         // The run, as its own page shows it. A link that it printed goes where it goes.
         assert!(page.contains("<h1>Run 1: review in"), "{page}");
+        // Its command ended well, so it's done, and the page's styles have a color for that.
+        assert!(
+            page.contains(r#"<span class="status done">done</span>"#),
+            "{page}"
+        );
+        assert!(page.contains(".status.done {"), "{page}");
         assert!(page.contains("<pre>claude -p</pre>"), "{page}");
         assert!(
             page.contains(&format!(

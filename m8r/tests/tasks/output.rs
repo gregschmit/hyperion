@@ -95,7 +95,7 @@ async fn what_a_run_prints_can_be_read_while_the_run_is_in_progress() {
     ticked.unwrap();
     assert!(came, "nothing came while the run was in progress");
     let over = followed.unwrap();
-    assert_eq!(over.status, "ok", "{}", over.error);
+    assert_eq!(over.status, "done", "{}", over.error);
     // All of it, stdout and stderr together: what the run's row keeps.
     assert_eq!(written.text(), "first\nsecond\n");
     assert_eq!(over.output, "first\nsecond\n");

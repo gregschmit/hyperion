@@ -178,7 +178,7 @@ async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Resul
     let status = if problem.is_some() {
         runs::Status::Failed
     } else {
-        runs::Status::Ok
+        runs::Status::Done
     };
     run.into_active_model()
         .finished(&ctx.db, status, output, problem.unwrap_or_default())

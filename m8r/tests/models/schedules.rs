@@ -652,7 +652,7 @@ async fn a_repo_that_leaves_a_schedule_leaves_nothing_behind() {
 
     // The first clone's next run goes well, and its error is over too.
     let run = start(db, kept, "p").await.into_active_model();
-    run.finished(db, Status::Ok, String::new(), String::new())
+    run.finished(db, Status::Done, String::new(), String::new())
         .await
         .unwrap();
     assert!(open().await.is_empty());

@@ -30,9 +30,9 @@ async fn empty(name: &str) -> DatabaseConnection {
         .unwrap()
 }
 
-/// What a database of the fourth release holds: a repo, a schedule in it, an item, a run with
-/// an artifact, the schedule's error, a configuration that isn't active, the error that says
-/// so, and a token.
+/// What a database of the fourth release holds: a repo, a schedule in it, an item, a run that
+/// went well with an artifact, a run that failed, the schedule's error, a configuration that
+/// isn't active, the error that says so, and a token.
 const FOURTH_RELEASE: &str = "
     INSERT INTO configurations (name, active, prompt) VALUES ('Mine', FALSE, 'Be brief.');
     INSERT INTO repos (path, url) VALUES ('~/git/rxg', 'https://git.example.com/rgnets/rxg');
@@ -43,10 +43,11 @@ const FOURTH_RELEASE: &str = "
     INSERT INTO watchlist_items (url, repo_id, category, requested) VALUES
       ('https://git.example.com/rgnets/rxg/-/merge_requests/1', 1, 'pull/merge requests', TRUE);
     INSERT INTO runs (name, repo, command, status, schedule_id, repo_id) VALUES
+      ('review', '~/git/rxg', 'claude -p', 'ok', 1, 1),
       ('review', '~/git/rxg', 'claude -p', 'failed', 1, 1);
     INSERT INTO artifacts (run_id, name, url) VALUES (1, 'review', '');
     INSERT INTO errors (subject, message, run_id) VALUES
-      ('schedule 1 in ~/git/rxg', 'Run 1 (review) failed: it broke', 1),
+      ('schedule 1 in ~/git/rxg', 'Run 2 (review) failed: it broke', 2),
       ('configuration', 'No configuration is active, so nothing runs.', NULL);
     INSERT INTO tokens (name, digest, scope) VALUES ('duet', 'a', 'watchlist_items');";
 
@@ -91,6 +92,9 @@ async fn an_update_keeps_everything_but_the_configurations_and_the_artifacts() {
         (history[0].schedule_id, history[0].repo_id),
         (Some(1), Some(1))
     );
+    // The run that went well is done, and the one that failed is as it was.
+    let statuses: Vec<_> = history.iter().map(|run| run.status.as_str()).collect();
+    assert_eq!(statuses, ["failed", "done"]);
     assert_eq!(tokens::Model::list(&db).await.unwrap().len(), 1);
 
     // The artifacts are gone: a run's report is what it printed.
@@ -108,9 +112,12 @@ async fn an_update_keeps_everything_but_the_configurations_and_the_artifacts() {
 
     // And the schedule runs with what's there.
     let queued = runs::Model::queue(&db, review, in_repos).await.unwrap();
-    assert_eq!((queued[0].id, queued[0].status.as_str()), (2, "queued"));
+    assert_eq!((queued[0].id, queued[0].status.as_str()), (3, "queued"));
 
-    // The artifacts don't come back, so there's no way back.
+    // The latest step can be taken back. The artifacts don't come back, so there's no way
+    // back past that.
+    Migrator::down(&db, Some(1)).await.unwrap();
+    assert_eq!(runs::Model::find(&db, 1).await.unwrap().status, "ok");
     let back = Migrator::down(&db, Some(1)).await;
     assert!(back
         .unwrap_err()
@@ -255,7 +262,7 @@ async fn a_new_database_starts_with_no_repos() {
     assert!(repos::Model::list(&db).await.unwrap().is_empty());
     assert!(schedules::Model::list(&db).await.unwrap().is_empty());
     // A migration that can't be taken back says so.
-    let back = Migrator::down(&db, Some(1)).await;
+    let back = Migrator::down(&db, Some(2)).await;
     assert!(back
         .unwrap_err()
         .to_string()

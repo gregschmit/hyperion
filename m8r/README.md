@@ -230,7 +230,8 @@ A run:
    login shell gives it the `PATH` and environment that you get when you become `m8r`;
 3. ends when the command does. m8r kills a run that passes two hours, and whatever the run
    started goes with it;
-4. keeps what the command printed. It's `ok` if the command exited with 0.
+4. keeps what the command printed. It's `done` if the command exited with 0, and `failed`
+   if not. `done` says that the command ended well, and not that its work is good.
 
 - **One schedule at a time,** in the order they were queued. A schedule's runs go together,
   one in each of its repos, so a schedule with ten repos starts ten agents at once. Two
@@ -512,7 +513,7 @@ schedule_repos   schedule → schedules ON DELETE CASCADE,
 
 runs             schedule → schedules ON DELETE SET NULL (optional),
                  repo → repos ON DELETE SET NULL (optional), name, repo (the clone's path),
-                 command, status (queued|running|ok|failed), prompt, output, error,
+                 command, status (queued|running|done|failed), prompt, output, error,
                  started_at, finished_at
 
 errors           subject (one open error at most), message,

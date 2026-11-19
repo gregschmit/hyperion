@@ -329,7 +329,7 @@ async fn a_runs_token_works_while_the_run_does_and_covers_the_watchlist() {
         );
 
         run.into_active_model()
-            .finished(&ctx.db, runs::Status::Ok, String::new(), String::new())
+            .finished(&ctx.db, runs::Status::Done, String::new(), String::new())
             .await
             .unwrap();
         assert_eq!(items(token).await.status_code(), 401);

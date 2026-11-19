@@ -59,7 +59,7 @@ pub async fn follow(ctx: &AppContext, id: i64, out: &mut impl Write) -> Result<r
             }
             found => found?,
         };
-        let over = [Status::Ok.as_str(), Status::Failed.as_str()].contains(&run.status.as_str());
+        let over = [Status::Done.as_str(), Status::Failed.as_str()].contains(&run.status.as_str());
         if file.is_none() && !over {
             // Not there for a run that waits, or one that starts just now.
             file = File::open(&path).ok();

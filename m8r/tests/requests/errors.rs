@@ -92,7 +92,7 @@ async fn every_page_shows_the_open_errors_and_one_page_lists_them_all() {
         let (schedule, _) = schedules::Model::find(db, 1).await.unwrap();
         let next = queue_one(db, &schedule).await;
         let next = start(db, next, "p").await.into_active_model();
-        next.finished(db, Status::Ok, String::new(), String::new())
+        next.finished(db, Status::Done, String::new(), String::new())
             .await
             .unwrap();
         let page = request.get("/errors").await.text();
