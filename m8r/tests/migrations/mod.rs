@@ -6,14 +6,17 @@ use std::{
 };
 
 use loco_rs::prelude::*;
-use m8r::models::{
-    errors, repos, runs, schedules, tokens,
-    watchlist_items::{self, Filter},
+use m8r::{
+    models::{
+        errors, repos, runs, schedules, tokens,
+        watchlist_items::{self, Filter},
+    },
+    prompts::Context,
 };
 use migration::{schema, Migrator, MigratorTrait};
 use sea_orm::{
     sea_query::{Alias, Query},
-    Database,
+    Database, DbBackend, Statement,
 };
 
 /// A database of its own, with no migration run yet.
@@ -109,6 +112,66 @@ async fn an_update_keeps_everything_but_the_configurations() {
         .unwrap_err()
         .to_string()
         .contains("can't be taken back"));
+}
+
+#[tokio::test]
+async fn a_schedules_prompt_gets_what_the_active_configuration_held() {
+    // What the configuration held, whether it was the active one, and what a run gets after
+    // the update: what it got before it.
+    let marks = "Use {{ braces }}, {% tags %} and {# notes #}.";
+    for (name, held, active, gets) in [
+        // The box's own case: m8r wanted a configuration, and this one said nothing.
+        ("blank", "", true, ""),
+        ("text", "Be brief.\n", true, "Be brief."),
+        // It was plain text, whatever marks it had.
+        ("marks", marks, true, marks),
+        ("not-active", "Be brief.", false, ""),
+    ] {
+        let db = empty(&format!("held-{name}")).await;
+        Migrator::up(&db, Some(4)).await.unwrap();
+        let insert = |sql: &'static str, values: Vec<sea_orm::Value>| {
+            db.execute_raw(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                sql,
+                values,
+            ))
+        };
+        insert(
+            "INSERT INTO configurations (name, active, prompt) VALUES ('Mine', ?, ?)",
+            vec![active.into(), held.into()],
+        )
+        .await
+        .unwrap();
+        // One schedule names the configuration's prompt, as a form sends it and without the
+        // spaces. One doesn't name it.
+        for (schedule, prompt) in [
+            (
+                "names it",
+                "Before.\r\n{{ config_prompt }}\r\nAfter. [{{config_prompt}}]",
+            ),
+            ("other", "{{ watchlist }}"),
+        ] {
+            insert(
+                "INSERT INTO schedules (name, hron, command, prompt)
+                 VALUES (?, 'every day at 9:00', 'cat', ?)",
+                vec![schedule.into(), prompt.into()],
+            )
+            .await
+            .unwrap();
+        }
+
+        Migrator::up(&db, None).await.unwrap();
+
+        let scheduled = schedules::Model::list(&db).await.unwrap();
+        let compiled = Context::default().compile(&scheduled[0].0.prompt);
+        assert_eq!(
+            compiled.unwrap(),
+            format!("Before.\r\n{gets}\r\nAfter. [{gets}]"),
+            "{name}: {}",
+            scheduled[0].0.prompt
+        );
+        assert_eq!(scheduled[1].0.prompt, "{{ watchlist }}", "{name}");
+    }
 }
 
 #[tokio::test]
