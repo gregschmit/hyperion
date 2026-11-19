@@ -254,7 +254,8 @@ A run:
   `--output-format stream-json --verbose` in the schedule's command, it prints each step as
   a line of JSON.
 - **A run can be shared.** "Share" on a run's page shows a link to that page, and copies it.
-  The link works for 72 hours for anyone, with no session (see [Access](#access)).
+  For 72 hours, the link opens the page and the run's artifacts to anyone who has it (see
+  [Access](#access)).
 
 ### Artifacts
 
@@ -269,8 +270,9 @@ An artifact is something that a run made and chose to report: a link, or a set o
 - **Where they show.** The Runs page, which is the home page, lists each run with its
   artifacts, and a run's own page has them too.
 - **Hosted files are inert.** An agent wrote them, maybe after it read a hostile issue, and they
-  open inside your session. So m8r serves them with a `Content-Security-Policy` that allows
-  styles and images and nothing else, and shows text files, markdown too, as plain text.
+  open inside your session, or a guest's. So m8r serves them with a `Content-Security-Policy`
+  that allows styles and images and nothing else, and shows text files, markdown too, as plain
+  text.
 
 ### Errors
 
@@ -298,10 +300,12 @@ Nothing answers without a session or a token.
 - **An access link** starts a session: `m8r task link` prints one. It works any number of
   times for 8 hours. `hours:72` changes that, and `once:true` makes a link that works one time.
   A session lasts 8 hours and can do everything in the pages.
-- **A share link** opens one run's page, to read, for 72 hours: "Share" on that page makes
-  one. Its holder sees what the page shows: the run's command, the prompt it got, what it
-  printed, and its artifacts by name, with their links but not their files. The link starts no
-  session, and opens no other run and nothing else of m8r.
+- **A share link** makes a guest of whoever opens it, for one run and for 72 hours: "Share"
+  on the run's page makes one. A guest reads what that page shows (the run's command, the
+  prompt it got and what it printed) and the run's artifacts, with their files. The link
+  opens the page, and the guest's browser keeps a cookie that opens the files, whose
+  addresses hold no token. A guest gets no other run and nothing else of m8r, and changes
+  nothing.
 - **No revoking.** A link is a signed token that m8r doesn't store, so it can't end one. To end
   every link and session, delete the line in `m8r/.env`, run `install`, and restart the units.
 - **A token** is for a program (see below). A session opens no part of the API, and a token
@@ -435,9 +439,9 @@ wrote. Expect a prompt injection someday.
 - **So is what a run printed.** An agent wrote it, maybe after it read a hostile issue. Its
   page shows it as markdown, with the HTML in it as text and each picture as a link, so
   nothing in it runs, and the page loads nothing from another site.
-- **A share link shows its run to whoever holds it,** for 72 hours. The prompt on that page
-  has the watchlist items that the run got, with your notes. The link opens nothing else, and
-  changes nothing.
+- **A share link shows its run to whoever holds it,** for 72 hours, with the files that the
+  run reported. The prompt on the run's page has the watchlist items that the run got, with
+  your notes. The link opens nothing else, and changes nothing.
 - **The site is public,** with no IP limits, and every request needs a session or a token. Keep
   Loco, rmcp and their dependencies current.
 

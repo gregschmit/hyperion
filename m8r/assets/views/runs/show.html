@@ -8,8 +8,8 @@
 {% if not shared %}
 <details class="share">
   <summary>Share</summary>
-  <p class="muted">Whoever has this link can read this page until {{ share.until }}, with no
-    session. It opens nothing else of m8r.</p>
+  <p class="muted">Whoever has this link can read this page and the run's artifacts until
+    {{ share.until }}. It opens nothing else of m8r.</p>
   <input type="text" class="wide mono" value="{{ share.url }}" readonly aria-label="Share link">
   <p class="muted copied" hidden>Copied to the clipboard.</p>
 </details>
@@ -39,12 +39,8 @@
 <h2>Artifacts</h2>
 <ul class="artifacts">
   {% for artifact in run.artifacts %}
-  {% if shared and artifact.hosted %}
-  <li>{{ artifact.name }} <small>files, which this link doesn't open</small></li>
-  {% else %}
   <li><a href="{{ artifact.href }}">{{ artifact.name }}</a>
     <small>{% if artifact.hosted %}files{% else %}{{ artifact.href }}{% endif %}</small></li>
-  {% endif %}
   {% else %}
   <li class="muted">None.</li>
   {% endfor %}

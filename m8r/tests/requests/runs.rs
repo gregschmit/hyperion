@@ -1,3 +1,5 @@
+use std::fs;
+
 use loco_rs::{
     prelude::*,
     testing::request::{request_with_config, RequestConfigBuilder},
@@ -8,10 +10,11 @@ use m8r::{
         artifacts,
         runs::{self, Status},
     },
+    settings::Settings,
 };
 use serial_test::serial;
 
-use crate::support::{queue, share_path, signed_in, start, token, unchecked};
+use crate::support::{location, queue, share_path, signed_in, start, token, unchecked, write};
 
 /// Record that `run` reported an artifact: a link, or with a blank `url`, files.
 async fn report(db: &DatabaseConnection, run: &runs::Model, name: &str, url: &str) {
@@ -22,14 +25,24 @@ async fn report(db: &DatabaseConnection, run: &runs::Model, name: &str, url: &st
     artifact.insert(db).await.unwrap();
 }
 
-/// A run of `review` that's over: it reported a link and a set of files, and printed markdown
-/// with a script in it.
-async fn reviewed(db: &DatabaseConnection) -> runs::Model {
-    let run = queue(db, "review", "/home/m8r/git/rxg", "claude -p").await;
+/// A run of the schedule `name` that's over. It reported three artifacts, which come in the
+/// order of their names: `comment`, a link; `notes`, two files; and `review`, a page with a
+/// picture. It printed markdown with a script in it.
+async fn reviewed(ctx: &AppContext, name: &str) -> runs::Model {
+    let db = &ctx.db;
+    let run = queue(db, name, "/home/m8r/git/rxg", "claude -p").await;
     let run = start(db, run, "The <prompt>.").await;
+    let dir = Settings::from_context(ctx).unwrap().artifacts_dir(run.id);
+    let _ = fs::remove_dir_all(&dir);
     let link = "https://git.example.com/g/p/-/merge_requests/1#note_5";
-    report(db, &run, "comment on rxg!1", link).await;
-    report(db, &run, "review of <rxg!1>", "").await;
+    write(&dir.join("comment/link.txt"), link);
+    write(&dir.join("notes/one.txt"), "1");
+    write(&dir.join("notes/two.txt"), "2");
+    let page = r#"<h1>Review</h1><img src="img/chart.svg">"#;
+    write(&dir.join("review/index.html"), page);
+    let picture = r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#;
+    write(&dir.join("review/img/chart.svg"), picture);
+    artifacts::Model::collect(db, run.id, &dir).await.unwrap();
     let printed = "# Review\n\nLooks **good**.\n\n<script>alert(1)</script>\n";
     run.into_active_model()
         .finished(db, Status::Ok, printed.to_string(), String::new())
@@ -175,7 +188,7 @@ async fn the_runs_page_lists_the_queue_and_the_history() {
 #[serial]
 async fn a_runs_page_has_a_share_link_to_hand_on() {
     signed_in(|request, ctx| async move {
-        reviewed(&ctx.db).await;
+        reviewed(&ctx, "review").await;
 
         let page = request.get("/runs/1").await.text();
         // "Share" opens the link, and a script copies it.
@@ -195,7 +208,10 @@ async fn a_runs_page_has_a_share_link_to_hand_on() {
             "{link}"
         );
         // It works for 72 hours, and the page says until when.
-        assert!(page.contains("can read this page until 20"), "{page}");
+        assert!(
+            page.contains("and the run's artifacts until\n    20"),
+            "{page}"
+        );
 
         // What the link shows is the same for everyone: the run, and no way to the rest.
         let shared = request.get(link).await.text();
@@ -208,27 +224,30 @@ async fn a_runs_page_has_a_share_link_to_hand_on() {
 
 #[tokio::test]
 #[serial]
-async fn a_share_link_opens_its_runs_page_and_nothing_else() {
-    // The server keeps cookies, so a session would show if the link started one.
+async fn a_share_link_opens_its_run_and_the_runs_files_and_nothing_else() {
+    // The server keeps cookies, as a guest's browser does.
     let config = RequestConfigBuilder::new().save_cookies(true).build();
-    request_with_config::<App, _, _>(config, |request, ctx| async move {
+    request_with_config::<App, _, _>(config, |mut request, ctx| async move {
         let db = &ctx.db;
-        let run = reviewed(db).await;
-        queue(db, "triage", "/home/m8r/git/rxg", "claude -p").await;
+        // Two runs. The first one's artifacts are 1 to 3, and the other's are 4 to 6.
+        let run = reviewed(&ctx, "review").await;
+        let other = reviewed(&ctx, "triage").await;
         // m8r has an error, which is none of a guest's business.
         m8r::models::errors::Model::raise(db, "gh", "m8r finds no such command.", None)
             .await
             .unwrap();
-        assert_eq!(request.get("/runs/1").await.status_code(), 401);
+        for path in ["/runs/1", "/artifacts/3", "/artifacts/3/index.html"] {
+            assert_eq!(request.get(path).await.status_code(), 401, "{path}");
+        }
 
         let link = share_path(&ctx, run.id, 60);
         let res = request.get(&link).await;
         assert_eq!(res.status_code(), 200);
         // The address holds the token: nothing keeps the page, and a link on it tells the
-        // next site nothing.
+        // next site nothing. The browser keeps what the link is good for.
         assert_eq!(res.header("cache-control"), "no-store");
         assert_eq!(res.header("referrer-policy"), "no-referrer");
-        assert!(res.maybe_header("set-cookie").is_none());
+        assert!(res.maybe_header("set-cookie").is_some());
         let page = res.text();
 
         // The run, as its own page shows it.
@@ -240,86 +259,136 @@ async fn a_share_link_opens_its_runs_page_and_nothing_else() {
         );
         assert!(page.contains("The &lt;prompt&gt;."), "{page}");
         assert!(!page.contains("<script"), "{page}");
-        // A link that it reported goes where it goes, and its files stay closed.
-        let comment = r#"<a href="https://git.example.com/g/p/-/merge_requests/1#note_5">comment on rxg!1</a>"#;
+        // What it reported: a link goes where it goes, and the files are a page away.
+        let comment =
+            r#"<a href="https://git.example.com/g/p/-/merge_requests/1#note_5">comment</a>"#;
         assert!(page.contains(comment), "{page}");
         assert!(
-            page.contains("<li>review of &lt;rxg!1&gt; <small>files, which this link doesn't open</small></li>")
-                || page.contains("<li>review of &lt;rxg!1&gt; <small>files, which this link doesn&#39;t open</small></li>"),
+            page.contains(r#"<a href="/artifacts/3">review</a>"#),
             "{page}"
         );
         // And nothing of the rest of m8r: no way to another page, no stylesheet to ask for,
         // no errors, and no link to hand on.
         assert!(!page.contains("<nav>"), "{page}");
-        assert!(!page.contains(r#"href="/"#), "{page}");
-        assert!(page.contains("<style>") && !page.contains("m8r.css"), "{page}");
+        assert!(
+            page.contains("<style>") && !page.contains("m8r.css"),
+            "{page}"
+        );
         assert!(!page.contains("class=\"alert\""), "{page}");
         assert!(!page.contains("m8r finds no such command"), "{page}");
         assert!(!page.contains("<details"), "{page}");
 
-        // The token fits that run's page. It opens no other run, no other page, no file, and
-        // not the API, and it changes nothing.
-        let token = link.split_once("?token=").unwrap().1.to_string();
+        // The run's files open: a page with what it needs, as inert as it is for anyone.
+        let res = request.get("/artifacts/3").await;
+        assert_eq!(location(&res), "/artifacts/3/index.html");
+        let res = request.get("/artifacts/3/index.html").await;
+        assert_eq!(res.status_code(), 200);
+        let policy = res.header("content-security-policy");
+        assert!(policy.to_str().unwrap().starts_with("default-src 'none';"));
+        assert_eq!(res.header("cache-control"), "no-store");
+        assert_eq!(res.header("referrer-policy"), "no-referrer");
+        assert!(res.text().contains(r#"<img src="img/chart.svg">"#));
+        let res = request.get("/artifacts/3/img/chart.svg").await;
+        assert_eq!(res.status_code(), 200);
+        // A list of files is a guest's page too: the way back to the run, and no other.
+        let page = request.get("/artifacts/2").await.text();
+        assert!(page.contains(r#"href="/artifacts/2/one.txt""#), "{page}");
+        assert!(page.contains(r#"<a href="/runs/1">run 1</a>"#), "{page}");
+        assert!(
+            !page.contains("<nav>") && page.contains("<style>"),
+            "{page}"
+        );
+        assert_eq!(request.get("/artifacts/2/two.txt").await.text(), "2");
+        // The run's page opens by its plain address now, as a guest's.
+        let page = request.get("/runs/1").await.text();
+        assert!(page.contains("<h1>Run 1: review in"), "{page}");
+        assert!(!page.contains("<nav>"), "{page}");
+
+        // Nothing else opens, with the token or without it: not another run or its files,
+        // no other page, and no stylesheet.
+        let held = link.split_once("?token=").unwrap().1.to_string();
         for path in [
             "/runs/2",
+            "/artifacts/6",
+            "/artifacts/6/index.html",
+            "/artifacts/99",
             "/runs",
             "/",
             "/schedules",
-            "/artifacts/2",
             "/static/m8r.css",
             "/runs/1/",
         ] {
-            let res = request.get(&format!("{path}?token={token}")).await;
-            assert_eq!(res.status_code(), 401, "{path}");
+            assert_eq!(request.get(path).await.status_code(), 401, "{path}");
+            let res = request.get(&format!("{path}?token={held}")).await;
+            assert_eq!(res.status_code(), 401, "{path} with the token");
         }
-        let res = request
-            .get("/api/runs/1")
-            .authorization_bearer(&token)
-            .await;
+        // Not the API, and a guest changes nothing.
+        let res = request.get("/api/runs/1").authorization_bearer(&held).await;
         assert_eq!(res.status_code(), 401);
-        assert_eq!(request.post(&link).await.status_code(), 401);
-        // A token that was changed is none.
+        for path in [link.as_str(), "/runs/1", "/schedules/1/run"] {
+            assert_eq!(request.post(path).await.status_code(), 401, "{path}");
+        }
+        // A token that was changed is none, and a token for the API is no share link.
         let mut changed = link.clone();
         let last = if changed.ends_with('A') { 'B' } else { 'A' };
         changed.pop();
         changed.push(last);
         assert_eq!(request.get(&changed).await.status_code(), 401);
-        // And the link started no session: the same page without the token stays shut.
-        assert_eq!(request.get("/runs/1").await.status_code(), 401);
-
-        // A token for the API is no share link either.
-        let api = token_for_runs(&ctx).await;
+        let api = token(&ctx, "reader", "runs").await;
         let res = request.get(&format!("/runs/1?token={api}")).await;
         assert_eq!(res.status_code(), 401);
+
+        // The other run's link makes the browser a guest of that run too.
+        let res = request.get(&share_path(&ctx, other.id, 60)).await;
+        assert_eq!(res.status_code(), 200);
+        for path in ["/artifacts/6/index.html", "/runs/2", "/runs/1"] {
+            assert_eq!(request.get(path).await.status_code(), 200, "{path}");
+        }
+
+        // A browser that never opened a link gets no file: a file's address holds no token.
+        // The link still opens the page.
+        request.clear_cookies();
+        for path in ["/runs/1", "/artifacts/3/index.html", "/artifacts/2"] {
+            assert_eq!(request.get(path).await.status_code(), 401, "{path}");
+        }
+        assert_eq!(request.get(&link).await.status_code(), 200);
     })
     .await;
-}
-
-/// A token that covers the runs in the API.
-async fn token_for_runs(ctx: &AppContext) -> String {
-    token(ctx, "reader", "runs").await
 }
 
 #[tokio::test]
 #[serial]
 async fn a_share_link_stops_working_when_its_time_is_up() {
-    request::<App, _, _>(|request, ctx| async move {
-        let run = reviewed(&ctx.db).await;
-        // A link's time is in whole seconds, so wait one out.
-        let link = share_path(&ctx, run.id, 0);
-        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let config = RequestConfigBuilder::new().save_cookies(true).build();
+    request_with_config::<App, _, _>(config, |request, ctx| async move {
+        let run = reviewed(&ctx, "review").await;
+        let link = share_path(&ctx, run.id, 1);
+        assert_eq!(request.get(&link).await.status_code(), 200);
+        let file = "/artifacts/3/index.html";
+        assert_eq!(request.get(file).await.status_code(), 200);
 
+        // A link's time is in whole seconds, so wait it out.
+        tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+
+        // The link says that its time is up. Its holder can make no link on the server, so
+        // the page doesn't say how.
         let res = request.get(&link).await;
         assert_eq!(res.status_code(), 401);
         let page = res.text();
         assert!(page.contains("That link to a run has expired."), "{page}");
-        // Its holder can make no link on the server, so the page doesn't say how.
         assert!(!page.contains("m8r task link"), "{page}");
         assert!(!page.contains("Review"), "{page}");
+        // And the browser that opened it is no guest any more.
+        for path in ["/runs/1", file] {
+            let res = request.get(path).await;
+            assert_eq!(res.status_code(), 401, "{path}");
+            assert!(res.text().contains("open their link again"), "{path}");
+        }
 
         // A new link for the same run works.
         let link = share_path(&ctx, run.id, 60);
         assert_eq!(request.get(&link).await.status_code(), 200);
+        assert_eq!(request.get(file).await.status_code(), 200);
     })
     .await;
 }

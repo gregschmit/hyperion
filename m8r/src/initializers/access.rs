@@ -5,14 +5,16 @@
 //! signed cookie, which the server stops accepting after `auth.session.max_age`), and
 //! redirects to the same page without the token.
 //!
-//! One page opens with no session: a run's, for whoever holds its share link. That link's token
-//! is good for the one run, to read it, until the token says. It opens nothing else.
+//! A run's share link makes a guest of whoever opens it. Its token is good for the one run,
+//! to read it, until the token says: it opens the run's page. The guest's browser keeps that
+//! in the same cookie, so that the run's files open too, whose addresses hold no token. A
+//! guest gets nothing else, and changes nothing.
 //!
 //! The API (`/api`) and the MCP endpoint (`/mcp`) want a token in the `Authorization` header,
 //! and never take a session: another site can make a browser send a cookie, but not a header.
 //! A token is one that `task token` made, or a run's own, which works while the run does.
 
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
@@ -35,7 +37,7 @@ use serde_json::{json, Map, Value};
 use sha2::Sha256;
 
 use crate::{
-    models::{runs, tokens, used_links},
+    models::{artifacts, runs, tokens, used_links},
     settings::Settings,
 };
 
@@ -48,6 +50,10 @@ const SEAL: usize = 16;
 
 /// How long a run's share link works.
 pub const SHARE_LIMIT: Duration = Duration::from_secs(72 * 60 * 60);
+
+/// Where a session keeps the runs that its browser opened a share link for, each with the
+/// time that its link stops working.
+const SHARED: &str = "shared";
 
 /// What a session's user is called. m8r has one user: whoever holds a link.
 const USER: &str = "m8r";
@@ -72,8 +78,8 @@ impl Caller {
     }
 }
 
-/// Who asks for a run's page with its share link: the guard marks the request, so that the
-/// page shows the run and no way to the rest of m8r.
+/// Who asks for a run's page or one of its files by the run's share link: the guard marks the
+/// request, so that a page shows the run and no way to the rest of m8r.
 #[derive(Debug, Clone, Copy)]
 pub struct Guest;
 
@@ -182,6 +188,11 @@ impl Share {
         Some(share)
     }
 
+    /// Whether the link still works.
+    fn works(&self) -> bool {
+        Utc::now().timestamp() <= i64::from(self.expires)
+    }
+
     /// The HMAC of the run and the time under m8r's secret. Its first words keep it apart
     /// from an access link's.
     fn seal(&self, secret: &str, run_id: i64) -> Option<Hmac<Sha256>> {
@@ -219,7 +230,7 @@ pub fn link(ctx: &AppContext, seconds: u64, once: bool) -> Result<String> {
 }
 
 /// Make a share link for run `run_id`, and say when it stops working. For `seconds`, it opens
-/// that run's page with no session, to read, and nothing else.
+/// that run's page and its files to a guest, to read, and nothing else.
 ///
 /// # Errors
 /// When the JWT settings, which hold m8r's secret, are missing.
@@ -302,13 +313,16 @@ async fn guard(State(ctx): State<AppContext>, request: Request, next: Next) -> R
 
     if parts.method == Method::GET {
         if let Some(token) = query_token(&parts) {
-            // A share link's token opens its run's page, session or none.
+            // A share link's token opens its run's page, session or none. The browser keeps
+            // what the link is good for, so that the run's files open too.
             match shared(&ctx, &parts, &token) {
-                Some(true) => {
+                Some((run_id, share)) if share.works() => {
+                    let session = remembering(session, run_id, share.expires);
                     parts.extensions.insert(Guest);
-                    return for_guest(next.run(Request::from_parts(parts, body)).await);
+                    let page = next.run(Request::from_parts(parts, body)).await;
+                    return (session, for_guest(page)).into_response();
                 }
-                Some(false) => {
+                Some(_) => {
                     return turn_away("That link to a run has expired. Ask for a new one.", "");
                 }
                 None => {}
@@ -324,6 +338,11 @@ async fn guard(State(ctx): State<AppContext>, request: Request, next: Next) -> R
     }
 
     if session.user_id().is_none() {
+        // A guest reads the runs that its browser opened a share link for, and their files.
+        if parts.method == Method::GET && guest_of(&ctx, &session, parts.uri.path()).await {
+            parts.extensions.insert(Guest);
+            return for_guest(next.run(Request::from_parts(parts, body)).await);
+        }
         return refuse("You need an access link to get in.");
     }
     next.run(Request::from_parts(parts, body)).await
@@ -421,17 +440,63 @@ async fn redeem(ctx: &AppContext, token: &str) -> std::result::Result<(), String
     Ok(())
 }
 
-/// Whether the request's token is the share link's of the run whose page it asks for, and
-/// if so, whether the link still works. None: it may be an access link's token.
-fn shared(ctx: &AppContext, parts: &Parts, token: &str) -> Option<bool> {
+/// The run whose page the request asks for, and what its share link's token says, if the
+/// request's token is that. None: it may be an access link's token.
+fn shared(ctx: &AppContext, parts: &Parts, token: &str) -> Option<(i64, Share)> {
     let run_id = parts.uri.path().strip_prefix("/runs/")?.parse().ok()?;
     let secret = &ctx.config.get_jwt_config().ok()?.secret;
-    let share = Share::read(secret, run_id, token)?;
-    Some(Utc::now().timestamp() <= i64::from(share.expires))
+    Some((run_id, Share::read(secret, run_id, token)?))
+}
+
+/// The session, which now also holds that its browser may read run `run_id` until `expires`.
+/// It keeps the links that still work, and lets go of the rest.
+fn remembering(session: Session, run_id: i64, expires: u32) -> Session {
+    let now = Utc::now().timestamp();
+    let mut shared: BTreeMap<i64, u32> = session.get(SHARED).unwrap_or_default();
+    shared.retain(|_, expires| now <= i64::from(*expires));
+    // An older link for the same run may work longer.
+    let until = shared
+        .get(&run_id)
+        .copied()
+        .unwrap_or_default()
+        .max(expires);
+    shared.insert(run_id, until);
+    // A cookie has room for some hundred runs. Past that, this one alone.
+    let alone = BTreeMap::from([(run_id, until)]);
+    session
+        .clone()
+        .insert(SHARED, &shared)
+        .or_else(|_| session.clone().insert(SHARED, &alone))
+        .unwrap_or(session)
+}
+
+/// Whether the session's browser opened a share link that still works for the run that
+/// `path` is about: the path of the run's page, or of one of its artifacts.
+async fn guest_of(ctx: &AppContext, session: &Session, path: &str) -> bool {
+    let shared: BTreeMap<i64, u32> = session.get(SHARED).unwrap_or_default();
+    if shared.is_empty() {
+        return false;
+    }
+    let run_id = if let Some(run_id) = path.strip_prefix("/runs/") {
+        run_id.parse().ok()
+    } else if let Some(artifact) = path.strip_prefix("/artifacts/") {
+        let id = artifact.split('/').next().and_then(|id| id.parse().ok());
+        match id {
+            Some(id) => artifacts::Model::find(&ctx.db, id)
+                .await
+                .ok()
+                .map(|artifact| artifact.run_id),
+            None => None,
+        }
+    } else {
+        None
+    };
+    let until = run_id.and_then(|run_id| shared.get(&run_id).copied());
+    until.is_some_and(|until| Utc::now().timestamp() <= i64::from(until))
 }
 
 /// A guest's page is kept nowhere, and a link on it tells the next site nothing of this
-/// address, which holds the token.
+/// address, which may hold the token.
 fn for_guest(page: Response) -> Response {
     let headers = [
         (header::CACHE_CONTROL, "no-store"),
@@ -469,9 +534,11 @@ fn no_store(response: impl IntoResponse) -> impl IntoResponse {
     ([(header::CACHE_CONTROL, "no-store")], response)
 }
 
-/// The page for a request with no session, which says how to get one.
+/// The page for a request with no session, which says how to get one. A guest whose time is
+/// up gets it too.
 fn refuse(why: &str) -> Response {
-    let how = "<p>Make a link on the server, and open it here:</p><pre>m8r task link</pre>";
+    let how = "<p>Make a link on the server, and open it here:</p><pre>m8r task link</pre>\
+               <p>If someone shared a run with you, open their link again.</p>";
     turn_away(why, how)
 }
 

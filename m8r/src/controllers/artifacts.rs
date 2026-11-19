@@ -4,11 +4,11 @@ use std::{
     path::{Path as FilePath, PathBuf},
 };
 
-use axum::http::header;
+use axum::{http::header, Extension};
 use loco_rs::prelude::*;
 use serde_json::json;
 
-use crate::{models::artifacts, settings::Settings, views};
+use crate::{initializers::access::Guest, models::artifacts, settings::Settings, views};
 
 /// An agent wrote these files, maybe after it read a hostile issue, and they open inside the
 /// viewer's session. So they get styles and images, and nothing else: no scripts, no forms, no
@@ -21,12 +21,13 @@ const INERT: &str = "default-src 'none'; img-src 'self' data:; style-src 'self' 
 const FILES: usize = 500;
 
 /// A hosted artifact: its `index.html` if it has one, else its only file, else a list of its
-/// files. A link artifact goes to its link.
+/// files. A link artifact goes to its link. A guest of the artifact's run gets the same.
 #[debug_handler]
 pub async fn show(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
     Path(id): Path<i64>,
+    guest: Option<Extension<Guest>>,
 ) -> Result<Response> {
     let artifact = artifacts::Model::find(&ctx.db, id).await?;
     if !artifact.hosted() {
@@ -53,6 +54,9 @@ pub async fn show(
         .map(|file| json!({ "name": file, "href": format!("/artifacts/{id}/{}", encode(file)) }))
         .collect();
     let data = json!({ "name": artifact.name, "run_id": artifact.run_id, "files": files });
+    if guest.is_some() {
+        return views::guest_page(&v, "artifacts/show.html", data);
+    }
     views::page(&v, &ctx, "artifacts/show.html", "runs", data).await
 }
 
