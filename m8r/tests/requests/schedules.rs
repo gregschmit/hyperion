@@ -349,7 +349,6 @@ async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
             "{{ repo_url }}",
             "{{ category }}",
             "{{ max_items }}",
-            "{{ artifacts_dir }}",
             "{% for item in watchlist_items %}",
             "{% for item in requested_watchlist_items %}",
         ] {
@@ -358,14 +357,10 @@ async fn a_schedules_page_says_what_a_prompt_can_use_and_shows_it_compiled() {
                 "{variable}: {page}"
             );
         }
-        // And the starting prompt shows compiled: m8r's part, with a sample artifact
-        // directory, and the watchlist. With no repo chosen yet, it gets no items.
+        // And the starting prompt shows compiled: m8r's part, and the watchlist. With no repo
+        // chosen yet, it gets no items.
         assert!(
             page.contains("<pre>You are running in m8r, a maintainer automation tool."),
-            "{page}"
-        );
-        assert!(
-            page.contains("make a directory in\n/var/lib/m8r/artifacts/1, named"),
             "{page}"
         );
         assert!(page.contains("## How to use m8r&#39;s watchlist"), "{page}");

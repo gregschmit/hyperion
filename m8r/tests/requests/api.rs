@@ -1,7 +1,7 @@
 //! The JSON API, as a caller with a token for everything sees it.
 
 use loco_rs::{prelude::*, TestServer};
-use m8r::{app::App, models::artifacts};
+use m8r::app::App;
 use serde_json::{json, Value};
 use serial_test::serial;
 
@@ -576,23 +576,10 @@ async fn schedules_are_listed_added_changed_run_and_removed() {
 
 #[tokio::test]
 #[serial]
-async fn runs_are_listed_and_shown_with_their_artifacts() {
+async fn runs_are_listed_and_shown() {
     with_token(|request, ctx, token| async move {
         let first = queue(&ctx.db, "review", "/home/m8r/git/rxg", "claude -p").await;
         let first = start(&ctx.db, first, "The prompt.").await;
-        for (name, url) in [
-            (
-                "comment",
-                "https://git.example.com/g/p/-/merge_requests/1#note_5",
-            ),
-            ("review", ""),
-        ] {
-            let mut artifact = artifacts::ActiveModel::new();
-            artifact.run_id = Set(first.id);
-            artifact.name = Set(name.to_string());
-            artifact.url = Set(url.to_string());
-            artifact.insert(&ctx.db).await.unwrap();
-        }
         let first = first
             .into_active_model()
             .finished(
@@ -629,22 +616,12 @@ async fn runs_are_listed_and_shown_with_their_artifacts() {
         assert_eq!(listed.get("output"), None);
         assert_eq!(listed["status"], json!("ok"));
         assert_eq!(
-            listed["artifacts"],
-            json!([
-                {
-                    "id": 1,
-                    "name": "comment",
-                    "url": "https://git.example.com/g/p/-/merge_requests/1#note_5",
-                    "hosted": false,
-                },
-                // Files that m8r hosts: the link is their page.
-                {
-                    "id": 2,
-                    "name": "review",
-                    "url": "http://localhost:5150/artifacts/2",
-                    "hosted": true,
-                },
-            ])
+            (&listed["name"], &listed["repo"], &listed["command"]),
+            (
+                &json!("review"),
+                &json!("/home/m8r/git/rxg"),
+                &json!("claude -p")
+            )
         );
         let res = request
             .get(&format!("/api/runs/{}", first.id))
@@ -653,12 +630,8 @@ async fn runs_are_listed_and_shown_with_their_artifacts() {
         let (status, whole) = answer(&res);
         assert_eq!(status, 200);
         assert_eq!(
-            (&whole["prompt"], &whole["output"], &whole["artifacts"]),
-            (
-                &json!("The prompt."),
-                &json!("What it printed."),
-                &listed["artifacts"]
-            )
+            (&whole["prompt"], &whole["output"]),
+            (&json!("The prompt."), &json!("What it printed."))
         );
         // Its times are moments, by the names of their columns.
         for time in ["created_at", "started_at", "finished_at"] {

@@ -1,4 +1,3 @@
-mod artifacts;
 mod errors;
 mod repos;
 mod runs;

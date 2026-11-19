@@ -30,8 +30,9 @@ async fn empty(name: &str) -> DatabaseConnection {
         .unwrap()
 }
 
-/// What a database of the fourth release holds: a repo, a schedule in it, an item, a run, the
-/// schedule's error, a configuration that isn't active, the error that says so, and a token.
+/// What a database of the fourth release holds: a repo, a schedule in it, an item, a run with
+/// an artifact, the schedule's error, a configuration that isn't active, the error that says
+/// so, and a token.
 const FOURTH_RELEASE: &str = "
     INSERT INTO configurations (name, active, prompt) VALUES ('Mine', FALSE, 'Be brief.');
     INSERT INTO repos (path, url) VALUES ('~/git/rxg', 'https://git.example.com/rgnets/rxg');
@@ -43,6 +44,7 @@ const FOURTH_RELEASE: &str = "
       ('https://git.example.com/rgnets/rxg/-/merge_requests/1', 1, 'pull/merge requests', TRUE);
     INSERT INTO runs (name, repo, command, status, schedule_id, repo_id) VALUES
       ('review', '~/git/rxg', 'claude -p', 'failed', 1, 1);
+    INSERT INTO artifacts (run_id, name, url) VALUES (1, 'review', '');
     INSERT INTO errors (subject, message, run_id) VALUES
       ('schedule 1 in ~/git/rxg', 'Run 1 (review) failed: it broke', 1),
       ('configuration', 'No configuration is active, so nothing runs.', NULL);
@@ -58,7 +60,7 @@ async fn ids(db: &DatabaseConnection, table: &str) -> Result<usize, DbErr> {
 }
 
 #[tokio::test]
-async fn an_update_keeps_everything_but_the_configurations() {
+async fn an_update_keeps_everything_but_the_configurations_and_the_artifacts() {
     let db = empty("fourth-release").await;
     // The fourth release: m8r ran nothing until a configuration was active.
     Migrator::up(&db, Some(4)).await.unwrap();
@@ -91,6 +93,8 @@ async fn an_update_keeps_everything_but_the_configurations() {
     );
     assert_eq!(tokens::Model::list(&db).await.unwrap().len(), 1);
 
+    // The artifacts are gone: a run's report is what it printed.
+    assert!(ids(&db, "artifacts").await.is_err());
     // The configurations are gone, and the error that asked for one is over: the list keeps
     // it. The schedule's error stays.
     assert!(ids(&db, "configurations").await.is_err());
@@ -106,9 +110,7 @@ async fn an_update_keeps_everything_but_the_configurations() {
     let queued = runs::Model::queue(&db, review, in_repos).await.unwrap();
     assert_eq!((queued[0].id, queued[0].status.as_str()), (2, "queued"));
 
-    // The latest steps can be taken back. The configurations don't come back, so there's no
-    // way back past that.
-    Migrator::down(&db, Some(2)).await.unwrap();
+    // The artifacts don't come back, so there's no way back.
     let back = Migrator::down(&db, Some(1)).await;
     assert!(back
         .unwrap_err()
@@ -192,7 +194,7 @@ async fn a_migration_runs_on_connections_that_know_the_schema_from_before() {
     db.execute_unprepared(FOURTH_RELEASE).await.unwrap();
     // Every connection reads the schema as it is now.
     let look = || async {
-        for table in ["configurations", "schedules", "runs", "errors"] {
+        for table in ["configurations", "artifacts", "schedules", "runs", "errors"] {
             ids(&db, table).await.unwrap();
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -206,6 +208,7 @@ async fn a_migration_runs_on_connections_that_know_the_schema_from_before() {
     // Whichever connection answers, it reads what the migration made.
     let read = || async {
         assert!(ids(&db, "configurations").await.is_err());
+        assert!(ids(&db, "artifacts").await.is_err());
         assert_eq!(schedules::Model::list(&db).await.unwrap().len(), 1);
         let history = runs::Model::recent(&db, 10).await.unwrap();
         assert_eq!(history[0].name, "review");
@@ -252,7 +255,7 @@ async fn a_new_database_starts_with_no_repos() {
     assert!(repos::Model::list(&db).await.unwrap().is_empty());
     assert!(schedules::Model::list(&db).await.unwrap().is_empty());
     // A migration that can't be taken back says so.
-    let back = Migrator::down(&db, Some(3)).await;
+    let back = Migrator::down(&db, Some(1)).await;
     assert!(back
         .unwrap_err()
         .to_string()

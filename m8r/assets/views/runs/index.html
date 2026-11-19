@@ -2,9 +2,9 @@
 {% block title %}Runs · m8r{% endblock title %}
 {% block content %}
 <h1>Runs</h1>
-<p class="muted">The queue and the history, with what each run reported. A schedule's runs start
-  together, one in each of its repos. The schedules take turns: the one that has waited the
-  longest goes first, and a tick starts it within a minute.</p>
+<p class="muted">The queue and the history. A schedule's runs start together, one in each of its
+  repos. The schedules take turns: the one that has waited the longest goes first, and a tick
+  starts it within a minute.</p>
 
 {% if setup %}
 <section class="setup">
@@ -23,7 +23,7 @@
 {% endif %}
 
 <table>
-  <tr><th>ID</th><th>Name</th><th>Repo and command</th><th>Status</th><th>Created at</th><th>Started at</th><th>Finished at</th><th>Artifacts</th></tr>
+  <tr><th>ID</th><th>Name</th><th>Repo and command</th><th>Status</th><th>Created at</th><th>Started at</th><th>Finished at</th></tr>
   {% for run in runs %}
   <tr>
     <td><a href="/runs/{{ run.id }}">{{ run.id }}</a></td>
@@ -33,10 +33,9 @@
     <td>{{ run.created_at }}</td>
     <td>{{ run.started_at }}</td>
     <td>{{ run.finished_at }}</td>
-    <td>{% for artifact in run.artifacts %}<a href="{{ artifact.href }}">{{ artifact.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</td>
   </tr>
   {% else %}
-  <tr><td colspan="8" class="muted">No runs yet. Queue one from a schedule's "Run now".</td></tr>
+  <tr><td colspan="7" class="muted">No runs yet. Queue one from a schedule's "Run now".</td></tr>
   {% endfor %}
 </table>
 {% endblock content %}

@@ -5,33 +5,30 @@ use serde_json::json;
 
 use crate::{
     initializers::access::{self, Guest},
-    models::{artifacts, runs, schedules},
+    models::{runs, schedules},
     views,
 };
 
 /// How many runs the page lists.
 const RUNS: u64 = 200;
 
-/// The queue and the history, with what each run reported. It's the home page too.
+/// The queue and the history. It's the home page too.
 #[debug_handler]
 pub async fn index(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
 ) -> Result<Response> {
-    let mut rows = Vec::new();
-    for run in runs::Model::recent(&ctx.db, RUNS).await? {
-        let reported = artifacts::Model::of_run(&ctx.db, run.id).await?;
-        rows.push(views::run(&run, &reported));
-    }
+    let recent = runs::Model::recent(&ctx.db, RUNS).await?;
+    let rows: Vec<_> = recent.iter().map(views::run).collect();
     // A new m8r has nothing to list, so the page says how to set it up.
     let setup = rows.is_empty() && schedules::Model::list(&ctx.db).await?.is_empty();
     let data = json!({ "runs": rows, "setup": setup });
     views::page(&v, &ctx, "runs/index.html", "runs", data).await
 }
 
-/// One run: its command, what it reported, what it printed, and the prompt it got. A guest,
-/// who holds the run's share link, gets the same and nothing more of m8r. Anyone else gets a
-/// share link to hand on.
+/// One run: its command, what it printed, and the prompt it got. A guest, who holds the run's
+/// share link, gets the same and nothing more of m8r. Anyone else gets a share link to hand
+/// on.
 #[debug_handler]
 pub async fn show(
     ViewEngine(v): ViewEngine<TeraView>,
@@ -40,9 +37,8 @@ pub async fn show(
     guest: Option<Extension<Guest>>,
 ) -> Result<Response> {
     let run = runs::Model::find(&ctx.db, id).await?;
-    let reported = artifacts::Model::of_run(&ctx.db, run.id).await?;
     let mut data = json!({
-        "run": views::run(&run, &reported),
+        "run": views::run(&run),
         "output_html": views::markdown::render(&run.output),
     });
     if guest.is_some() {

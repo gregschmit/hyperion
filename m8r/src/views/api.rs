@@ -3,7 +3,7 @@
 use loco_rs::prelude::*;
 use serde_json::{json, Value};
 
-use crate::models::{artifacts, repos, runs, schedules, watchlist_items};
+use crate::models::{repos, runs, schedules, watchlist_items};
 
 fn time(at: Option<&DateTimeWithTimeZone>) -> Option<String> {
     at.map(DateTimeWithTimeZone::to_rfc3339)
@@ -55,24 +55,7 @@ pub fn schedule((schedule, repos): &schedules::Listed) -> Value {
 
 /// A run in a list: all but its prompt and what it printed, which are long.
 #[must_use]
-pub fn run(run: &runs::Model, artifacts: &[artifacts::Model], pages: &str) -> Value {
-    let artifacts: Vec<Value> = artifacts
-        .iter()
-        .map(|artifact| {
-            // A hosted artifact's link is its page in m8r, which wants a session.
-            let url = if artifact.hosted() {
-                format!("{}/artifacts/{}", pages.trim_end_matches('/'), artifact.id)
-            } else {
-                artifact.url.clone()
-            };
-            json!({
-                "id": artifact.id,
-                "name": artifact.name,
-                "url": url,
-                "hosted": artifact.hosted(),
-            })
-        })
-        .collect();
+pub fn run(run: &runs::Model) -> Value {
     json!({
         "id": run.id,
         "schedule_id": run.schedule_id,
@@ -85,14 +68,13 @@ pub fn run(run: &runs::Model, artifacts: &[artifacts::Model], pages: &str) -> Va
         "created_at": time(Some(&run.created_at)),
         "started_at": time(run.started_at.as_ref()),
         "finished_at": time(run.finished_at.as_ref()),
-        "artifacts": artifacts,
     })
 }
 
 /// One run, whole.
 #[must_use]
-pub fn run_whole(run: &runs::Model, artifacts: &[artifacts::Model], pages: &str) -> Value {
-    let mut whole = self::run(run, artifacts, pages);
+pub fn run_whole(run: &runs::Model) -> Value {
+    let mut whole = self::run(run);
     whole["prompt"] = json!(run.prompt);
     whole["output"] = json!(run.output);
     whole

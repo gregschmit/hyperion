@@ -15,7 +15,7 @@ pub struct Settings {
     pub agent: String,
     /// Minutes before a run is killed.
     pub run_limit: u64,
-    /// Where the artifacts and the run lock go.
+    /// Where the locks go, and what a run prints while it's in progress.
     pub data: PathBuf,
 }
 
@@ -31,16 +31,10 @@ impl Settings {
         Duration::from_secs(self.run_limit * 60)
     }
 
-    /// The directory where run `id` reports its artifacts.
-    #[must_use]
-    pub fn artifacts_dir(&self, run_id: i64) -> PathBuf {
-        self.data.join("artifacts").join(run_id.to_string())
-    }
-
-    /// The file that gets what run `id` prints, for as long as the run takes.
+    /// The file that gets what run `run_id` prints, for as long as the run takes.
     #[must_use]
     pub fn output_file(&self, run_id: i64) -> PathBuf {
-        self.artifacts_dir(run_id).with_extension("out")
+        self.data.join(format!("run-{run_id}.out"))
     }
 
     /// The file that the tick that has a run in progress keeps locked.

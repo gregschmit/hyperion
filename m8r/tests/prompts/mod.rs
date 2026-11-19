@@ -63,7 +63,7 @@ async fn context(
     items: Items,
     max_items: u32,
 ) -> Context {
-    let loaded = Context::load(&ctx.db, repo, items, max_items, "/x").await;
+    let loaded = Context::load(&ctx.db, repo, items, max_items).await;
     loaded.unwrap()
 }
 
@@ -74,26 +74,20 @@ async fn a_prompt_gets_each_part_where_it_says() {
     let ctx = &boot.app_context;
     let (repo, _) = watchlist(ctx).await;
 
-    let context = Context::load(&ctx.db, Some(&repo), REQUESTS, 0, "/data/artifacts/9")
-        .await
-        .unwrap();
+    let context = context(ctx, Some(&repo), REQUESTS, 0).await;
     let prompt = context
         .compile("Before.\n{{ m8r_prompt }}\n\nFollow these:\n{{ watchlist }}\nAfter.")
         .unwrap();
 
-    // m8r's own part: where the agent is, and that what it prints is its report. An artifact
-    // is for an agent that has one, and nothing that every run must make.
+    // m8r's own part: where the agent is, and that what it prints is its report, with the
+    // links to what it made.
     assert!(
         prompt.starts_with("Before.\nYou are running in m8r, a maintainer automation tool."),
         "{prompt}"
     );
     assert!(prompt.contains("Your answer is your report"), "{prompt}");
     assert!(
-        prompt.contains("If you also have artifacts for the developer, this is how"),
-        "{prompt}"
-    );
-    assert!(
-        prompt.contains("make a directory in\n/data/artifacts/9, named"),
+        prompt.contains("such as a comment or a PR/MR, put its link in your answer.\n"),
         "{prompt}"
     );
     assert!(
@@ -251,7 +245,7 @@ async fn m8rs_part_says_how_to_change_the_watchlist_and_holds_no_secret() {
     );
     for request in [
         list.as_str(),
-        r#"curl -sS "$M8R_URL/api/watchlist_items" -H "Authorization: Bearer $M8R_TOKEN" \"#,
+        r#"curl -sS "$M8R_URL/api/watchlist_items" -H "Authorization: Bearer $M8R_TOKEN" --json"#,
         r#"curl -sS -X PATCH "$M8R_URL/api/watchlist_items/NUMBER" -H "Authorization: Bearer $M8R_TOKEN""#,
         r#"curl -sS -X DELETE "$M8R_URL/api/watchlist_items/NUMBER" -H "Authorization: Bearer $M8R_TOKEN""#,
     ] {
@@ -266,8 +260,16 @@ async fn m8rs_part_says_how_to_change_the_watchlist_and_holds_no_secret() {
     );
     assert!(part.contains(r#"--json '{"requested": false}'"#), "{part}");
     assert!(part.ends_with("they are the developer's."), "{part}");
+    // Whoever reads it wraps it: a paragraph is one line, and so is a command. Only the items
+    // of a list follow each other with no blank line between.
+    let lines: Vec<&str> = part.lines().collect();
+    for pair in lines.windows(2) {
+        let follows = !pair[0].is_empty() && !pair[1].is_empty();
+        assert!(!follows || pair[1].starts_with("- "), "{pair:?}");
+    }
+    assert!(!part.contains('\\'), "{part}");
     // Nothing is left for a template to fill in.
-    assert!(!part.contains("{artifacts_dir}") && !part.contains("{of_repo}"));
+    assert!(!part.contains("{of_repo}"), "{part}");
 
     // With no repo at hand, the list is the whole watchlist's.
     let nowhere = self::context(ctx, None, Items::All, 0).await;

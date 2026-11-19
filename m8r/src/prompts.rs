@@ -7,28 +7,26 @@ use serde_json::{json, Value};
 
 use crate::models::{repos, schedules::Items, watchlist_items};
 
-/// m8r's own part of a prompt: where the agent is, that its answer is its report, how it gives
-/// m8r an artifact if it has one, and how it changes the watchlist. A run's environment has the
-/// API's address and the token (see `tasks::tick`), so the prompt holds neither.
+/// m8r's own part of a prompt: where the agent is, that its answer is its report, and how it
+/// changes the watchlist. A run's environment has the API's address and the token (see
+/// `tasks::tick`), so the prompt holds neither.
+///
+/// A paragraph is one line of the prompt, for its reader to wrap. A line here that ends with
+/// `\` goes on in the next one, whose indent doesn't count.
 const M8R_PROMPT: &str = "\
-You are running in m8r, a maintainer automation tool. Nobody is here to answer questions, so
-decide for yourself. Your answer is your report: m8r shows what you print to the developer, as
-markdown.
-
-If you also have artifacts for the developer, this is how to give them to m8r. An artifact is a
-set of files that you made, or a link to something that is already online (a comment you
-posted, a PR/MR). For each one, make a directory in
-{artifacts_dir}, named for what it is. Put the artifact's files in it, or one text file that
-holds only the link.
+You are running in m8r, a maintainer automation tool. Nobody is here to answer questions, so \
+decide for yourself. Your answer is your report: m8r shows what you print to the developer, as \
+markdown. If you made something that is online, such as a comment or a PR/MR, put its link in \
+your answer.
 
 ## How to use m8r's watchlist
 
-m8r keeps the developer's watchlist: the issues and PRs/MRs that they follow, each in one of
-the repos that m8r works in. You work in one repo, and its items are yours. Each item has a
-number, a priority (medium: the developer cares about it; high: it's urgent), a note, and
+m8r keeps the developer's watchlist: the issues and PRs/MRs that they follow, each in one of \
+the repos that m8r works in. You work in one repo, and its items are yours. Each item has a \
+number, a priority (medium: the developer cares about it; high: it's urgent), a note, and \
 whether someone asked the developer for it (\"requested\"): for a PR/MR, a review.
 
-You can change the watchlist while you work, through m8r's API. Its address is in $M8R_URL, and
+You can change the watchlist while you work, through m8r's API. Its address is in $M8R_URL, and \
 $M8R_TOKEN lets you in until this run ends. Both are in your environment.
 
 List your repo's items:
@@ -37,23 +35,24 @@ List your repo's items:
 
 Add an item, or change the one that has this URL:
 
-    curl -sS \"$M8R_URL/api/watchlist_items\" -H \"Authorization: Bearer $M8R_TOKEN\" \\
-      --json '{\"url\": \"URL\", \"priority\": \"medium\", \"note\": \"Why the developer follows it\"}'
+    curl -sS \"$M8R_URL/api/watchlist_items\" -H \"Authorization: Bearer $M8R_TOKEN\" --json \
+      '{\"url\": \"URL\", \"priority\": \"medium\", \"note\": \"Why the developer follows it\"}'
 
 Change an item, by its number:
 
-    curl -sS -X PATCH \"$M8R_URL/api/watchlist_items/NUMBER\" -H \"Authorization: Bearer $M8R_TOKEN\" \\
-      --json '{\"requested\": false}'
+    curl -sS -X PATCH \"$M8R_URL/api/watchlist_items/NUMBER\" \
+      -H \"Authorization: Bearer $M8R_TOKEN\" --json '{\"requested\": false}'
 
 Remove an item, by its number:
 
-    curl -sS -X DELETE \"$M8R_URL/api/watchlist_items/NUMBER\" -H \"Authorization: Bearer $M8R_TOKEN\"
+    curl -sS -X DELETE \"$M8R_URL/api/watchlist_items/NUMBER\" \
+      -H \"Authorization: Bearer $M8R_TOKEN\"
 
 - Remove an item when its issue or PR/MR is closed or merged, or when nothing is left to follow.
-- Add an item when you make something that the developer must follow, such as a PR/MR that
-  waits for a review. Its URL says which repo it's in, and m8r takes it only for a repo that
-  it works in.
-- When you have done what a requested item asks for, such as the review of a PR/MR, set its
+- Add an item when you make something that the developer must follow, such as a PR/MR that \
+  waits for a review. Its URL says which repo it's in, and m8r takes it only for a repo that it \
+  works in.
+- When you have done what a requested item asks for, such as the review of a PR/MR, set its \
   `requested` to false.
 - Leave the other items' priorities and notes as they are: they are the developer's.
 ";
@@ -68,15 +67,12 @@ The watchlist now:
 
 ";
 
-/// The artifact directory that a prompt is compiled with when no run is at hand.
-pub const SAMPLE_ARTIFACTS_DIR: &str = "/var/lib/m8r/artifacts/1";
-
 /// What a prompt can use, for the pages to say.
-pub const VARIABLES: [(&str, &str); 10] = [
+pub const VARIABLES: [(&str, &str); 9] = [
     (
         "{{ m8r_prompt }}",
-        "m8r's own part: where the agent is, how it gives m8r an artifact if it has one, and \
-         how it adds, changes and removes watchlist items while it runs.",
+        "m8r's own part: where the agent is, that its answer is its report, and how it adds, \
+         changes and removes watchlist items while it runs.",
     ),
     (
         "{{ watchlist }}",
@@ -103,10 +99,6 @@ pub const VARIABLES: [(&str, &str); 10] = [
         "The schedule's max items: how many items the run gets at most. 0: all of them.",
     ),
     (
-        "{{ artifacts_dir }}",
-        "The directory where the run reports its artifacts.",
-    ),
-    (
         "{% for item in watchlist_items %}…{% endfor %}",
         "The same items, to write the lines yourself. Each has id, url, category, priority, \
          note and requested.",
@@ -129,8 +121,6 @@ pub struct Context {
     pub max_items: u32,
     /// The run's repo. None when no run is at hand, and no repo is chosen yet.
     pub repo: Option<repos::Model>,
-    /// Where the run reports its artifacts.
-    pub artifacts_dir: String,
 }
 
 impl Context {
@@ -144,7 +134,6 @@ impl Context {
         repo: Option<&repos::Model>,
         items: Items,
         max_items: u32,
-        artifacts_dir: &str,
     ) -> ModelResult<Self> {
         let category = match items {
             Items::None => None,
@@ -162,7 +151,6 @@ impl Context {
             category: items.as_str().to_string(),
             max_items,
             repo: repo.cloned(),
-            artifacts_dir: artifacts_dir.to_string(),
         })
     }
 
@@ -195,13 +183,12 @@ impl Context {
         context.insert("max_items", &self.max_items);
         context.insert("repo", repo);
         context.insert("repo_url", repo_url);
-        context.insert("artifacts_dir", &self.artifacts_dir);
         context.insert("m8r_prompt", self.m8r_prompt().trim_end());
         tera::Tera::one_off(prompt, &context, autoescape)
             .map_err(|err| format!("The prompt doesn't compile.\n{err}"))
     }
 
-    /// m8r's part, with this run's artifact directory, and its repo for the list of items.
+    /// m8r's part, with the run's repo for the list of items.
     #[must_use]
     pub fn m8r_prompt(&self) -> String {
         let of_repo = self
@@ -209,9 +196,7 @@ impl Context {
             .as_ref()
             .map(|repo| format!("?repo_id={}", repo.id))
             .unwrap_or_default();
-        M8R_PROMPT
-            .replace("{artifacts_dir}", &self.artifacts_dir)
-            .replace("{of_repo}", &of_repo)
+        M8R_PROMPT.replace("{of_repo}", &of_repo)
     }
 }
 

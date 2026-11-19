@@ -54,8 +54,8 @@
 
 <h2>Compiled</h2>
 <p class="muted">The prompt as the next run would get it{% if compiled_in %} in
-  <span class="mono">{{ compiled_in }}</span>{% endif %}, with the watchlist as it is now and a
-  sample artifact directory.{% if not compiled_in %} With no repo chosen, it gets no items.{% endif %}
+  <span class="mono">{{ compiled_in }}</span>{% endif %}, with the watchlist as it is
+  now.{% if not compiled_in %} With no repo chosen, it gets no items.{% endif %}
   Save to see your changes here.</p>
 {% if not compiles %}
 <div class="problem"><pre>{{ compiled }}</pre></div>

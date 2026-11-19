@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    models::{artifacts, errors, repos, runs, schedules, watchlist_items},
+    models::{errors, repos, runs, schedules, watchlist_items},
     settings::Settings,
 };
 
@@ -130,22 +130,7 @@ pub fn error(error: &errors::Model) -> Value {
 }
 
 #[must_use]
-pub fn artifact(artifact: &artifacts::Model) -> Value {
-    let href = if artifact.hosted() {
-        format!("/artifacts/{}", artifact.id)
-    } else {
-        artifact.url.clone()
-    };
-    json!({
-        "id": artifact.id,
-        "name": artifact.name,
-        "hosted": artifact.hosted(),
-        "href": href,
-    })
-}
-
-#[must_use]
-pub fn run(run: &runs::Model, artifacts: &[artifacts::Model]) -> Value {
+pub fn run(run: &runs::Model) -> Value {
     json!({
         "id": run.id,
         "name": run.name,
@@ -158,7 +143,6 @@ pub fn run(run: &runs::Model, artifacts: &[artifacts::Model]) -> Value {
         "prompt": run.prompt,
         "output": run.output,
         "error": run.error,
-        "artifacts": artifacts.iter().map(artifact).collect::<Vec<_>>(),
     })
 }
 

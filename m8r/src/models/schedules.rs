@@ -259,8 +259,8 @@ impl Params {
         Ok(context.compile(&self.prompt).map(|_| repos))
     }
 
-    /// What a prompt of these would get now, in `repo`: that repo's items, and a sample
-    /// artifact directory. The pages show a prompt compiled with it.
+    /// What a prompt of these would get now, in `repo`: that repo's items. The pages show a
+    /// prompt compiled with it.
     ///
     /// # Errors
     /// When a query fails.
@@ -270,8 +270,7 @@ impl Params {
         repo: Option<&repos::Model>,
     ) -> ModelResult<prompts::Context> {
         let items = Items::parse(&self.category).unwrap_or(Items::None);
-        let dir = prompts::SAMPLE_ARTIFACTS_DIR;
-        prompts::Context::load(db, repo, items, self.max_items, dir).await
+        prompts::Context::load(db, repo, items, self.max_items).await
     }
 }
 

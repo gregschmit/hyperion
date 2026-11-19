@@ -6,7 +6,8 @@
 LOCO_ENV=production
 # Where m8r is reached. nginx serves it (see nginx/conf.d/m8r.schmit.net.conf).
 HOST=https://m8r.schmit.net
-# Everything m8r keeps is in /var/lib/m8r: this database, the artifacts, and the run lock.
+# Everything m8r keeps is in /var/lib/m8r: this database, the locks, and what a run prints
+# while it's in progress.
 DATABASE_URL=sqlite:///var/lib/m8r/m8r.sqlite?mode=rwc
 M8R_DATA=/var/lib/m8r
 # The agent's command, which a new schedule's form starts with. Each schedule then keeps a

@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use loco_rs::{boot::run_task, prelude::*, task};
 use m8r::{
     app::App,
-    models::{artifacts, errors, runs, schedules, watchlist_items},
+    models::{errors, runs, schedules, watchlist_items},
     settings::Settings,
 };
 use serial_test::serial;
@@ -46,16 +46,10 @@ async fn errors(ctx: &AppContext) -> Vec<String> {
     open.into_iter().map(|error| error.subject).collect()
 }
 
-/// An agent that reports as m8r's prompt says: a page, a link, and a loose file. Then it does
-/// what `$1` says.
-const REPORTER: &str = r#"
-prompt=$(cat)
-dir=$(printf '%s\n' "$prompt" | sed -n 's/^\(\/.*\/artifacts\/[0-9]*\), named.*/\1/p')
+/// A command that prints on both of its outputs, and then ends as `$1` says.
+const PRINTER: &str = r#"
+cat > /dev/null
 echo "working in $(pwd)"
-mkdir -p "$dir/review of rxg!1" "$dir/comment"
-echo "<h1>Review</h1>" > "$dir/review of rxg!1/index.html"
-echo "https://git.example.com/g/p/-/merge_requests/1#note_5" > "$dir/comment/link.txt"
-echo "loose" > "$dir/notes.md"
 echo "done" >&2
 exit "${1:-0}"
 "#;
@@ -119,14 +113,9 @@ async fn a_tick_runs_the_oldest_queued_run_with_its_compiled_prompt() {
         "{}",
         run.prompt
     );
-    // The agent is told the full path of the run's own artifact directory.
-    let dir = Settings::from_context(&ctx).unwrap().artifacts_dir(run.id);
-    assert!(dir.is_absolute() && dir.is_dir());
-    assert!(
-        run.prompt.contains(&format!("{}, named", dir.display())),
-        "{}",
-        run.prompt
-    );
+    // The file that held what the run printed while it was in progress is gone.
+    let printed = Settings::from_context(&ctx).unwrap().output_file(run.id);
+    assert!(!printed.exists());
     // One schedule for each tick: the next one's run waits for the next tick.
     assert_eq!(
         runs::Model::find(&ctx.db, later.id).await.unwrap().status,
@@ -137,11 +126,11 @@ async fn a_tick_runs_the_oldest_queued_run_with_its_compiled_prompt() {
 
 #[tokio::test]
 #[serial]
-async fn a_run_reports_artifacts_even_when_the_agent_fails() {
+async fn a_run_keeps_what_its_command_printed_when_the_command_fails() {
     let boot = boot_test::<App>().await.unwrap();
-    let sandbox = Sandbox::new("tick-artifacts");
-    sandbox.tool("reporter", REPORTER);
-    let ctx = sandbox.context(&boot.app_context, "reporter 3");
+    let sandbox = Sandbox::new("tick-failed");
+    sandbox.tool("printer", PRINTER);
+    let ctx = sandbox.context(&boot.app_context, "printer 3");
     let run = queue(&ctx, &sandbox, "{{ m8r_prompt }}").await;
 
     tick(&ctx).await;
@@ -152,23 +141,6 @@ async fn a_run_reports_artifacts_even_when_the_agent_fails() {
     // What it printed, stdout and stderr together. It ran in the repo.
     let repo = fs::canonicalize(sandbox.repo()).unwrap();
     assert_eq!(run.output, format!("working in {}\ndone\n", repo.display()));
-    let reported: Vec<_> = artifacts::Model::of_run(&ctx.db, run.id)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|artifact| (artifact.name, artifact.url))
-        .collect();
-    assert_eq!(
-        reported,
-        [
-            (
-                "comment".to_string(),
-                "https://git.example.com/g/p/-/merge_requests/1#note_5".to_string()
-            ),
-            ("report".to_string(), String::new()),
-            ("review of rxg!1".to_string(), String::new()),
-        ]
-    );
 }
 
 /// An agent that keeps the watchlist as m8r's prompt says, with the prompt's own commands: it
@@ -176,15 +148,15 @@ async fn a_run_reports_artifacts_even_when_the_agent_fails() {
 /// tries what its token doesn't cover, and leaves the token for the test.
 const KEEPER: &str = r#"
 prompt=$(cat)
-# The lines of the prompt's command that has `$1` in its first line.
-given() { printf '%s\n' "$prompt" | grep -A1 -- "$1" | grep -v '^--$' | sed -e '/[^\\]$/q'; }
+# The prompt's command that has `$1` in it: a command is one line.
+given() { printf '%s\n' "$prompt" | grep -- "$1"; }
 
 echo "listed: $(eval "$(given 'api/watchlist_items?repo_id=')")"
 # The PR of item 1 merged, and the review of item 2 is done.
 eval "$(given '-X DELETE' | sed 's/NUMBER/1/')" > /dev/null
 eval "$(given '-X PATCH' | sed 's/NUMBER/2/')" > /dev/null
 # The agent opened a PR for the developer to follow, and one in a repo that m8r doesn't have.
-add=$(given 'watchlist_items" -H "Authorization: Bearer $M8R_TOKEN" \\$')
+add=$(given '"url": "URL"')
 added() { printf '%s\n' "$add" | sed -e "s|\"URL\"|\"$1\"|"; }
 eval "$(added https://github.com/o/r/pull/9)" > /dev/null
 echo "elsewhere: $(eval "$(added https://github.com/o/unknown/pull/1)")"

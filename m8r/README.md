@@ -8,7 +8,7 @@ logins, clones. m8r runs your commands and prompts there on a schedule, in the r
 name: to triage issues, to review PRs/MRs, to develop, or for anything else. It keeps a
 watchlist of the issues and PRs/MRs that you follow, which you, your agents and Claude Duet
 all keep current, and gives each run the items of its own repo. And it lists the runs, with
-what each one printed and reported.
+what each one printed.
 
 It's a [Loco](https://loco.rs) app (Rust) with a SQLite database, up on hyperion at
 `m8r.schmit.net`. [AGENTS.md](AGENTS.md) points coding agents at Loco's own skill, in
@@ -31,7 +31,7 @@ It's a [Loco](https://loco.rs) app (Rust) with a SQLite database, up on hyperion
  the command    $SHELL -lc 'claude -p …', in a clone, with the compiled prompt on stdin
       │         and a token of its own, for the API
       ▼
- /var/lib/m8r/artifacts/<run>/    the links and files it reports, which the pages show
+ its report     what it prints, which the run's page shows
 ```
 
 Everything runs as one user, `m8r`.
@@ -156,8 +156,8 @@ A schedule's prompt is a [Tera](https://keats.github.io/tera/) template, which m
 when the run starts. It can use these, and the schedule's page lists them:
 
 - `{{ m8r_prompt }}`: m8r's own part, which is in the code. It says where the agent is, that
-  what it prints is its report, how it gives m8r an artifact if it has one, and how it adds,
-  changes and removes watchlist items while it runs, with `curl` commands for m8r's API.
+  what it prints is its report, with the links to what it made, and how it adds, changes and
+  removes watchlist items while it runs, with `curl` commands for m8r's API.
 - `{{ watchlist }}`: the watchlist items that the run gets, one to a line, such as
   `- item 12 (high, requested): https://… Ship by Friday`. They're the items of the run's
   repo, of the schedule's category, in the order above, and no more than its max items. An
@@ -170,7 +170,6 @@ when the run starts. It can use these, and the schedule's page lists them:
   with none.
 - `{{ max_items }}`: the schedule's max items. It's 0 when a run gets all of them, so a prompt
   can say `{% if max_items %}Do no more than {{ max_items }} of them.{% endif %}`.
-- `{{ artifacts_dir }}`: the directory where the run reports its artifacts.
 - `{% for item in watchlist_items %}` and `{% for item in requested_watchlist_items %}`: the
   same two lists, to write the lines yourself. Each item has `id`, `url`, `category`,
   `priority`, `note` and `requested`.
@@ -231,8 +230,7 @@ A run:
    login shell gives it the `PATH` and environment that you get when you become `m8r`;
 3. ends when the command does. m8r kills a run that passes two hours, and whatever the run
    started goes with it;
-4. keeps what the command printed, and what it reported. It's `ok` if the command exited
-   with 0.
+4. keeps what the command printed. It's `ok` if the command exited with 0.
 
 - **One schedule at a time,** in the order they were queued. A schedule's runs go together,
   one in each of its repos, so a schedule with ten repos starts ten agents at once. Two
@@ -241,6 +239,8 @@ A run:
 - **The API is at hand.** The command's environment has `M8R_URL`, the address of m8r's pages
   on this host, and `M8R_TOKEN`, a token for the watchlist's items that works while the run
   does. The commands in `m8r_prompt` use both.
+- **What a run prints is its report.** m8r keeps that, and no files. `m8r_prompt` tells the
+  agent to put the link to what it made online, such as a comment or a PR/MR, in its answer.
 - **The history keeps what ran:** a run's page shows its schedule's name, its command, the
   prompt it got, and what the command printed. That shows as markdown, and a tab away as it
   was printed, to copy. To look closer, become `m8r`, go to the clone, and resume the agent's
@@ -254,27 +254,7 @@ A run:
   `--output-format stream-json --verbose` in the schedule's command, it prints each step as
   a line of JSON.
 - **A run can be shared.** "Share" on a run's page shows a link to that page, and copies it.
-  For 72 hours, the link opens the page and the run's artifacts to anyone who has it (see
-  [Access](#access)).
-
-### Artifacts
-
-An artifact is something that a run made and chose to report: a link, or a set of files. A
-run needs none: its report is what the agent prints, which the run's page shows.
-
-- **How an agent gives one.** `m8r_prompt` says how, for an agent that has one. It names the
-  run's artifact directory, `/var/lib/m8r/artifacts/<run>/`. The agent makes one directory
-  there for each artifact, named for what it is, and puts the artifact's files in it. For
-  something that's already online (a comment it posted, a PR/MR), it puts in one text file
-  that holds only the link.
-- **What m8r records.** When the run ends, however it ends, m8r makes one artifact for each
-  directory. Files that an agent left loose become one artifact named `report`.
-- **Where they show.** The Runs page, which is the home page, lists each run with its
-  artifacts, and a run's own page has them too.
-- **Hosted files are inert.** An agent wrote them, maybe after it read a hostile issue, and they
-  open inside your session, or a guest's. So m8r serves them with a `Content-Security-Policy`
-  that allows styles and images and nothing else, and shows text files, markdown too, as plain
-  text.
+  For 72 hours, the link opens the page to anyone who has it (see [Access](#access)).
 
 ### Errors
 
@@ -303,11 +283,9 @@ Nothing answers without a session or a token.
   times for 8 hours. `hours:72` changes that, and `once:true` makes a link that works one time.
   A session lasts 8 hours and can do everything in the pages.
 - **A share link** makes a guest of whoever opens it, for one run and for 72 hours: "Share"
-  on the run's page makes one. A guest reads what that page shows (the run's command, the
-  prompt it got and what it printed) and the run's artifacts, with their files. The link
-  opens the page, and the guest's browser keeps a cookie that opens the files, whose
-  addresses hold no token. A guest gets no other run and nothing else of m8r, and changes
-  nothing.
+  on the run's page makes one. A guest reads what that page shows: the run's command, the
+  prompt it got and what it printed. The link starts no session, so only the link itself
+  opens the page. A guest gets no other run and nothing else of m8r, and changes nothing.
 - **No revoking.** A link is a signed token that m8r doesn't store, so it can't end one. To end
   every link and session, delete the line in `m8r/.env`, run `install`, and restart the units.
 - **A token** is for a program (see below). A session opens no part of the API, and a token
@@ -391,7 +369,7 @@ A migration can move data so that it can't be taken back. To be able to go back,
 The app is in `m8r/` in this repo, and its host files are in `src/` like everything else.
 
 - **Two units, one binary.** `m8r-web` runs `m8r-cli start`, and `m8r-scheduler` runs
-  `m8r-cli scheduler`. Both run as `m8r`, and keep the database, the artifacts and the locks in
+  `m8r-cli scheduler`. Both run as `m8r`, and keep the database and the locks in
   `/var/lib/m8r`. The agents are children of the scheduler unit, so its `MemoryMax=`,
   `CPUQuota=` and `TasksMax=` bound them, and not the pages: this box routes the house.
 - **The settings** are in [/etc/default/m8r](../src/etc/default/m8r): where m8r is reached,
@@ -441,9 +419,9 @@ wrote. Expect a prompt injection someday.
 - **So is what a run printed.** An agent wrote it, maybe after it read a hostile issue. Its
   page shows it as markdown, with the HTML in it as text and each picture as a link, so
   nothing in it runs, and the page loads nothing from another site.
-- **A share link shows its run to whoever holds it,** for 72 hours, with the files that the
-  run reported. The prompt on the run's page has the watchlist items that the run got, with
-  your notes. The link opens nothing else, and changes nothing.
+- **A share link shows its run to whoever holds it,** for 72 hours. The prompt on the run's
+  page has the watchlist items that the run got, with your notes. The link opens nothing
+  else, and changes nothing.
 - **The site is public,** with no IP limits, and every request needs a session or a token. Keep
   Loco, rmcp and their dependencies current.
 
@@ -452,9 +430,9 @@ Know these too, before you rely on it:
 - **The agents decide what to report, and what to keep on the watchlist.** One that removes the
   wrong item loses your note with it. m8r keeps no history of the watchlist.
 - **Prompts post and push as you.** m8r has no switch for that: a prompt that says "post"
-  posts. Start with prompts that keep their results as files.
-- **Disk and cost.** Clones, worktrees and artifacts grow on the router's root filesystem, and
-  each run is a full agent session. Set the model and the effort in each schedule's command.
+  posts. Start with prompts that only print their results.
+- **Disk and cost.** Clones and worktrees grow on the router's root filesystem, and each run
+  is a full agent session. Set the model and the effort in each schedule's command.
 - **Subscription terms.** Check that your plan allows scheduled `claude -p` runs. An
   `ANTHROPIC_API_KEY` in the `m8r` user's environment works in its place.
 - **`develop` needs more than the firewall allows:** a server on localhost for tests, or a lab
@@ -536,8 +514,6 @@ runs             schedule → schedules ON DELETE SET NULL (optional),
                  repo → repos ON DELETE SET NULL (optional), name, repo (the clone's path),
                  command, status (queued|running|ok|failed), prompt, output, error,
                  started_at, finished_at
-
-artifacts        run → runs ON DELETE CASCADE, name, url       unique(run, name)
 
 errors           subject (one open error at most), message,
                  run → runs ON DELETE SET NULL (optional), cleared_at

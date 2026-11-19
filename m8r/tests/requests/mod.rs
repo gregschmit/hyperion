@@ -1,6 +1,5 @@
 mod access;
 mod api;
-mod artifacts;
 mod errors;
 mod mcp;
 mod repos;

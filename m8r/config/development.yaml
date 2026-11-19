@@ -66,5 +66,5 @@ settings:
   agent: '<%= get_env(name="M8R_AGENT", default="cat") %>'
   # Minutes before a run is killed.
   run_limit: 120
-  # Where the artifacts and the run lock go.
+  # Where the locks go, and what a run prints while it's in progress.
   data: data

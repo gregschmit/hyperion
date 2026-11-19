@@ -289,12 +289,6 @@ case "$4" in
 esac
 "#;
 
-/// Make `path` a file with `text` in it, and the directories above it.
-pub fn write(path: &Path, text: &str) {
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, text).unwrap();
-}
-
 /// Run a request test with a session: the server keeps the cookie that the access link gave.
 pub async fn signed_in<F, Fut>(callback: F)
 where

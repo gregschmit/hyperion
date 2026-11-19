@@ -15,10 +15,7 @@ use std::path::Path;
 
 use crate::{
     controllers, initializers,
-    models::{
-        artifacts, errors, repos, runs, schedule_repos, schedules, tokens, used_links,
-        watchlist_items,
-    },
+    models::{errors, repos, runs, schedule_repos, schedules, tokens, used_links, watchlist_items},
     tasks,
 };
 
@@ -71,7 +68,6 @@ impl Hooks for App {
             .add_route(controllers::schedules::routes())
             .add_route(controllers::repos::routes())
             .add_route(controllers::errors::routes())
-            .add_route(controllers::artifacts::routes())
             .add_route(controllers::api::watchlist_items::routes())
             .add_route(controllers::api::repos::routes())
             .add_route(controllers::api::schedules::routes())
@@ -96,7 +92,6 @@ impl Hooks for App {
     }
 
     async fn truncate(ctx: &AppContext) -> Result<()> {
-        truncate_table(&ctx.db, artifacts::Entity).await?;
         truncate_table(&ctx.db, runs::Entity).await?;
         truncate_table(&ctx.db, watchlist_items::Entity).await?;
         truncate_table(&ctx.db, schedule_repos::Entity).await?;

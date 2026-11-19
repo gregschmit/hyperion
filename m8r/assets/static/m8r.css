@@ -105,7 +105,6 @@ td input[type="text"], input.wide { width: 100%; }
 .alert ol { flex: 1; min-width: 0; margin: 0; padding: 0; list-style: none; }
 /* An error's message can have lines of its own. */
 td.message { white-space: pre-wrap; overflow-wrap: anywhere; }
-ul.artifacts { margin: 0.25rem 0 0; padding-left: 1.2rem; }
 
 /* A run's share link: "Share" opens it. */
 details.share { margin: 0.75rem 0; }

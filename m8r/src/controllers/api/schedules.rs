@@ -4,10 +4,9 @@ use loco_rs::prelude::*;
 use super::saved;
 use crate::{
     models::{
-        artifacts, runs,
+        runs,
         schedules::{Changes, Model, Params},
     },
-    settings::Settings,
     views::api,
 };
 
@@ -46,13 +45,8 @@ pub async fn remove(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Resul
 #[debug_handler]
 pub async fn run(State(ctx): State<AppContext>, Path(id): Path<i64>) -> Result<Response> {
     let (schedule, repos) = Model::find(&ctx.db, id).await?;
-    let pages = Settings::from_context(&ctx)?.url;
-    let mut queued = Vec::new();
-    for run in runs::Model::queue(&ctx.db, &schedule, &repos).await? {
-        let reported = artifacts::Model::of_run(&ctx.db, run.id).await?;
-        queued.push(api::run(&run, &reported, &pages));
-    }
-    format::json(queued)
+    let queued = runs::Model::queue(&ctx.db, &schedule, &repos).await?;
+    format::json(queued.iter().map(api::run).collect::<Vec<_>>())
 }
 
 pub fn routes() -> Routes {

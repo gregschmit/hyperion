@@ -2,17 +2,6 @@
 -- each time it runs its migrations: `cargo loco db migrate` does, and so does a start. Don't
 -- edit it: it follows the migrations.
 
-CREATE TABLE "artifacts" (
-  "created_at" timestamp_with_timezone_text NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  "updated_at" timestamp_with_timezone_text NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  "id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
-  "name" varchar NOT NULL,
-  "url" varchar NOT NULL DEFAULT '',
-  "run_id" integer NOT NULL,
-  FOREIGN KEY ("run_id") REFERENCES "runs" ("id") ON DELETE CASCADE ON UPDATE CASCADE
-);
-CREATE UNIQUE INDEX "idx_artifacts_run_name" ON "artifacts" ("run_id", "name");
-
 CREATE TABLE "errors" (
   "created_at" timestamp_with_timezone_text NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updated_at" timestamp_with_timezone_text NOT NULL DEFAULT CURRENT_TIMESTAMP,

@@ -11,7 +11,7 @@ use tokio::task::JoinSet;
 
 use crate::{
     initializers::access,
-    models::{artifacts, errors, repos, runs, schedules, watchlist_items, Checked},
+    models::{errors, repos, runs, schedules, watchlist_items, Checked},
     prompts,
     settings::{self, Settings},
     tools,
@@ -132,8 +132,7 @@ async fn check_api(ctx: &AppContext) -> Result<()> {
 /// Run one queued run from start to end, and record how it went.
 async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Result<()> {
     let ctx = &ctx;
-    let dir = std::path::absolute(settings.artifacts_dir(run.id))?;
-    let (schedule, repo, prompt) = match prepare(ctx, &run, &dir).await? {
+    let (schedule, repo, prompt) = match prepare(ctx, &run).await? {
         Ok(ready) => ready,
         Err(why) => {
             run.into_active_model()
@@ -142,7 +141,6 @@ async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Resul
             return Ok(());
         }
     };
-    fs::create_dir_all(&dir)?;
     let run = run
         .into_active_model()
         .started(&ctx.db, &schedule, &repo, prompt.clone())
@@ -177,8 +175,6 @@ async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Resul
         Ok(end) => end.problem(limit),
         Err(err) => Some(format!("m8r couldn't start the command: {err}")),
     };
-    // Whatever happened, keep what the run got done.
-    artifacts::Model::collect(&ctx.db, run.id, &dir).await?;
     let status = if problem.is_some() {
         runs::Status::Failed
     } else {
@@ -195,7 +191,6 @@ async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Resul
 async fn prepare(
     ctx: &AppContext,
     run: &runs::Model,
-    artifacts_dir: &Path,
 ) -> Result<Checked<(schedules::Model, repos::Model, String)>> {
     let Some(schedule_id) = run.schedule_id else {
         return Ok(Err(
@@ -212,10 +207,8 @@ async fn prepare(
     if !repo.dir().is_dir() {
         return Ok(Err(format!("{} isn't a directory.", repo.path)));
     }
-    let artifacts_dir = artifacts_dir.to_string_lossy();
     let (items, max_items) = (schedule.items(), schedule.max_items());
-    let context =
-        prompts::Context::load(&ctx.db, Some(&repo), items, max_items, &artifacts_dir).await?;
+    let context = prompts::Context::load(&ctx.db, Some(&repo), items, max_items).await?;
     Ok(context
         .compile(&schedule.prompt)
         .map(|prompt| (schedule, repo, prompt)))

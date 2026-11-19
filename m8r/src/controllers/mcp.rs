@@ -28,7 +28,7 @@ use super::api::runs::RUNS;
 use crate::{
     initializers::access::Caller,
     models::{
-        artifacts, repos, runs,
+        repos, runs,
         schedules::{self, Items},
         watchlist_items::{self, Category},
         Checked,
@@ -192,8 +192,7 @@ const TOOLS: [Spec; 15] = [
         "List the runs",
         "runs",
         Effect::Reads,
-        "List the latest runs, newest first: the queue and the history, each with its status \
-         and the artifacts that its agent reported.",
+        "List the latest runs, newest first: the queue and the history, each with its status.",
     ),
     spec(
         "get_run",
@@ -500,37 +499,20 @@ impl Server {
             "run_schedule" => {
                 let Target { id, .. } = parse::<Target<Nothing>>(arguments)?;
                 let (schedule, repos) = schedules::Model::find(db, id).await?;
-                let mut queued = Vec::new();
-                for run in runs::Model::queue(db, &schedule, &repos).await? {
-                    queued.push(self.run(&run, false).await?);
-                }
-                json!(queued)
+                let queued = runs::Model::queue(db, &schedule, &repos).await?;
+                json!(queued.iter().map(api::run).collect::<Vec<_>>())
             }
             "list_runs" => {
                 let filter: RunFilter = parse(arguments)?;
                 let limit = filter.limit.unwrap_or(RUNS).min(RUNS);
-                let mut listed = Vec::new();
-                for run in runs::Model::recent(db, limit).await? {
-                    listed.push(self.run(&run, false).await?);
-                }
-                json!(listed)
+                let listed = runs::Model::recent(db, limit).await?;
+                json!(listed.iter().map(api::run).collect::<Vec<_>>())
             }
             "get_run" => {
                 let Target { id, .. } = parse::<Target<Nothing>>(arguments)?;
-                self.run(&runs::Model::find(db, id).await?, true).await?
+                api::run_whole(&runs::Model::find(db, id).await?)
             }
             other => return Err(Refusal::Failure(format!("the tool {other} does nothing"))),
-        })
-    }
-
-    /// A run as a client reads it: `whole` adds its prompt and what it printed.
-    async fn run(&self, run: &runs::Model, whole: bool) -> std::result::Result<Value, Refusal> {
-        let reported = artifacts::Model::of_run(&self.ctx.db, run.id).await?;
-        let pages = Settings::from_context(&self.ctx)?.url;
-        Ok(if whole {
-            api::run_whole(run, &reported, &pages)
-        } else {
-            api::run(run, &reported, &pages)
         })
     }
 }
