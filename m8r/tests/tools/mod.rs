@@ -29,23 +29,31 @@ async fn a_tool_gets_its_arguments_as_they_are() {
 }
 
 #[tokio::test]
-async fn a_tool_does_not_get_the_secret() {
-    let sandbox = Sandbox::new("tools-secret");
-    // Set for this process as the units set it. No other test reads it.
+async fn a_tool_gets_nothing_of_m8rs_own_environment() {
+    let sandbox = Sandbox::new("tools-environment");
+    // Set for this process as the units set them. No other test reads these: the names are
+    // not the real ones, which a test's own database goes by. A tool takes a name that it
+    // knows for its own setting, as Rails takes DATABASE_URL, so it gets none of them.
     std::env::set_var("M8R_SECRET", "hunter2");
-    std::env::set_var("M8R_TEST_OTHER", "kept");
+    std::env::set_var("M8R_TEST_DATABASE_URL", "sqlite:///var/lib/m8r/m8r.sqlite");
+    std::env::set_var("M8R_TEST_LOCO_ENV", "production");
+    let home = std::env::var("HOME").unwrap();
+    let own = ["hunter2", "M8R_SECRET", "M8R_TEST_", "m8r.sqlite", "CARGO"];
 
     let output = tools::run(&sandbox.shell(), &argv(&["env"]), tools::ANSWER_LIMIT)
         .await
         .unwrap();
-    assert!(!output.stdout.contains("hunter2"), "{}", output.stdout);
+    for name in own {
+        assert!(!output.stdout.contains(name), "{name}: {}", output.stdout);
+    }
+    // It gets who the user is, which a login starts from.
     assert!(
-        output.stdout.contains("M8R_TEST_OTHER=kept"),
+        output.stdout.contains(&format!("HOME={home}\n")),
         "{}",
         output.stdout
     );
 
-    // A run's command gets what m8r gives it, and still not the secret.
+    // A run's command gets the same, and what m8r gives it for the API.
     let printed = sandbox.path("printed");
     tools::run_command(
         &sandbox.shell(),
@@ -59,8 +67,10 @@ async fn a_tool_does_not_get_the_secret() {
     .await
     .unwrap();
     let printed = fs::read_to_string(&printed).unwrap();
-    assert!(!printed.contains("hunter2"), "{printed}");
-    assert!(printed.contains("M8R_TEST_OTHER=kept"), "{printed}");
+    for name in own {
+        assert!(!printed.contains(name), "{name}: {printed}");
+    }
+    assert!(printed.contains(&format!("HOME={home}\n")), "{printed}");
     assert!(
         printed.contains("M8R_URL=http://127.0.0.1:5150\n"),
         "{printed}"

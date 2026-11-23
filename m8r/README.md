@@ -234,7 +234,9 @@ A run:
    items. It fails here if its schedule or its repo is gone, if its clone isn't there, or if
    the prompt doesn't compile;
 2. starts the command through the login shell, in its clone, with the prompt on stdin. The
-   login shell gives it the `PATH` and environment that you get when you become `m8r`;
+   login shell gives it the `PATH` and environment that you get when you become `m8r`. It
+   gets nothing of m8r's own environment: not its secret, and not a setting such as
+   `DATABASE_URL`, which a tool in a repo would take for its own;
 3. ends when the command does. m8r kills a run that passes two hours, and whatever the run
    started goes with it;
 4. keeps what the command printed. It's `done` if the command exited with 0, and `failed`

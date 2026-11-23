@@ -3,6 +3,7 @@
 //!
 //! Each one starts through the user's login shell, so it gets the `PATH` and the environment
 //! that the developer set up there. m8r installs none of them, so any of them can be missing.
+//! It gets nothing of m8r's own environment (see `KEPT`).
 
 use std::{fs::File, io, path::Path, process::Stdio, time::Duration};
 
@@ -18,9 +19,23 @@ pub const ANSWER_LIMIT: Duration = Duration::from_secs(15);
 /// What the shell says when it finds no such command.
 const NOT_FOUND: i32 = 127;
 
-/// Where production gets m8r's own secret (see `config/production.yaml`). Nothing that m8r
-/// runs needs it, and an agent that prints its environment mustn't print this.
-const SECRET: &str = "M8R_SECRET";
+/// All that a tool gets of the environment that m8r itself runs in: who the user is, and what
+/// a login starts from, as `su -l` gives it. The login shell adds the developer's own.
+///
+/// m8r's settings are in its environment too (`DATABASE_URL`, `LOCO_ENV`, its secret), and a
+/// tool that knows one of those names takes m8r's value for its own. That's how an agent that
+/// ran `rails db:drop` in a repo dropped m8r's database. So a tool gets these, and no others.
+const KEPT: [&str; 9] = [
+    "HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LC_ALL", "TZ", "TERM",
+];
+
+/// The login shell, to start a tool with: with `KEPT` of m8r's environment, and no more.
+fn login(shell: &str) -> Command {
+    let kept = std::env::vars_os().filter(|(name, _)| KEPT.iter().any(|kept| name == kept));
+    let mut command = Command::new(shell);
+    command.env_clear().envs(kept);
+    command
+}
 
 /// What a tool printed, and how it ended.
 #[derive(Debug)]
@@ -63,11 +78,10 @@ impl Output {
 /// # Errors
 /// When the shell can't start, or the tool takes longer than `limit`.
 pub async fn run(shell: &str, argv: &[String], limit: Duration) -> io::Result<Output> {
-    let mut command = Command::new(shell);
+    let mut command = login(shell);
     command
         .args(["-lc", r#"exec "$@""#, "m8r"])
         .args(argv)
-        .env_remove(SECRET)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -130,10 +144,9 @@ pub async fn run_command(
 ) -> io::Result<End> {
     let stdout = File::create(output)?;
     let stderr = stdout.try_clone()?;
-    let mut child = Command::new(shell)
+    let mut child = login(shell)
         .args(["-lc", command])
         .current_dir(dir)
-        .env_remove(SECRET)
         .envs(env.iter().map(|(name, value)| (name, value)))
         .stdin(Stdio::piped())
         .stdout(Stdio::from(stdout))
