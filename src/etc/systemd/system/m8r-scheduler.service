@@ -19,13 +19,6 @@ Restart=on-failure
 # A stop ends the run in progress too. The next tick marks it failed.
 TimeoutStopSec=30
 NoNewPrivileges=yes
-# This box routes the house, so a runaway agent mustn't starve DNS or UniFi. The agents are
-# this unit's children, so these limits bound them, and not the pages.
-MemoryMax=4G
-CPUQuota=200%
-CPUWeight=20
-IOWeight=20
-TasksMax=1024
 
 [Install]
 WantedBy=multi-user.target

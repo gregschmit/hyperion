@@ -425,8 +425,9 @@ The app is in `m8r/` in this repo, and its host files are in `src/` like everyth
 
 - **Two units, one binary.** `m8r-web` runs `m8r-cli start`, and `m8r-scheduler` runs
   `m8r-cli scheduler`. Both run as `m8r`, and keep the database and the locks in
-  `/var/lib/m8r`. The agents are children of the scheduler unit, so its `MemoryMax=`,
-  `CPUQuota=` and `TasksMax=` bound them, and not the pages: this box routes the house.
+  `/var/lib/m8r`. The agents are children of the scheduler unit. It sets them no limits: the
+  system shares the box's memory and CPU between them and everything else. To see how much
+  memory they took at most since the unit started: `systemctl show m8r-scheduler -p MemoryPeak`.
 - **The settings** are in [/etc/default/m8r](../src/etc/default/m8r): where m8r is reached,
   where it keeps its data, and the agent's command (`M8R_AGENT`). Both units load it.
 - **The secret,** `M8R_SECRET` in `m8r/.env`, signs the links, the sessions and the runs'
