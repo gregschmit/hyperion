@@ -6,6 +6,10 @@
 //! it, and at the end its result, which is the answer that `claude -p` prints alone without
 //! that option. m8r reads a stream, so that the page shows the agent's steps as they come,
 //! and so that the report is the answer and not the lines of JSON.
+//!
+//! With `--include-partial-messages` too, the stream has what the agent says in parts, a few
+//! words to a line, as it writes them. Then the whole of it follows in a line of its own,
+//! which takes the place of the parts. So a page can show the agent as it writes.
 
 use std::{
     fs::File,
@@ -17,10 +21,12 @@ use serde_json::Value;
 
 /// How much m8r reads of a file: its end. A stream has everything that a tool gave the agent
 /// too, so it gets long.
-const END_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const END_BYTES: u64 = 4 * 1024 * 1024;
 /// How much m8r reads of a long file's start, to see what the file is. A stream's first line
 /// names every tool that the agent has.
-const START_BYTES: u64 = 1024 * 1024;
+pub(crate) const START_BYTES: u64 = 1024 * 1024;
+/// What stands for the steps that m8r left out, before the ones that it kept.
+pub(crate) const EARLIER: &str = "*The steps before these are left out.*";
 /// How many of a stream's steps m8r keeps: the latest ones.
 const STEPS: usize = 200;
 /// How much of a tool's input a step shows.
@@ -93,29 +99,157 @@ impl Printed {
 }
 
 /// The next `bytes` of the file, as text.
-fn text(file: &mut File, bytes: u64) -> String {
+pub(crate) fn text(file: &mut File, bytes: u64) -> String {
     let mut read = Vec::new();
     let _ = file.take(bytes).read_to_end(&mut read);
     String::from_utf8_lossy(&read).into_owned()
 }
 
 /// Whether this line starts a stream of Claude Code's.
-fn starts_stream(line: &str) -> bool {
+pub(crate) fn starts_stream(line: &str) -> bool {
     serde_json::from_str::<Value>(line)
         .is_ok_and(|event| event["type"] == "system" && event["subtype"] == "init")
+}
+
+/// Reads a stream a line at a time, as the lines come.
+#[derive(Debug, Default)]
+pub struct Reader {
+    stream: Stream,
+    /// The step that the agent is writing, whose text comes in parts.
+    writing: Option<usize>,
+    /// The blank start of a text that has no word yet. A step starts with its first word.
+    blank: String,
+}
+
+impl Reader {
+    /// A reader of a stream's end: `cut` says that lines before it were left out.
+    #[must_use]
+    pub fn new(cut: bool) -> Self {
+        Self {
+            stream: Stream {
+                earlier: cut,
+                ..Stream::default()
+            },
+            ..Self::default()
+        }
+    }
+
+    /// What the lines so far say.
+    #[must_use]
+    pub fn stream(&self) -> &Stream {
+        &self.stream
+    }
+
+    /// Which of the stream's steps the agent is writing now, if it's writing one.
+    #[must_use]
+    pub fn writing(&self) -> Option<usize> {
+        self.writing
+    }
+
+    /// Take what one line says, after the stream's first one. A line that isn't JSON says
+    /// nothing: the last one may be only half there, while the agent prints it.
+    pub fn take(&mut self, line: &str) {
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            return;
+        };
+        // An agent that this one started has a parent. Its steps aren't this one's.
+        let own = event["parent_tool_use_id"].is_null();
+        match event["type"].as_str() {
+            Some("stream_event") if own => self.part(&event["event"]),
+            Some("assistant") if own => {
+                let parts = event["message"]["content"].as_array();
+                for part in parts.into_iter().flatten() {
+                    self.whole(part);
+                }
+            }
+            Some("result") => {
+                let answer = event["result"].as_str().filter(|text| !text.is_empty());
+                self.stream.result = answer.map(str::to_string);
+            }
+            _ => {}
+        }
+    }
+
+    /// Take a part of a message, which comes while the agent writes the message.
+    fn part(&mut self, part: &Value) {
+        match part["type"].as_str() {
+            // What comes now is no more of the text before.
+            Some("content_block_start") => {
+                self.writing = None;
+                self.blank.clear();
+            }
+            Some("content_block_delta") if part["delta"]["type"] == "text_delta" => {
+                self.write(part["delta"]["text"].as_str().unwrap_or_default());
+            }
+            _ => {}
+        }
+    }
+
+    /// Add `text` to what the agent is writing.
+    fn write(&mut self, text: &str) {
+        if let Some(Step::Said(said)) = self.writing.and_then(|at| self.stream.steps.get_mut(at)) {
+            said.push_str(text);
+            return;
+        }
+        self.blank.push_str(text);
+        if self.blank.trim().is_empty() {
+            return;
+        }
+        let said = std::mem::take(&mut self.blank);
+        self.writing = Some(self.stream.steps.len());
+        self.stream.steps.push(Step::Said(said));
+    }
+
+    /// Take one whole part of a message. A text that came in parts first is here again, all
+    /// of it: it takes the place of the step that the parts made.
+    fn whole(&mut self, part: &Value) {
+        let step = step(part);
+        if part["type"] != "text" {
+            self.stream.steps.extend(step);
+            return;
+        }
+        self.blank.clear();
+        match (self.writing.take(), step) {
+            (Some(at), Some(step)) => self.stream.steps[at] = step,
+            (Some(at), None) => drop(self.stream.steps.remove(at)),
+            (None, step) => self.stream.steps.extend(step),
+        }
+    }
+}
+
+impl Step {
+    /// The step as markdown: what the agent said, as it said it, or the tool that it used,
+    /// in a line of a list.
+    #[must_use]
+    pub fn source(&self) -> String {
+        match self {
+            Self::Said(text) => text.clone(),
+            Self::Used { tool, input } => format!("- **{tool}** {}", code(input))
+                .trim_end()
+                .to_string(),
+        }
+    }
+
+    /// What goes between the step before this one, `before`, and this one, in markdown.
+    /// The tools that follow each other are one list.
+    #[must_use]
+    pub fn gap(&self, before: &Self) -> &'static str {
+        match (before, self) {
+            (Self::Used { .. }, Self::Used { .. }) => "\n",
+            _ => "\n\n",
+        }
+    }
 }
 
 impl Stream {
     /// The stream that these lines are, after the first one. `cut` says that lines before
     /// them were left out.
     fn of<'a>(lines: impl Iterator<Item = &'a str>, cut: bool) -> Self {
-        let mut stream = Self {
-            earlier: cut,
-            ..Self::default()
-        };
+        let mut reader = Reader::new(cut);
         for line in lines {
-            stream.take(line);
+            reader.take(line);
         }
+        let mut stream = reader.stream;
         if stream.steps.len() > STEPS {
             stream.steps.drain(..stream.steps.len() - STEPS);
             stream.earlier = true;
@@ -123,59 +257,24 @@ impl Stream {
         stream
     }
 
-    /// Take what one line says. A line that isn't JSON says nothing: the last one may be only
-    /// half there, while the agent prints it.
-    fn take(&mut self, line: &str) {
-        let Ok(event) = serde_json::from_str::<Value>(line) else {
-            return;
-        };
-        match event["type"].as_str() {
-            // An agent that this one started has a parent. Its steps aren't this one's.
-            Some("assistant") if event["parent_tool_use_id"].is_null() => {
-                let parts = event["message"]["content"].as_array();
-                for part in parts.into_iter().flatten() {
-                    self.steps.extend(step(part));
-                }
-            }
-            Some("result") => {
-                let answer = event["result"].as_str().filter(|text| !text.is_empty());
-                self.result = answer.map(str::to_string);
-            }
-            _ => {}
-        }
-    }
-
     /// The steps as markdown: what the agent said as it said it, and each tool that it used
     /// in a line of a list.
     #[must_use]
     pub fn markdown(&self) -> String {
-        let mut blocks = Vec::new();
+        let mut markdown = String::new();
         if self.earlier {
-            blocks.push("*The steps before these are left out.*".to_string());
+            markdown.push_str(EARLIER);
         }
-        // Tools that follow each other are one list.
-        let mut tools: Vec<String> = Vec::new();
+        let mut before = None;
         for step in &self.steps {
-            match step {
-                Step::Used { tool, input } => {
-                    tools.push(
-                        format!("- **{tool}** {}", code(input))
-                            .trim_end()
-                            .to_string(),
-                    );
-                }
-                Step::Said(text) => {
-                    if !tools.is_empty() {
-                        blocks.push(std::mem::take(&mut tools).join("\n"));
-                    }
-                    blocks.push(text.trim().to_string());
-                }
+            let gap = before.map_or("\n\n", |before| step.gap(before));
+            if !markdown.is_empty() {
+                markdown.push_str(gap);
             }
+            markdown.push_str(step.source().trim());
+            before = Some(step);
         }
-        if !tools.is_empty() {
-            blocks.push(tools.join("\n"));
-        }
-        blocks.join("\n\n")
+        markdown
     }
 
     /// The run's report: the agent's answer. For an agent that ended with none, such as one
