@@ -4,17 +4,19 @@
 <h1>Watchlist</h1>
 <p class="muted">The issues and PRs/MRs that you follow. An item's URL says which
   <a href="/repos">repo</a> it's in, and a run gets the items of its own repo. Medium means you
-  care about an item, and high means it's urgent. m8r asks the forge about each one, and one
-  that closes or merges leaves the list by itself.</p>
+  care about an item, high means it matters more, and urgent means it can't wait. m8r asks the
+  forge about each one, and one that closes or merges leaves the list by itself.</p>
 <p class="muted">Check "requested" when someone asks you for an item: for a PR/MR, a review.
-  A run gets the requested items first, and the agent that does what's asked unchecks it.</p>
+  A run gets the requested items first, then the most pressing ones, and the agent that does
+  what's asked unchecks it.</p>
 
 {% if has_problem %}<div class="problem">{{ problem }}</div>{% endif %}
 <form class="row" method="post" action="/watchlist">
   <input type="url" name="url" value="{{ form.url }}" placeholder="https://git.example.com/group/project/-/merge_requests/123" aria-label="URL" required>
   <select name="priority" aria-label="Priority">
-    <option value="medium"{% if form.priority != "high" %} selected{% endif %}>medium</option>
-    <option value="high"{% if form.priority == "high" %} selected{% endif %}>high</option>
+    {% for priority in priorities %}
+    <option value="{{ priority }}"{% if priority == form.priority %} selected{% endif %}>{{ priority }}</option>
+    {% endfor %}
   </select>
   <label class="check"><input type="checkbox" name="requested" value="true"{% if form.requested %} checked{% endif %}> requested</label>
   <input type="text" name="note" value="{{ form.note }}" placeholder="Why you follow it" aria-label="Note">
@@ -42,8 +44,9 @@
     <td class="mono">{{ item.repo }}</td>
     <td>
       <select name="priority" form="item-{{ item.id }}" aria-label="Priority">
-        <option value="medium"{% if item.priority == "medium" %} selected{% endif %}>medium</option>
-        <option value="high"{% if item.priority == "high" %} selected{% endif %}>high</option>
+        {% for priority in priorities %}
+        <option value="{{ priority }}"{% if priority == item.priority %} selected{% endif %}>{{ priority }}</option>
+        {% endfor %}
       </select>
     </td>
     <td class="nowrap"><a href="{{ item.url }}">{{ item.label }}</a><br><small>{{ item.category }}</small></td>

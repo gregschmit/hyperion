@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 pub use super::_entities::watchlist_items::{ActiveModel, Column, Entity, Model};
 use chrono::{DateTime, Utc};
 use loco_rs::prelude::*;
+use sea_orm::sea_query::{CaseStatement, Expr};
 use serde::{Deserialize, Serialize};
 
 use super::{errors, repos, Checked};
@@ -14,21 +15,28 @@ pub type WatchlistItems = Entity;
 /// again at every tick.
 const CHECK_EVERY: chrono::Duration = chrono::Duration::minutes(10);
 
-/// How much you care about an item: at all, or urgently.
+/// How much you care about an item: you do, it matters more, or it can't wait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Priority {
+    /// What an item gets when nobody says.
     Medium,
     High,
+    Urgent,
 }
 
+/// What a priority that isn't one gets back.
+const NO_SUCH_PRIORITY: &str = "The priority is medium, high or urgent.";
+
 impl Priority {
-    pub const ALL: [Self; 2] = [Self::Medium, Self::High];
+    /// From the least pressing to the most.
+    pub const ALL: [Self; 3] = [Self::Medium, Self::High, Self::Urgent];
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Medium => "medium",
             Self::High => "high",
+            Self::Urgent => "urgent",
         }
     }
 
@@ -37,6 +45,16 @@ impl Priority {
         Self::ALL
             .into_iter()
             .find(|priority| priority.as_str() == name)
+    }
+
+    /// How pressing an item is, as a number for a query to sort by: more is more. The column
+    /// holds the name, and the names don't sort that way.
+    fn rank() -> Expr {
+        let mut rank = CaseStatement::new();
+        for (at, priority) in (0_i32..).zip(Self::ALL) {
+            rank = rank.case(Column::Priority.eq(priority.as_str()), at);
+        }
+        rank.into()
     }
 }
 
@@ -213,16 +231,29 @@ impl Forge {
 
 /// What the watchlist's forms and the API send. The URL says the rest: which repo the item is
 /// in, and whether it's an issue or a PR/MR.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Params {
     pub url: String,
-    /// Medium, unless it says high.
+    /// Medium, unless it says more. Blank is medium too.
     pub priority: String,
     pub note: String,
     /// Someone asked you for it: a review, if it's a PR/MR. A checkbox, which a form sends
     /// only when it's checked.
     pub requested: bool,
+}
+
+impl Default for Params {
+    /// A new item is medium until someone says more: in the page's form, and for a caller
+    /// that names no priority.
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            priority: Priority::Medium.as_str().to_string(),
+            note: String::new(),
+            requested: false,
+        }
+    }
 }
 
 /// What changes on an item: only what's there.
@@ -259,7 +290,7 @@ impl Params {
         db: &C,
     ) -> ModelResult<Checked<(Forge, repos::Model)>> {
         if Priority::parse(self.priority()).is_none() {
-            return Ok(Err("The priority is medium or high.".to_string()));
+            return Ok(Err(NO_SUCH_PRIORITY.to_string()));
         }
         let Some(forge) = Forge::parse(&self.url) else {
             return Ok(Err(
@@ -313,7 +344,7 @@ impl ActiveModelBehavior for ActiveModel {
 
 impl Model {
     /// The watchlist, or the part of it that `filter` names. Repo by repo, and in each, the
-    /// requested items first, then the urgent ones.
+    /// requested items first, then the most pressing ones.
     ///
     /// # Errors
     /// When the query fails.
@@ -328,8 +359,7 @@ impl Model {
         let items = items
             .order_by_asc(repos::Column::Path)
             .order_by_desc(Column::Requested)
-            // "high" sorts before "medium".
-            .order_by_asc(Column::Priority)
+            .order_by_desc(Priority::rank())
             .order_by_asc(Column::Id)
             .all(db)
             .await?;
@@ -341,8 +371,8 @@ impl Model {
     }
 
     /// The items that a run in repo `repo_id` gets: the repo's, of `category` or of both. The
-    /// requested ones come first, then the urgent ones, and `max_items` cuts the list there
-    /// (0: all of them).
+    /// requested ones come first, then the most pressing ones, and `max_items` cuts the list
+    /// there (0: all of them).
     ///
     /// # Errors
     /// When the query fails.
@@ -358,7 +388,7 @@ impl Model {
         }
         let items = items
             .order_by_desc(Column::Requested)
-            .order_by_asc(Column::Priority)
+            .order_by_desc(Priority::rank())
             .order_by_asc(Column::Id);
         Ok(match max_items {
             0 => items.all(db).await?,
@@ -416,7 +446,7 @@ impl Model {
         params: &Params,
     ) -> ModelResult<Checked<Self>> {
         if Priority::parse(params.priority()).is_none() {
-            return Ok(Err("The priority is medium or high.".to_string()));
+            return Ok(Err(NO_SUCH_PRIORITY.to_string()));
         }
         let mut item = self.into_active_model();
         item.set(params);

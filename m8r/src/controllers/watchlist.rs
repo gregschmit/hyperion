@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::{
     models::{
         repos,
-        watchlist_items::{self, Category, Filter, Params},
+        watchlist_items::{self, Category, Filter, Params, Priority},
     },
     views,
 };
@@ -87,6 +87,7 @@ async fn page(
         "tabs": tabs,
         "repos": repos,
         "category": filter.category.map(Category::as_str).unwrap_or_default(),
+        "priorities": Priority::ALL.map(Priority::as_str),
         "form": form,
         "has_problem": problem.is_some(),
         "problem": problem.unwrap_or_default(),

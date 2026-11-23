@@ -1,5 +1,6 @@
-//! The MCP endpoint, `/mcp`: the API as tools, for an agent that isn't one of m8r's runs, such
-//! as Claude Duet.
+//! The MCP endpoint, `/mcp`: the watchlist as tools, for an agent that isn't one of m8r's runs,
+//! such as Claude Duet. It keeps the watchlist, and it reads the repos and the runs. It
+//! changes nothing else: the API has the rest.
 //!
 //! It speaks streamable HTTP with no sessions: each POST stands alone, so a restart loses
 //! nothing. The access guard lets a request in with a token (see `initializers::access`). A
@@ -29,32 +30,30 @@ use crate::{
     initializers::access::Caller,
     models::{
         repos, runs,
-        schedules::{self, Items},
-        watchlist_items::{self, Category},
+        watchlist_items::{self, Category, Priority},
         Checked,
     },
-    settings::Settings,
     views::api,
 };
 
 /// What every client reads first.
 const INSTRUCTIONS: &str = "\
-m8r runs the developer's coding agents on a schedule, in the repos that it works in, and keeps \
-the developer's watchlist: the issues and PRs/MRs that they follow. A watchlist item is a URL \
-on GitHub or GitLab, which says which repo the item is in and whether it's an issue or a \
-PR/MR. It has a priority (medium: the developer cares about it; high: it's urgent), a note that \
-says why, and whether someone asked the developer for it (requested): for a PR/MR, a review. \
-An agent gets the items of the repo that it runs in, the requested ones first, so keep the \
-watchlist true: add what the developer must follow, turn requested on when someone asks them \
-for it, and remove what's done. m8r takes an item only for a repo that it has, and removes an \
-item by itself when its issue or PR/MR closes or merges.";
+m8r keeps the developer's watchlist: the issues and PRs/MRs that they follow, which m8r's \
+coding agents work on. Your part is to keep that watchlist true: add what the developer must \
+follow, turn requested on when someone asks them for it, and remove what's done. A watchlist \
+item is a URL on GitHub or GitLab, which says which repo the item is in and whether it's an \
+issue or a PR/MR. It has a priority (medium: the developer cares about it, and it's what an \
+item gets when nobody says; high: it matters more; urgent: it can't wait), a note that says \
+why, and whether someone asked the developer for it (requested): for a PR/MR, a review. An \
+agent gets the items of the repo that it runs in: the requested ones first, then the most \
+pressing ones. m8r takes an item only for a repo that it works in, and removes an item by \
+itself when its issue or PR/MR closes or merges. You can also list those repos, and read the \
+agents' runs with what they reported. You change neither: the developer does, in m8r's pages.";
 
 /// What a tool does to m8r, which the client's approval step goes by.
 #[derive(Clone, Copy)]
 enum Effect {
     Reads,
-    /// Makes something new each time.
-    Adds,
     /// Sets something. Twice is the same as once.
     Sets,
     Removes,
@@ -85,7 +84,7 @@ const fn spec(
     }
 }
 
-const TOOLS: [Spec; 15] = [
+const TOOLS: [Spec; 7] = [
     spec(
         "list_watchlist_items",
         "List the watchlist",
@@ -100,9 +99,10 @@ const TOOLS: [Spec; 15] = [
         "Add a watchlist item",
         "watchlist_items",
         Effect::Sets,
-        "Put an issue or a PR/MR on the watchlist, by its URL on GitHub or GitLab. The URL \
-         says which repo it's in, and m8r refuses one whose repo it doesn't have: add the repo \
-         first. If the URL is already there, this changes that item.",
+        "Put an issue or a PR/MR on the watchlist, by its URL on GitHub or GitLab. With no \
+         priority, it's medium. The URL says which repo it's in, and m8r refuses one whose repo \
+         it doesn't have: only the developer adds a repo, in m8r's pages. If the URL is already \
+         there, this changes that item.",
     ),
     spec(
         "update_watchlist_item",
@@ -124,68 +124,9 @@ const TOOLS: [Spec; 15] = [
         "List the repos",
         "repos",
         Effect::Reads,
-        "List the repos that m8r works in. Each has an id, the path of its clone in the home \
-         of m8r's user, and the URL of its project on its forge.",
-    ),
-    spec(
-        "add_repo",
-        "Add a repo",
-        "repos",
-        Effect::Adds,
-        "Add a repo: a clone that's already in the home of m8r's user. With no url, m8r reads \
-         the project from the clone's origin.",
-    ),
-    spec(
-        "update_repo",
-        "Change a repo",
-        "repos",
-        Effect::Sets,
-        "Change a repo's path or url. What you leave out stays as it is.",
-    ),
-    spec(
-        "remove_repo",
-        "Remove a repo",
-        "repos",
-        Effect::Removes,
-        "Remove a repo. m8r refuses while a watchlist item is in it or a schedule runs in it.",
-    ),
-    spec(
-        "list_schedules",
-        "List the schedules",
-        "schedules",
-        Effect::Reads,
-        "List the schedules: when each one runs, in which repos, with which command and which \
-         prompt, whether it's enabled, and its next time.",
-    ),
-    spec(
-        "add_schedule",
-        "Add a schedule",
-        "schedules",
-        Effect::Adds,
-        "Add a schedule: m8r then runs its command in each of its repos at its times, with its \
-         prompt on stdin.",
-    ),
-    spec(
-        "update_schedule",
-        "Change a schedule",
-        "schedules",
-        Effect::Sets,
-        "Change a schedule. What you leave out stays as it is.",
-    ),
-    spec(
-        "remove_schedule",
-        "Remove a schedule",
-        "schedules",
-        Effect::Removes,
-        "Remove a schedule. Its past runs stay in the history.",
-    ),
-    spec(
-        "run_schedule",
-        "Run a schedule now",
-        "schedules",
-        Effect::Adds,
-        "Queue a schedule's runs now: one for each of its repos, which start together. The \
-         schedules take turns, so they may wait. The answer is the runs.",
+        "List the repos that m8r works in: a watchlist item is in one of them. Each has an id, \
+         the path of its clone in the home of m8r's user, and the URL of its project on its \
+         forge.",
     ),
     spec(
         "list_runs",
@@ -209,7 +150,6 @@ impl Spec {
         let hints = ToolAnnotations::with_title(self.title).open_world(false);
         let hints = match self.effect {
             Effect::Reads => hints.read_only(true),
-            Effect::Adds => hints.read_only(false).destructive(false).idempotent(false),
             Effect::Sets => hints.read_only(false).destructive(false).idempotent(true),
             Effect::Removes => hints.read_only(false).destructive(true).idempotent(true),
         };
@@ -219,7 +159,6 @@ impl Spec {
     }
 
     /// The JSON schema of the tool's arguments.
-    #[allow(clippy::too_many_lines)]
     fn input(&self) -> JsonObject {
         let id = |of: &str| {
             let description = format!("The id of the {of}, as its list shows it.");
@@ -233,55 +172,15 @@ impl Spec {
         });
         let priority = json!({
             "type": "string",
-            "enum": ["medium", "high"],
-            "description": "medium: the developer cares about it. high: it's urgent.",
+            "enum": Priority::ALL.map(Priority::as_str),
+            "description": "medium: the developer cares about it. high: it matters more. \
+                            urgent: it can't wait.",
         });
         let note = text("Why the developer follows it, in a few words.");
         let requested = json!({
             "type": "boolean",
             "description": "Someone asked the developer for it: for a PR/MR, a review.",
         });
-        let run_category = json!({
-            "type": "string",
-            "enum": Items::CHOICES.map(Items::as_str),
-            "description": "Which watchlist items of its repo a run's prompt gets: all, or a \
-                            category's. Blank: no items.",
-        });
-        let max_items = json!({
-            "type": "integer",
-            "minimum": 0,
-            "description": "How many items a run gets at most: the first ones, and the \
-                            requested ones come first. 0: all of them.",
-        });
-        let texts = |description: &str| json!({ "type": "array", "items": { "type": "string" }, "description": description });
-        let repos = texts(
-            "The repos that the runs start in, one run in each: the paths of their clones, as \
-             list_repos shows them.",
-        );
-        let when = texts(
-            "When it runs, in words: \"every weekday at 06:00\", \"every 12 hours\", \"every \
-             day at 09:00, 17:00\". A five-field cron expression works too. With several, it \
-             runs at each one's times.",
-        );
-        let enabled = json!({
-            "type": "boolean",
-            "description": "Whether it runs at its times. Off, it starts nothing by itself, and \
-                            run_schedule still works.",
-        });
-        let command = text("The exact shell line that a run starts, such as \"claude -p\".");
-        let prompt = text(
-            "What the command gets on stdin: a template that can hold {{ m8r_prompt }}, \
-             {{ watchlist }}, {{ requested_watchlist }} and {{ max_items }}.",
-        );
-        let name = text("The schedule's name: what it's for, in a few words.");
-        let path = text(
-            "The clone: a path from the home of m8r's user, such as ~/git/group/project, or a \
-             full path.",
-        );
-        let url = text(
-            "The project on its forge, such as https://git.example.com/group/project. Blank: \
-             m8r reads it from the clone's origin.",
-        );
 
         let (properties, required): (Value, &[&str]) = match self.name {
             "list_watchlist_items" => (
@@ -307,40 +206,6 @@ impl Spec {
                 &["id"],
             ),
             "remove_watchlist_item" => (json!({ "id": id("item") }), &["id"]),
-            "add_repo" => (json!({ "path": path, "url": url }), &["path"]),
-            "update_repo" => (
-                json!({ "id": id("repo"), "path": path, "url": url }),
-                &["id"],
-            ),
-            "remove_repo" => (json!({ "id": id("repo") }), &["id"]),
-            "add_schedule" => (
-                json!({
-                    "name": name,
-                    "category": run_category,
-                    "max_items": max_items,
-                    "repos": repos,
-                    "when": when,
-                    "enabled": enabled,
-                    "command": command,
-                    "prompt": prompt,
-                }),
-                &["name", "repos", "when", "command"],
-            ),
-            "update_schedule" => (
-                json!({
-                    "id": id("schedule"),
-                    "name": name,
-                    "category": run_category,
-                    "max_items": max_items,
-                    "repos": repos,
-                    "when": when,
-                    "enabled": enabled,
-                    "command": command,
-                    "prompt": prompt,
-                }),
-                &["id"],
-            ),
-            "remove_schedule" | "run_schedule" => (json!({ "id": id("schedule") }), &["id"]),
             "list_runs" => (
                 json!({ "limit": {
                     "type": "integer",
@@ -405,12 +270,6 @@ impl From<ModelError> for Refusal {
     }
 }
 
-impl From<Error> for Refusal {
-    fn from(err: Error) -> Self {
-        Self::Failure(err.to_string())
-    }
-}
-
 fn checked<T>(checked: Checked<T>) -> std::result::Result<T, Refusal> {
     checked.map_err(Refusal::Problem)
 }
@@ -462,45 +321,6 @@ impl Server {
             "list_repos" => {
                 let repos = repos::Model::list(db).await?;
                 json!(repos.iter().map(api::repo).collect::<Vec<_>>())
-            }
-            "add_repo" => {
-                let params: repos::Params = parse(arguments)?;
-                let shell = Settings::from_context(&self.ctx)?.shell;
-                api::repo(&checked(repos::Model::create(db, &shell, &params).await?)?)
-            }
-            "update_repo" => {
-                let Target { id, rest } = parse::<Target<repos::Changes>>(arguments)?;
-                let shell = Settings::from_context(&self.ctx)?.shell;
-                api::repo(&checked(repos::Model::change(db, &shell, id, rest).await?)?)
-            }
-            "remove_repo" => {
-                let Target { id, .. } = parse::<Target<Nothing>>(arguments)?;
-                let repo = repos::Model::find(db, id).await?;
-                checked(repo.removed(db).await?)?;
-                json!({ "removed": id })
-            }
-            "list_schedules" => {
-                let schedules = schedules::Model::list(db).await?;
-                json!(schedules.iter().map(api::schedule).collect::<Vec<_>>())
-            }
-            "add_schedule" => {
-                let params: schedules::Params = parse(arguments)?;
-                api::schedule(&checked(schedules::Model::create(db, &params).await?)?)
-            }
-            "update_schedule" => {
-                let Target { id, rest } = parse::<Target<schedules::Changes>>(arguments)?;
-                api::schedule(&checked(schedules::Model::change(db, id, rest).await?)?)
-            }
-            "remove_schedule" => {
-                let Target { id, .. } = parse::<Target<Nothing>>(arguments)?;
-                schedules::Model::remove(db, id).await?;
-                json!({ "removed": id })
-            }
-            "run_schedule" => {
-                let Target { id, .. } = parse::<Target<Nothing>>(arguments)?;
-                let (schedule, repos) = schedules::Model::find(db, id).await?;
-                let queued = runs::Model::queue(db, &schedule, &repos).await?;
-                json!(queued.iter().map(api::run).collect::<Vec<_>>())
             }
             "list_runs" => {
                 let filter: RunFilter = parse(arguments)?;

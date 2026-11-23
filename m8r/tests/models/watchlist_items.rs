@@ -178,7 +178,7 @@ async fn refuses_an_item_that_it_cannot_keep() {
     let not_one = problem(db, &params("https://example.com/", "high")).await;
     assert!(not_one.starts_with("That isn't the URL"), "{not_one}");
     let priority = problem(db, &params(issue, "low")).await;
-    assert_eq!(priority, "The priority is medium or high.");
+    assert_eq!(priority, "The priority is medium, high or urgent.");
 
     // An item is in a repo, and m8r has none for this one's project yet.
     assert_eq!(
@@ -194,12 +194,17 @@ async fn refuses_an_item_that_it_cannot_keep() {
         .starts_with("m8r has no repo"));
 
     // With its repo, it goes on the list. The URL says what it is, and the forge reads the
-    // project's path without case.
+    // project's path without case. Nobody said how much it matters, so it's medium: with no
+    // priority, and with a blank one.
     let repo = support::repo(db, "/clones/r", "https://github.com/O/R").await;
-    let listed = watchlist_items::Model::create(db, &params(issue, "medium")).await;
-    let (item, its_repo) = listed.unwrap().unwrap();
-    assert_eq!((its_repo.id, item.repo_id), (repo.id, repo.id));
-    assert_eq!(item.category, "issues");
+    assert_eq!(Params::default().priority, "medium");
+    for unsaid in [Params::default().priority, String::new()] {
+        let listed = watchlist_items::Model::create(db, &params(issue, &unsaid)).await;
+        let (item, its_repo) = listed.unwrap().unwrap();
+        assert_eq!((its_repo.id, item.repo_id), (repo.id, repo.id));
+        assert_eq!(item.category, "issues");
+        assert_eq!(item.priority, "medium");
+    }
 
     // Someone can ask you for any item: for an issue too.
     for url in [issue, "https://github.com/o/r/pull/2"] {
@@ -223,12 +228,13 @@ async fn the_list_goes_by_repo_and_the_requested_items_come_first() {
     watch(db, "https://git.example.com/g/p/-/issues/9").await;
     watch(db, "https://github.com/o/r/pull/1").await;
     watch(db, "https://github.com/o/r/issues/2").await;
-    let urgent = params("https://github.com/o/r/issues/3", "high");
+    let high = params("https://github.com/o/r/issues/3", "high");
     let asked = Params {
         requested: true,
         ..params("https://github.com/o/r/pull/4", "medium")
     };
-    for params in [urgent, asked] {
+    let urgent = params("https://github.com/o/r/issues/5", "urgent");
+    for params in [high, asked, urgent] {
         let listed = watchlist_items::Model::create(db, &params).await;
         listed.unwrap().unwrap();
     }
@@ -236,12 +242,16 @@ async fn the_list_goes_by_repo_and_the_requested_items_come_first() {
         listed.iter().map(|(item, _)| item.label()).collect()
     };
 
-    // Repo by repo. In a repo: what someone asked for, then what's urgent, then the rest.
+    // Repo by repo. In a repo: what someone asked for, then what's urgent, then what's high,
+    // then the rest.
     let all = watchlist_items::Model::list(db, Filter::default()).await;
     let all = all.unwrap();
     assert_eq!(all[0].1.id, one.id);
-    assert_eq!(all[4].1.id, two.id);
-    assert_eq!(labels(all), ["o/r#4", "o/r#3", "o/r#1", "o/r#2", "g/p#9"]);
+    assert_eq!(all[5].1.id, two.id);
+    assert_eq!(
+        labels(all),
+        ["o/r#4", "o/r#5", "o/r#3", "o/r#1", "o/r#2", "g/p#9"]
+    );
 
     // A list can be a category's, a repo's, or both.
     let requests = Filter {
@@ -277,6 +287,8 @@ async fn a_run_gets_its_repos_items_and_the_first_of_them() {
         ("https://github.com/o/r/issues/3", "high", false),
         ("https://github.com/o/r/pull/4", "medium", true),
         ("https://git.example.com/g/p/-/issues/5", "high", true),
+        ("https://github.com/o/r/pull/6", "urgent", false),
+        ("https://github.com/o/r/issues/7", "high", true),
     ] {
         let asked = Params {
             requested,
@@ -291,15 +303,16 @@ async fn a_run_gets_its_repos_items_and_the_first_of_them() {
         ids
     };
 
-    // Its own repo's, and no other's: the requested one, the urgent one, then the rest.
-    assert_eq!(got(one.id, None, 0).await, [4, 3, 1, 2]);
+    // Its own repo's, and no other's. The requested ones come first, and the more pressing
+    // of them before the other. Then the urgent one, the high one, and the rest.
+    assert_eq!(got(one.id, None, 0).await, [7, 4, 6, 3, 1, 2]);
     assert_eq!(got(two.id, None, 0).await, [5]);
-    assert_eq!(got(one.id, Some(Category::Issues), 0).await, [3, 1]);
-    assert_eq!(got(one.id, Some(Category::Requests), 0).await, [4, 2]);
+    assert_eq!(got(one.id, Some(Category::Issues), 0).await, [7, 3, 1]);
+    assert_eq!(got(one.id, Some(Category::Requests), 0).await, [4, 6, 2]);
     // A cutoff keeps the first ones, so what someone asked for is in.
-    assert_eq!(got(one.id, None, 2).await, [4, 3]);
+    assert_eq!(got(one.id, None, 3).await, [7, 4, 6]);
     assert_eq!(got(one.id, Some(Category::Requests), 1).await, [4]);
-    assert_eq!(got(one.id, None, 9).await, [4, 3, 1, 2]);
+    assert_eq!(got(one.id, None, 9).await, [7, 4, 6, 3, 1, 2]);
 }
 
 #[tokio::test]

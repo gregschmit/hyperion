@@ -23,8 +23,9 @@ your answer.
 
 m8r keeps the developer's watchlist: the issues and PRs/MRs that they follow, each in one of \
 the repos that m8r works in. You work in one repo, and its items are yours. Each item has a \
-number, a priority (medium: the developer cares about it; high: it's urgent), a note, and \
-whether someone asked the developer for it (\"requested\"): for a PR/MR, a review.
+number, a priority (medium: the developer cares about it; high: it matters more; urgent: it \
+can't wait), a note, and whether someone asked the developer for it (\"requested\"): for a \
+PR/MR, a review.
 
 You can change the watchlist while you work, through m8r's API. Its address is in $M8R_URL, and \
 $M8R_TOKEN lets you in until this run ends. Both are in your environment.
@@ -77,8 +78,8 @@ pub const VARIABLES: [(&str, &str); 9] = [
     (
         "{{ watchlist }}",
         "The watchlist items that the run gets, one to a line: its repo's, of the schedule's \
-         category. The requested ones come first, then the urgent ones, and the schedule's max \
-         items cuts the list there.",
+         category. The requested ones come first, then the most pressing ones, and the schedule's \
+         max items cuts the list there.",
     ),
     (
         "{{ requested_watchlist }}",

@@ -771,7 +771,7 @@ async fn each_run_gets_the_items_of_its_own_repo() {
     let (one, two) = (sandbox.repo(), sandbox.another_repo("second"));
     repo(&ctx, &one, "https://github.com/o/r").await;
     repo(&ctx, &two, "https://git.example.com/g/p").await;
-    // Three items in the first repo: the last one is urgent, and someone asked for the
+    // Three items in the first repo: the last one is high, and someone asked for the
     // second. One item in the second repo.
     for (url, priority, requested) in [
         ("https://github.com/o/r/issues/1", "medium", false),
@@ -812,7 +812,7 @@ async fn each_run_gets_the_items_of_its_own_repo() {
     tick(&ctx).await;
 
     // `cat` prints its prompt back. Each run got its own repo's items and no other's: what
-    // someone asked for, then what's urgent, and the cutoff left the third one out.
+    // someone asked for, then what's high, and the cutoff left the third one out.
     let in_one = runs::Model::find(&ctx.db, queued[0].id).await.unwrap();
     assert_eq!(
         in_one.output,

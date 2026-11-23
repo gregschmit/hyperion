@@ -17,8 +17,8 @@ use crate::support;
 const REQUESTS: Items = Items::Of(Category::Requests);
 const ISSUES: Items = Items::Of(Category::Issues);
 
-/// Two repos and a watchlist of five. In the first repo: an issue, an urgent MR with a note,
-/// an MR that someone asked for, and an urgent issue. In the second: one MR.
+/// Two repos and a watchlist of five. In the first repo: an issue, a high MR with a note,
+/// an MR that someone asked for, and a high issue. In the second: one MR.
 async fn watchlist(ctx: &AppContext) -> (repos::Model, repos::Model) {
     let one = support::repo(&ctx.db, "~/git/g/p", "https://git.example.com/g/p").await;
     let two = support::repo(&ctx.db, "~/git/o/r", "https://github.com/o/r").await;
@@ -95,7 +95,7 @@ async fn a_prompt_gets_each_part_where_it_says() {
         "{prompt}"
     );
     // Then the repo's items of the category: the one that someone asked for first, then the
-    // urgent one. Nothing is escaped: a prompt isn't HTML.
+    // high one. Nothing is escaped: a prompt isn't HTML.
     assert!(
         prompt.ends_with(
             "they are the developer's.\n\n\
@@ -116,7 +116,7 @@ async fn a_run_gets_the_items_of_its_own_repo_that_its_schedule_takes() {
     let (one, two) = watchlist(ctx).await;
     let ids = "{% for item in watchlist_items %}{{ item.id }} {% endfor %}";
 
-    // Every item of its repo: what someone asked for, then what's urgent, then the rest. No
+    // Every item of its repo: what someone asked for, then what's high, then the rest. No
     // other repo's.
     let all = context(ctx, Some(&one), Items::All, 0).await;
     assert_eq!(all.compile(ids).unwrap(), "3 2 4 1 ");

@@ -109,7 +109,7 @@ async fn watchlist_items_are_listed_added_changed_and_removed() {
             ),
             (
                 json!({ "url": ISSUE_URL, "priority": "low" }),
-                "The priority is medium or high.",
+                "The priority is medium, high or urgent.",
             ),
         ] {
             let res = request
@@ -149,7 +149,10 @@ async fn watchlist_items_are_listed_added_changed_and_removed() {
             .authorization_bearer(&token)
             .json(&json!({ "priority": "low" }))
             .await;
-        assert_eq!(answer(&res), bad_request("The priority is medium or high."));
+        assert_eq!(
+            answer(&res),
+            bad_request("The priority is medium, high or urgent.")
+        );
 
         let res = request
             .get(&format!("{items}/1"))

@@ -132,7 +132,8 @@ its runs at once.
   run's repo, its `issues`, its `pull/merge requests`, or none. A run never gets another
   repo's items.
 - **Max items** cuts that list: a run gets the first ones, and no more than this many. The
-  requested items come first, then the urgent ones, then the rest. 0 means all of them.
+  requested items come first, then the most pressing ones: urgent, high, then medium. 0 means
+  all of them.
 - **When** is the schedule's times, in words: `every weekday at 06:00`, `every 12 hours`,
   `every monday, thursday at 9:00, 15:00`
   ([hron](https://github.com/simpllyf/hron#expression-syntax) has more). A five-field cron
@@ -196,7 +197,8 @@ of it, or a category's or a repo's part.
 - **The URL says where and what.** An item is in the repo whose project its URL names, and
   it's an issue or a pull/merge request. You say neither. m8r takes an item only for a repo
   that it has: add the repo first.
-- **Priority.** Medium means you care about it, and high means it's urgent.
+- **Priority.** Medium means you care about it, high means it matters more, and urgent means
+  it can't wait. An item is medium until someone says more.
 - **Requested.** Check it when someone asks you for an item: for a PR/MR, a review. A run gets
   the requested items first, so a schedule that takes only some items takes those. The agent
   that does what was asked unchecks it.
@@ -299,9 +301,9 @@ Programs use m8r through its API (`/api`) or its MCP endpoint (`/mcp`). Each wan
 the `Authorization` header.
 
 ```sh
-m8r task token name:duet scope:watchlist_items   # prints the token, this one time
-m8r task tokens                                  # lists them
-m8r task revoke name:duet                        # ends one
+m8r task token name:duet scope:watchlist_items,repos,runs   # prints the token, this one time
+m8r task tokens                                             # lists them
+m8r task revoke name:duet                                   # ends one
 ```
 
 - **A scope** says what a token covers: `all`, or one or more of `watchlist_items`, `repos`,
@@ -328,15 +330,20 @@ m8r task revoke name:duet                        # ends one
   `POST /api/schedules/<id>/run` queues the schedule's runs and answers with them, and
   `/api/runs` can be read. What can't be saved comes back as a 400 with the reason in
   `description`.
-- **The MCP endpoint** is the same work as tools (`list_watchlist_items`,
-  `add_watchlist_item`, and so on), over streamable HTTP with no sessions. A client sees the
-  tools of its token's resources, and no others. Each tool says whether it only reads and
-  whether it removes something, which a client's approval step goes by.
-- **Claude Duet** connects to the MCP endpoint. Make it a token for `watchlist_items`: it then
-  sees four tools, which list, add, change and remove watchlist items, and nothing else of
-  m8r. In Claude's settings, add a custom connector with the URL `https://m8r.schmit.net/mcp`
-  and the request header `Authorization: Bearer <token>`. If the form has no place for a
-  request header, Duet can't send the token (see [Not built](#not-built)).
+- **The MCP endpoint** keeps the watchlist, as tools: `list_watchlist_items`,
+  `add_watchlist_item`, `update_watchlist_item` and `remove_watchlist_item`. Three more tools
+  only read: `list_repos` shows the repos that m8r works in, and `list_runs` and `get_run`
+  show the runs and what they printed. No tool changes a repo, a schedule or a run: the pages
+  and the API do that. It speaks streamable HTTP with no sessions. A client sees the tools of
+  its token's resources, and no others. Each tool says whether it only reads and whether it
+  removes something, which a client's approval step goes by.
+- **Claude Duet** connects to the MCP endpoint. Make it a token for
+  `watchlist_items,repos,runs`: it then keeps the watchlist, and reads the repos and the runs.
+  With `watchlist_items` alone, it sees the watchlist's four tools and nothing else of m8r. A
+  scope counts for the API too, where `repos` also changes the repos: Duet has only the tools.
+  In Claude's settings, add a custom connector with the URL `https://m8r.schmit.net/mcp` and
+  the request header `Authorization: Bearer <token>`. If the form has no place for a request
+  header, Duet can't send the token (see [Not built](#not-built)).
 - **Claude Code** on another computer connects the same way:
 
   ```sh
@@ -420,7 +427,8 @@ wrote. Expect a prompt injection someday.
   note goes into the next prompts. A token for `watchlist_items` can do that and no more.
 - **So is what a run printed.** An agent wrote it, maybe after it read a hostile issue. Its
   page shows it as markdown, with the HTML in it as text and each picture as a link, so
-  nothing in it runs, and the page loads nothing from another site.
+  nothing in it runs, and the page loads nothing from another site. Duet reads it too, if its
+  token covers `runs`.
 - **A share link shows its run to whoever holds it,** for 72 hours. The prompt on the run's
   page has the watchlist items that the run got, with your notes. The link opens nothing
   else, and changes nothing.
@@ -507,8 +515,8 @@ One stand-in agent runs the commands of `m8r_prompt` against the API on loopback
 repos            path (unique), url (blank, or one repo's)
 
 watchlist_items  url (unique), repo → repos ON DELETE RESTRICT,
-                 category (issues|pull/merge requests), priority (medium|high), note,
-                 requested, title, checked_at
+                 category (issues|pull/merge requests), priority (medium|high|urgent),
+                 note, requested, title, checked_at
 
 schedules        name (unique), category (blank|all|issues|pull/merge requests), max_items,
                  when (a list, one to a line), enabled, command, prompt
@@ -535,6 +543,9 @@ used_links       token_id (unique), expires_at
   fixed `Authorization` header only where Anthropic turned that on (see
   [its connector docs](https://claude.com/docs/connectors/building)). If Duet can't send m8r's
   token, m8r needs the MCP specification's OAuth flow.
+- **The rest of m8r as MCP tools.** The MCP endpoint changes the watchlist, and nothing else.
+  A client such as Duet can't add a repo, or write or start a schedule: the pages and the API
+  do that.
 - **Requests from the forge.** m8r could ask each forge which PRs/MRs wait for your review, and
   put them on the watchlist by itself, as requested. Until then, you or Duet check
   "requested".

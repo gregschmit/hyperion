@@ -14,6 +14,14 @@ async fn the_watchlist_is_added_to_changed_and_removed_from() {
         assert!(page.contains("Nothing here."), "{page}");
         // An item's URL says what it is and where it is, so the form asks for neither.
         assert!(!page.contains(r#"name="category""#), "{page}");
+        // A new item is medium, unless you say more.
+        for option in [
+            r#"<option value="medium" selected>medium</option>"#,
+            r#"<option value="high">high</option>"#,
+            r#"<option value="urgent">urgent</option>"#,
+        ] {
+            assert!(page.contains(option), "{option}\n{page}");
+        }
         // A column goes by its name.
         assert!(
             page.contains(
@@ -88,7 +96,7 @@ async fn the_watchlist_is_added_to_changed_and_removed_from() {
         // A row's form changes the priority and the note.
         let res = request
             .post("/watchlist/1")
-            .form(&[("priority", "high"), ("note", "Now urgent")])
+            .form(&[("priority", "urgent"), ("note", "Now urgent")])
             .await;
         assert_eq!(location(&res), "/watchlist");
         let (item, repo) = watchlist_items::Model::find(&ctx.db, 1).await.unwrap();
@@ -98,7 +106,12 @@ async fn the_watchlist_is_added_to_changed_and_removed_from() {
                 item.note.as_str(),
                 repo.path.as_str()
             ),
-            ("high", "Now urgent", "~/git/g/p")
+            ("urgent", "Now urgent", "~/git/g/p")
+        );
+        let page = request.get("/watchlist").await.text();
+        assert!(
+            page.contains(r#"<option value="urgent" selected>urgent</option>"#),
+            "{page}"
         );
         let res = request
             .post("/watchlist/1")
@@ -106,7 +119,10 @@ async fn the_watchlist_is_added_to_changed_and_removed_from() {
             .await;
         assert_eq!(res.status_code(), 200);
         let page = res.text();
-        assert!(page.contains("The priority is medium or high."), "{page}");
+        assert!(
+            page.contains("The priority is medium, high or urgent."),
+            "{page}"
+        );
 
         assert_eq!(request.post("/watchlist/1/remove").await.status_code(), 303);
         assert!(listed(&ctx.db).await.is_empty());
