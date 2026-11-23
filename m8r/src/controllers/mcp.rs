@@ -36,19 +36,29 @@ use crate::{
     views::api,
 };
 
-/// What every client reads first.
+/// What a client reads to decide whether this server is the one it needs. It says when to use
+/// the tools, and gives a client no work of its own to do.
+const DESCRIPTION: &str = "\
+The developer's maintainer automation tool. Use it to read or change its watchlist: the issues \
+and PRs/MRs that the developer follows.";
+
+/// What every client reads first. A paragraph is one line of it.
 const INSTRUCTIONS: &str = "\
-m8r keeps the developer's watchlist: the issues and PRs/MRs that they follow, which m8r's \
-coding agents work on. Your part is to keep that watchlist true: add what the developer must \
-follow, turn requested on when someone asks them for it, and remove what's done. A watchlist \
-item is a URL on GitHub or GitLab, which says which repo the item is in and whether it's an \
-issue or a PR/MR. It has a priority (medium: the developer cares about it, and it's what an \
-item gets when nobody says; high: it matters more; urgent: it can't wait), a note that says \
-why, and whether someone asked the developer for it (requested): for a PR/MR, a review. An \
-agent gets the items of the repo that it runs in: the requested ones first, then the most \
-pressing ones. m8r takes an item only for a repo that it works in, and removes an item by \
-itself when its issue or PR/MR closes or merges. You can also list those repos, and read the \
-agents' runs with what they reported. You change neither: the developer does, in m8r's pages.";
+m8r is the developer's maintainer automation tool. It runs their coding agents on a schedule, \
+in the repos that it works in, and it keeps their watchlist: the issues and PRs/MRs that they \
+follow, which those agents work on. Use these tools when you need to change that watchlist, or \
+to see what's on it.
+
+A watchlist item is a URL on GitHub or GitLab, which says which repo the item is in and \
+whether it's an issue or a PR/MR. It has a priority (medium: the developer cares about it, and \
+it's what an item gets when nobody says; high: it matters more; urgent: it can't wait), a note \
+that says why, and whether someone asked the developer for it (requested): for a PR/MR, a \
+review. An agent gets the items of the repo that it runs in: the requested ones first, then \
+the most pressing ones. m8r takes an item only for a repo that it works in, and it removes an \
+item by itself when its issue or PR/MR closes or merges.
+
+You can also list those repos, and read the agents' runs with what they reported. You change \
+neither: the developer does, in m8r's pages.";
 
 /// What a tool does to m8r, which the client's approval step goes by.
 #[derive(Clone, Copy)]
@@ -351,7 +361,9 @@ impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(
-                Implementation::new("m8r", env!("CARGO_PKG_VERSION")).with_title("m8r"),
+                Implementation::new("m8r", env!("CARGO_PKG_VERSION"))
+                    .with_title("m8r")
+                    .with_description(DESCRIPTION),
             )
             .with_instructions(INSTRUCTIONS)
     }

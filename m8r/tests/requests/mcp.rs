@@ -75,11 +75,26 @@ async fn a_client_starts_with_no_session_and_reads_what_m8r_is() {
         assert_eq!(result["protocolVersion"], json!("2025-06-18"));
         assert_eq!(result["capabilities"], json!({ "tools": {} }));
         assert_eq!(result["serverInfo"]["name"], json!("m8r"));
+        // What m8r is, and when its tools are of use. It gives the client no work of its own:
+        // a client that has nothing for the watchlist leaves the tools alone.
+        let description = result["serverInfo"]["description"].as_str().unwrap();
+        assert!(
+            description.starts_with("The developer's maintainer automation tool. Use it to"),
+            "{description}"
+        );
         let instructions = result["instructions"].as_str().unwrap();
         assert!(
-            instructions.contains("keeps the developer's watchlist"),
+            instructions.starts_with("m8r is the developer's maintainer automation tool. "),
             "{instructions}"
         );
+        assert!(
+            instructions.contains(
+                "Use these tools when you need to change that watchlist, or to see what's on \
+                 it.\n\nA watchlist item is"
+            ),
+            "{instructions}"
+        );
+        assert!(!instructions.contains("Your part"), "{instructions}");
 
         let ready = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
         assert_eq!(send(&request, &duet, &ready).await.status_code(), 202);
