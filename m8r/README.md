@@ -256,7 +256,13 @@ A run:
   it does it, and at the end its answer. m8r knows that stream by its first line. The run's
   report is then the answer, as `claude -p` prints it alone, and not the lines of JSON. A run
   that ends with no answer, such as one that m8r killed, leaves the steps that it got to. Any
-  other output is text, as before: m8r reads no other tool's stream.
+  other output is text: m8r reads no other tool's stream. With `--include-partial-messages`
+  too, the stream has what the agent says a few words at a time, as it writes them, and the
+  run's page shows the agent writing:
+
+  ```
+  claude -p --dangerously-skip-permissions --output-format stream-json --verbose --include-partial-messages
+  ```
 - **The list says when, and for how long:** `2026-11-23 06:00 – 06:14 (14 min)`, with the day
   once unless the run ended on another day. It says when a run was created only if the run
   then waited two minutes or more: a tick starts a run within a minute, so that one waited
@@ -270,14 +276,19 @@ A run:
   that `claude --resume` shows, so take the id from the name of the session's file in
   `~/.claude/projects/`.
 - **A run in progress can be watched.** What its command prints goes to a file as it comes,
-  and into the run's row when the run ends. The run's page shows it as it comes, and asks
-  for it again every few seconds: text as it is, and a stream as the agent's steps, which are
-  what it said and each tool that it used, in one line. Not what a tool gave it, and not the
-  steps of the agents that it started. A share link shows the same. In a terminal,
-  `m8r task runs` lists the runs that aren't over, and `m8r task output id:12` prints what run
-  12 has printed, as it was printed, and goes on until the run ends. The page and the
-  terminal show only what the command prints: `claude -p` prints its answer, when it's done,
-  unless its command asks for a stream.
+  and into the run's row when the run ends. While the run is in progress, m8r sends its page
+  what's new in the file some ten times a second, over one connection that stays open
+  (`GET /api/runs/<id>/output`, server-sent events). The page has two tabs for it, and m8r
+  sends each on its own. "Raw" is the text as it was written: of a stream, what the agent
+  says, and a line for each tool that it uses. "Markdown" is the same as the agent's steps,
+  which m8r renders: what it said, and each tool that it used, in one line. Not what a tool
+  gave it, and not the steps of the agents that it started. The page adds to what it shows
+  and never loads again, so it stays where you scrolled to. When the run ends, its report
+  takes the steps' place. A share link shows the same. In a terminal, `m8r task runs` lists
+  the runs that aren't over, and `m8r task output id:12` prints what run 12 has printed, as
+  it was printed, and goes on until the run ends. The page and the terminal show only what
+  the command prints: `claude -p` prints its answer, when it's done, unless its command
+  asks for a stream.
 - **A run can be shared.** "Share" on a run's page shows a link to that page, and copies it.
   For 72 hours, the link opens the page to anyone who has it (see [Access](#access)).
 
@@ -360,8 +371,11 @@ m8r task revoke name:duet                                   # ends one
   schedule's `repos` and `when` are arrays: the repos by the paths of their clones. Its
   `enabled` is true or false, and its `next` is null while it's false.
   `POST /api/schedules/<id>/run` queues the schedule's runs and answers with them, and
-  `/api/runs` can be read. What can't be saved comes back as a 400 with the reason in
-  `description`.
+  `/api/runs` can be read. `GET /api/runs/<id>/output` sends what a run prints as it comes,
+  as server-sent events, until the run is over: `start`, then `raw` (more of the text) and
+  `step` (a step as HTML, with its `id`, and `open` while the agent writes it), `started`
+  when a run that waited starts, and `over`. What can't be saved comes back as a 400 with
+  the reason in `description`.
 - **The MCP endpoint** keeps the watchlist, as tools: `list_watchlist_items`,
   `add_watchlist_item`, `update_watchlist_item` and `remove_watchlist_item`. Three more tools
   only read: `list_repos` shows the repos that m8r works in, and `list_runs` and `get_run`
@@ -537,9 +551,12 @@ One stand-in agent runs the commands of `m8r_prompt` against the API on loopback
   inside one, and a table that's too wide for the page that way scrolls sideways.
 - **The pages** are Tera templates and plain forms, with no frontend build, and three small
   scripts: one gives the errors their turns, one copies a run's share link, and one shows
-  what a run prints as it comes. A page asks
-  for the stylesheet at an address that changes when the stylesheet does, so a browser never
-  uses an old one for a new page.
+  what a run prints as it comes. That one reads server-sent events, which a browser's
+  `EventSource` gets over plain HTTP and connects to again by itself. m8r only sends there,
+  so it needs no WebSocket. The markdown is rendered on the server, where the rules that keep
+  it harmless are tested: the script puts each step's HTML in its place. A page asks for the
+  stylesheet at an address that changes when the stylesheet does, so a browser never uses an
+  old one for a new page.
 - **A name is the column's.** What a page calls a field is the name of its column, and so is
   what the API and the MCP tools call it: `max_items` is "Max items" on a schedule's page. To
   rename one, rename them all.

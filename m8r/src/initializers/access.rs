@@ -420,11 +420,17 @@ fn resource(path: &str) -> Option<&str> {
     }
 }
 
-/// The run that a path is of, if a share link opens the path: the run's page, and the run in
-/// the API.
+/// The run that a path is of, if a share link opens the path: the run's page, the run in the
+/// API, and what the run prints as it comes.
 fn shared_run(path: &str) -> Option<i64> {
-    let path = path.strip_prefix("/api").unwrap_or(path);
-    path.strip_prefix("/runs/")?.parse().ok()
+    let run = match path.strip_prefix("/api") {
+        Some(api) => {
+            let run = api.strip_prefix("/runs/")?;
+            run.strip_suffix("/output").unwrap_or(run)
+        }
+        None => path.strip_prefix("/runs/")?,
+    };
+    run.parse().ok()
 }
 
 /// Whether a request with this method changes something.

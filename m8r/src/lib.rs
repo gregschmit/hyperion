@@ -1,5 +1,6 @@
 pub mod app;
 pub mod controllers;
+pub mod follow;
 pub mod initializers;
 pub mod models;
 pub mod prompts;

@@ -277,13 +277,17 @@ async fn a_share_link_opens_its_runs_page_and_nothing_else() {
             let res = request.get(&format!("{path}?token={held}")).await;
             assert_eq!(res.status_code(), 401, "{path}");
         }
-        // It reads the same run in the API, which a page's script asks. No other run there,
-        // and not the list.
+        // It reads the same run in the API, which a page's script asks: the run, and what it
+        // prints. No other run there, and not the list.
         let res = request.get(&format!("/api/runs/1?token={held}")).await;
         assert_eq!(res.status_code(), 200);
         assert_eq!(res.header("cache-control"), "no-store");
         assert_eq!(res.json::<serde_json::Value>()["name"], "review");
-        for path in ["/api/runs/2", "/api/runs", "/api"] {
+        let res = request
+            .get(&format!("/api/runs/1/output?token={held}"))
+            .await;
+        assert_eq!(res.status_code(), 200);
+        for path in ["/api/runs/2", "/api/runs", "/api/runs/2/output", "/api"] {
             let res = request.get(&format!("{path}?token={held}")).await;
             assert_eq!(res.status_code(), 401, "{path}");
         }
@@ -359,7 +363,72 @@ async fn a_guest_sees_a_run_that_is_not_over_as_far_as_it_is() {
 
 #[tokio::test]
 #[serial]
-async fn a_runs_page_shows_what_the_run_prints_as_it_comes() {
+async fn a_runs_page_follows_the_run_while_it_is_in_progress() {
+    signed_in(|request, ctx| async move {
+        let db = &ctx.db;
+        let run = queue(db, "review", "/home/m8r/git/rxg", "claude -p").await;
+
+        // The page of a run that isn't over has a box for the text and one for the steps,
+        // with nothing in them yet, and a script that asks the API for what the run prints.
+        let page = request.get("/runs/1").await.text();
+        assert!(page.contains(r#"<div class="tabbed" hidden>"#), "{page}");
+        assert!(
+            page.contains(r#"<div class="markdown live steps"></div>"#),
+            "{page}"
+        );
+        assert!(page.contains(r#"<pre class="live raw"></pre>"#), "{page}");
+        assert!(
+            page.contains("new EventSource(`/api/runs/1/output${location.search}`)"),
+            "{page}"
+        );
+        assert!(page.contains("Nothing yet."), "{page}");
+        assert!(page.contains("--include-partial-messages"), "{page}");
+        // The script takes these parts from the page when the run starts and when it ends.
+        for part in ["run-status", "run-error", "output", "run-prompt"] {
+            assert!(page.contains(&format!(r#" id="{part}""#)), "{part}: {page}");
+        }
+
+        // A guest, who holds the run's share link, watches the same way.
+        let run = start(db, run, "The prompt.").await;
+        let shared = request.get(&share_path(&ctx, run.id, 60)).await.text();
+        assert!(shared.contains("new EventSource("), "{shared}");
+        assert!(!shared.contains("m8r task output"), "{shared}");
+
+        // The run ends. The page has the report, and no script for it.
+        run.into_active_model()
+            .finished(db, Status::Done, "# Review".to_string(), String::new())
+            .await
+            .unwrap();
+        let page = request.get("/runs/1").await.text();
+        assert!(!page.contains("EventSource"), "{page}");
+        assert!(
+            page.contains(r#"<div class="markdown"><h1>Review</h1>"#),
+            "{page}"
+        );
+    })
+    .await;
+}
+
+/// The events of an answer from `/api/runs/<id>/output`: each one's name and its data.
+fn events(body: &str) -> Vec<(String, serde_json::Value)> {
+    body.split("\n\n")
+        .filter(|event| !event.trim().is_empty())
+        .map(|event| {
+            let field = |name: &str| {
+                let line = event.lines().find_map(|line| line.strip_prefix(name));
+                line.unwrap_or_else(|| panic!("no {name} in {event}"))
+                    .trim()
+            };
+            let data = serde_json::from_str(field("data:")).unwrap();
+            (field("event:").to_string(), data)
+        })
+        .collect()
+}
+
+#[tokio::test]
+#[serial]
+async fn the_api_sends_what_a_run_prints_as_it_comes() {
+    use serde_json::json;
     signed_in(|request, ctx| async move {
         let db = &ctx.db;
         let run = queue(db, "review", "/home/m8r/git/rxg", "claude -p").await;
@@ -367,95 +436,77 @@ async fn a_runs_page_shows_what_the_run_prints_as_it_comes() {
         // Where the run's command prints while the run is in progress.
         let printed = Settings::from_context(&ctx).unwrap().output_file(run.id);
         std::fs::create_dir_all(printed.parent().unwrap()).unwrap();
-        let _ = std::fs::remove_file(&printed);
-
-        // The page has the part that changes, and a script that asks for that part again.
-        let page = request.get("/runs/1").await.text();
-        assert!(page.contains(r#"<div id="output" data-live>"#), "{page}");
-        assert!(
-            page.contains("address.searchParams.set('part', 'output');"),
-            "{page}"
-        );
-        let part = || async { request.get("/runs/1?part=output").await.text() };
-        let nothing = part().await;
-        assert!(
-            nothing
-                .trim_start()
-                .starts_with(r#"<div id="output" data-live>"#),
-            "{nothing}"
-        );
-        assert!(nothing.contains("Nothing yet."), "{nothing}");
-        // Only that part: no page around it.
-        assert!(
-            !nothing.contains("<html") && !nothing.contains("<h2>"),
-            "{nothing}"
-        );
-
-        // Text shows as it is.
-        std::fs::write(&printed, "step 1 <b>\nstep 2\n").unwrap();
-        let text = part().await;
-        assert!(
-            text.contains("<pre class=\"live\">step 1 &lt;b&gt;\nstep 2\n</pre>"),
-            "{text}"
-        );
-
-        // A stream shows as the agent's steps so far: what it said, and the tools that it
-        // used, each in a line.
         let lines: Vec<&str> = STREAM.lines().collect();
-        std::fs::write(&printed, lines[..5].join("\n")).unwrap();
-        let steps = part().await;
-        assert!(
-            steps.contains(
-                "<div class=\"markdown live\"><p>I'll read the MR first.</p>\n<ul>\n\
-                 <li><strong>Bash</strong> <code>command: glab mr view 12 --comments, \
-                 description: Read MR 12</code></li>\n\
-                 <li><strong>Agent</strong> <code>description: Review MR 12, prompt: Review \
-                 it.</code></li>\n</ul>\n</div>"
-            ),
-            "{steps}"
-        );
-        assert!(
-            !steps.contains("toolu_1") && !steps.contains("Let me look."),
-            "{steps}"
-        );
+        std::fs::write(&printed, format!("{}\n", lines[..5].join("\n"))).unwrap();
 
-        // A guest, who holds the run's share link, watches the same way, and gets no more.
-        let link = share_path(&ctx, run.id, 60);
-        let res = request.get(&format!("{link}&part=output")).await;
+        // The answer lasts until the run is over. So the run ends while the request waits.
+        let ends = async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let answer = "## Review".to_string();
+            run.into_active_model()
+                .finished(db, Status::Done, answer, String::new())
+                .await
+                .unwrap();
+        };
+        let (res, ()) = tokio::join!(async { request.get("/api/runs/1/output").await }, ends);
         assert_eq!(res.status_code(), 200);
-        assert_eq!(res.header("cache-control"), "no-store");
-        let shared = res.text();
-        assert!(shared.contains("<strong>Agent</strong>"), "{shared}");
-        let shared = request.get(&link).await.text();
-        assert!(
-            shared.contains("searchParams.set('part', 'output')"),
-            "{shared}"
-        );
-        assert!(shared.contains("<strong>Agent</strong>"), "{shared}");
-        assert!(!shared.contains("m8r task output"), "{shared}");
-        std::fs::remove_file(&printed).unwrap();
-        let waiting = request.get(&link).await.text();
-        assert!(waiting.contains("Nothing yet."), "{waiting}");
-        assert!(!waiting.contains("m8r task output"), "{waiting}");
+        assert_eq!(res.header("content-type"), "text/event-stream");
+        // nginx would hold the events back.
+        assert_eq!(res.header("x-accel-buffering"), "no");
 
-        // The run ends. The part says so, so the script loads the page, which has the
-        // report and no more script for it.
-        run.into_active_model()
-            .finished(db, Status::Done, "# Review".to_string(), String::new())
-            .await
-            .unwrap();
-        let over = part().await;
-        assert!(
-            over.trim_start().starts_with(r#"<div id="output">"#),
-            "{over}"
+        // First that all comes anew. Then the text, as it was written, and each step as
+        // HTML: what the agent said, and the tools that it used. Last, that the run is over.
+        let bash = "command: glab mr view 12 --comments, description: Read MR 12";
+        let agent = "description: Review MR 12, prompt: Review it.";
+        let tool = |id: u64, name: &str, input: &str| {
+            let html =
+                format!("<ul>\n<li><strong>{name}</strong> <code>{input}</code></li>\n</ul>\n");
+            json!({ "id": id, "html": html, "tool": true, "open": false })
+        };
+        assert_eq!(
+            events(&res.text()),
+            [
+                ("start".to_string(), json!({})),
+                (
+                    "raw".to_string(),
+                    json!({ "text": format!(
+                        "I'll read the MR first.\n\n- **Bash** ` {bash} `\n- **Agent** ` {agent} `"
+                    ) })
+                ),
+                (
+                    "step".to_string(),
+                    json!({ "id": 0, "html": "<p>I'll read the MR first.</p>\n", "tool": false,
+                        "open": false })
+                ),
+                ("step".to_string(), tool(1, "Bash", bash)),
+                ("step".to_string(), tool(2, "Agent", agent)),
+                ("over".to_string(), json!({})),
+            ]
         );
-        assert!(over.contains("<h1>Review</h1>"), "{over}");
-        let page = request.get("/runs/1").await.text();
-        assert!(!page.contains("searchParams"), "{page}");
-        assert!(
-            page.contains(r#"<div class="markdown"><h1>Review</h1>"#),
-            "{page}"
-        );
+
+        // Of a run that's over, the answer says so at once.
+        let names = |body: String| -> Vec<String> {
+            events(&body).into_iter().map(|(name, _)| name).collect()
+        };
+        let res = request.get("/api/runs/1/output").await;
+        assert_eq!(names(res.text()), ["start", "over"]);
+
+        // It's the runs' part of the API: a token for that reads it, and no other.
+        let reader = token(&ctx, "reader", "runs").await;
+        let res = request
+            .get("/api/runs/1/output")
+            .authorization_bearer(&reader)
+            .await;
+        assert_eq!(names(res.text()), ["start", "over"]);
+        let duet = token(&ctx, "duet", "watchlist_items").await;
+        let res = request
+            .get("/api/runs/1/output")
+            .authorization_bearer(&duet)
+            .await;
+        assert_eq!(res.status_code(), 403);
+        assert_eq!(request.get("/api/runs/9/output").await.status_code(), 404);
+        // The tick removes the file when the run's report is saved.
+        std::fs::remove_file(&printed).unwrap();
     })
     .await;
 }

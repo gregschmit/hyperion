@@ -1,3 +1,4 @@
+mod follow;
 mod migrations;
 mod models;
 mod prompts;

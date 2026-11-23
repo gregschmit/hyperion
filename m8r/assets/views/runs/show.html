@@ -2,7 +2,7 @@
 {% block title %}Run {{ run.id }} · m8r{% endblock title %}
 {% block content %}
 <h1>Run {{ run.id }}: {{ run.name }} in <span class="mono">{{ run.repo }}</span></h1>
-<p><span class="status {{ run.status }}">{{ run.status }}</span>
+<p id="run-status"><span class="status {{ run.status }}">{{ run.status }}</span>
   <span class="muted">· created at {{ run.created_at }}{% if run.started_at %} · started at {{ run.started_at }}{% endif %}{% if run.finished_at %} · finished at {{ run.finished_at }}{% if run.duration %} ({{ run.duration }}){% endif %}{% endif %}</span></p>
 
 {% if not shared %}
@@ -29,46 +29,118 @@
 </script>
 {% endif %}
 
+<div id="run-error">
 {% if run.error %}
 <div class="problem">{{ run.error }}</div>
 {% endif %}
+</div>
 
 <h2>Command</h2>
 <pre>{{ run.command }}</pre>
 
 <h2>Output</h2>
-{% include "runs/output.html" %}
-{% if printed.live %}
+{# What the run printed. Of a run in progress, the script below puts it here as it comes. #}
+<div id="output">
+{% if live %}
+<div class="tabbed" hidden>
+  <input type="radio" name="output" id="output-markdown" checked>
+  <label for="output-markdown">Markdown</label>
+  <input type="radio" name="output" id="output-raw">
+  <label for="output-raw">Raw</label>
+  <div class="markdown live steps"></div>
+  <div><pre class="live raw"></pre></div>
+</div>
+{% if shared %}
+<p class="muted nothing">Nothing yet.</p>
+{% else %}
+<p class="muted nothing">Nothing yet. What the command prints shows here as it comes, and in a
+  terminal with <code>m8r task output id:{{ run.id }}</code>. <code>claude -p</code> prints its
+  answer when it's done. With <code>--output-format stream-json --verbose
+  --include-partial-messages</code> in the schedule's command, what the agent says and does
+  shows here as it writes it.</p>
+{% endif %}
+<p class="muted lost" hidden>This page no longer gets what the run prints. Load it again.</p>
+{% elif run.output %}
+<div class="tabbed">
+  <input type="radio" name="output" id="output-markdown" checked>
+  <label for="output-markdown">Markdown</label>
+  <input type="radio" name="output" id="output-raw">
+  <label for="output-raw">Raw</label>
+  <div class="markdown">{{ output_html | safe }}</div>
+  <div><pre>{{ run.output }}</pre></div>
+</div>
+{% else %}
+<p class="muted">Nothing.</p>
+{% endif %}
+</div>
+{% if live %}
 <script>
   {
-    // While the run is in progress, show what it prints as it comes. The box keeps its end
-    // in view, unless you scrolled up in it. When the run is over, the page has more to
-    // say, so load it again.
-    const address = new URL(location.href);
-    address.searchParams.set('part', 'output');
-    const box = () => document.querySelector('#output .live');
-    const toEnd = (box) => { if (box) box.scrollTop = box.scrollHeight; };
-    const refresh = async () => {
-      const shown = box();
-      const atEnd = !shown || shown.scrollHeight - shown.scrollTop - shown.clientHeight < 40;
-      try {
-        const answer = await fetch(address, { cache: 'no-store' });
-        if (answer.ok) {
-          document.getElementById('output').outerHTML = await answer.text();
-          if (!document.querySelector('#output[data-live]')) return location.reload();
-          if (atEnd) toEnd(box());
-        }
-      } catch {
-        // The next try may go better.
-      }
-      setTimeout(refresh, 3000);
+    // While the run is in progress, m8r sends what it prints as it comes, in two ways: the
+    // text as it was written, and the steps that the text makes. Each has a box, which
+    // keeps its end in view unless you scrolled up in it.
+    const output = document.getElementById('output');
+    const steps = output.querySelector('.steps');
+    const raw = output.querySelector('.raw');
+    const shown = new Map();
+    const change = (box, how) => {
+      const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      how();
+      output.querySelector('.tabbed').hidden = false;
+      output.querySelector('.nothing').hidden = true;
+      if (atEnd) box.scrollTop = box.scrollHeight;
     };
-    toEnd(box());
-    setTimeout(refresh, 3000);
+    // A box that was out of view shows its end when its tab is picked.
+    output.addEventListener('change', () => {
+      for (const box of [steps, raw]) box.scrollTop = box.scrollHeight;
+    });
+
+    // A guest's address has the share link's token, which goes along.
+    const events = new EventSource(`/api/runs/{{ run.id }}/output${location.search}`);
+    const on = (name, what) => {
+      events.addEventListener(name, (event) => what(JSON.parse(event.data)));
+    };
+    on('start', () => {
+      steps.replaceChildren();
+      raw.replaceChildren();
+      shown.clear();
+    });
+    on('raw', ({ text }) => change(raw, () => raw.append(text)));
+    on('step', ({ id, html, tool, open }) => change(steps, () => {
+      let step = shown.get(id);
+      if (!step) {
+        step = steps.appendChild(document.createElement('div'));
+        shown.set(id, step);
+      }
+      step.className = `${tool ? 'tool' : 'said'}${open ? ' open' : ''}`;
+      step.innerHTML = html;
+    }));
+
+    // The page has more to say of a run that started, and of one that's over. So get the
+    // page again, and take the parts of it that changed.
+    const refresh = async (parts) => {
+      const answer = await fetch(location.href, { cache: 'no-store' });
+      const page = new DOMParser().parseFromString(await answer.text(), 'text/html');
+      for (const id of parts) document.getElementById(id).replaceWith(page.getElementById(id));
+    };
+    on('started', () => refresh(['run-status', 'run-prompt']));
+    on('over', async () => {
+      events.close();
+      const picked = document.getElementById('output-raw').checked;
+      await refresh(['run-status', 'run-error', 'output', 'run-prompt']);
+      const tab = document.getElementById('output-raw');
+      if (tab) tab.checked = picked;
+    });
+    // A connection that drops comes back by itself. One that m8r refuses doesn't.
+    events.addEventListener('error', () => {
+      if (events.readyState === EventSource.CLOSED) output.querySelector('.lost').hidden = false;
+    });
   }
 </script>
 {% endif %}
 
 <h2>Prompt</h2>
+<div id="run-prompt">
 {% if run.prompt %}<pre>{{ run.prompt }}</pre>{% else %}<p class="muted">None yet: m8r compiles it when the run starts.</p>{% endif %}
+</div>
 {% endblock content %}
