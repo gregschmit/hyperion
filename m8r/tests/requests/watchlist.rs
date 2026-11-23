@@ -1,3 +1,4 @@
+use loco_rs::prelude::*;
 use m8r::models::watchlist_items::{self, Filter};
 use serial_test::serial;
 
@@ -22,11 +23,12 @@ async fn the_watchlist_is_added_to_changed_and_removed_from() {
         ] {
             assert!(page.contains(option), "{option}\n{page}");
         }
-        // A column goes by its name.
+        // A column goes by its name. An item's URL names its repo's project, so the repo
+        // has no column of its own. The note gets the room that the others leave.
         assert!(
             page.contains(
-                "<th>Repo</th><th>Priority</th><th>URL</th><th>Title</th><th>Requested</th>\
-                 <th>Note</th>"
+                "<th>URL</th><th>Priority</th><th>Title</th><th>Requested</th>\
+                 <th class=\"rest\">Note</th>"
             ),
             "{page}"
         );
@@ -82,21 +84,42 @@ async fn the_watchlist_is_added_to_changed_and_removed_from() {
             ),
             "{page}"
         );
-        // The page says what the URL says: what the item is, and which repo it's in.
+        // The page says what the URL says: what the item is.
         assert!(
             page.contains("</a><br><small>pull/merge requests</small>"),
             "{page}"
         );
-        assert!(
-            page.contains(r#"<td class="mono">~/git/g/p</td>"#),
-            "{page}"
-        );
+        assert!(!page.contains("<td class=\"mono\">"), "{page}");
         assert!(page.contains("not checked yet"), "{page}");
 
-        // A row's form changes the priority and the note.
+        // The forge's title: its start, so that the note has room. All of it shows when you
+        // point at it.
+        let (item, _) = watchlist_items::Model::find(&ctx.db, 1).await.unwrap();
+        let title = "Speed up the nightly review of <big> merge requests";
+        item.into_active_model()
+            .checked(&ctx.db, title.to_string(), chrono::Utc::now())
+            .await
+            .unwrap();
+        let page = request.get("/watchlist").await.text();
+        assert!(
+            page.contains(
+                "<span title=\"Speed up the nightly review of &lt;big&gt; merge requests\">\
+                 Speed up the nightly rev…</span>"
+            ),
+            "{page}"
+        );
+
+        // A row's form changes the priority and the note. The note has a box of two lines to
+        // read it in, and it stays one line: a prompt has a line for each item.
+        assert!(
+            page.contains(
+                r#"<textarea name="note" rows="2" form="item-1" aria-label="Note">Alice asked</textarea>"#
+            ),
+            "{page}"
+        );
         let res = request
             .post("/watchlist/1")
-            .form(&[("priority", "urgent"), ("note", "Now urgent")])
+            .form(&[("priority", "urgent"), ("note", " Now\r\n  urgent \n")])
             .await;
         assert_eq!(location(&res), "/watchlist");
         let (item, repo) = watchlist_items::Model::find(&ctx.db, 1).await.unwrap();

@@ -23,19 +23,17 @@
 {% endif %}
 
 <table>
-  <tr><th>ID</th><th>Name</th><th>Repo and command</th><th>Status</th><th>Created at</th><th>Started at</th><th>Finished at</th></tr>
+  <tr><th>ID</th><th>Name</th><th>Repo and command</th><th>Status</th><th>Created, started and finished at</th></tr>
   {% for run in runs %}
   <tr>
     <td><a href="/runs/{{ run.id }}">{{ run.id }}</a></td>
     <td>{{ run.name }}</td>
     <td class="mono">{{ run.repo }}<br><small>{{ run.command }}</small></td>
     <td><span class="status {{ run.status }}">{{ run.status }}</span></td>
-    <td>{{ run.created_at }}</td>
-    <td>{{ run.started_at }}</td>
-    <td>{{ run.finished_at }}</td>
+    <td class="nowrap">{{ run.times }}{% if run.duration %} ({{ run.duration }}){% endif %}{% if run.waited_since %}<br><small>created at {{ run.waited_since }}</small>{% endif %}</td>
   </tr>
   {% else %}
-  <tr><td colspan="7" class="muted">No runs yet. Queue one from a schedule's "Run now".</td></tr>
+  <tr><td colspan="5" class="muted">No runs yet. Queue one from a schedule's "Run now".</td></tr>
   {% endfor %}
 </table>
 {% endblock content %}

@@ -58,12 +58,12 @@ async fn a_new_install_says_how_to_set_it_up() {
 async fn the_runs_page_lists_the_queue_and_the_history() {
     signed_in(|request, ctx| async move {
         let db = &ctx.db;
-        // A column goes by its name.
+        // A column goes by its name, and one column has a run's three times.
         let page = request.get("/runs").await.text();
         assert!(
             page.contains(
                 "<th>ID</th><th>Name</th><th>Repo and command</th><th>Status</th>\
-                 <th>Created at</th><th>Started at</th><th>Finished at</th></tr>"
+                 <th>Created, started and finished at</th></tr>"
             ),
             "{page}"
         );
@@ -77,6 +77,11 @@ async fn the_runs_page_lists_the_queue_and_the_history() {
         );
         assert!(page.contains("<td>triage</td>"), "{page}");
         assert!(page.contains("/home/m8r/git/rxg"), "{page}");
+        // It waits, so all that's known is when it was created.
+        assert!(
+            page.contains(r#"<td class="nowrap">created at 20"#),
+            "{page}"
+        );
         assert!(
             page.contains("<small>claude -p --model &lt;opus&gt;</small>"),
             "{page}"
@@ -84,6 +89,11 @@ async fn the_runs_page_lists_the_queue_and_the_history() {
 
         // While a run is in progress, its page says how to read what it prints.
         let run = start(db, run, "The <prompt>.").await;
+        let page = request.get("/runs").await.text();
+        assert!(
+            page.contains(r#"<td class="nowrap">started at 20"#),
+            "{page}"
+        );
         let page = request.get("/runs/1").await.text();
         assert!(page.contains("<code>m8r task output id:1</code>"), "{page}");
 
@@ -103,6 +113,14 @@ async fn the_runs_page_lists_the_queue_and_the_history() {
             "{page}"
         );
         assert!(page.contains(r#"<a href="/runs/1">1</a>"#), "{page}");
+        // And when it ran, and for how long. It started at once, so the list leaves out when
+        // it was created.
+        let times = page.split_once(r#"<td class="nowrap">20"#).unwrap().1;
+        let times = times.split_once("</td>").unwrap().0;
+        assert!(
+            times.contains(" – ") && times.ends_with(" (0 s)"),
+            "{times}"
+        );
 
         // A run's page shows its command, what it printed and the prompt it got.
         let res = request.get("/runs/1").await;
@@ -116,6 +134,8 @@ async fn the_runs_page_lists_the_queue_and_the_history() {
         assert!(page.contains("The &lt;prompt&gt;."), "{page}");
         assert!(page.contains("the command exited with status 3"), "{page}");
         assert!(!page.contains("m8r task output"), "{page}");
+        assert!(page.contains(" · finished at 20"), "{page}");
+        assert!(page.contains(" (0 s)</span></p>"), "{page}");
 
         // What it printed shows as markdown, and a tab away as it was printed. A link in it is
         // a link, and the HTML in it is text in both.

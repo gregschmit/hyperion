@@ -159,7 +159,7 @@ async fn watchlist_items_are_listed_added_changed_and_removed() {
             .authorization_bearer(&token)
             .await;
         assert_eq!(answer(&res), (200, changed.clone()));
-        // One category's items, one repo's, or both.
+        // One category's items, one repo's, or both. The issues come before the PRs/MRs.
         let res = request
             .get(items)
             .add_query_param("category", ISSUES)
@@ -171,7 +171,7 @@ async fn watchlist_items_are_listed_added_changed_and_removed() {
             .add_query_param("repo_id", repo.id)
             .authorization_bearer(&token)
             .await;
-        assert_eq!(answer(&res), (200, json!([changed, issue])));
+        assert_eq!(answer(&res), (200, json!([issue, changed])));
         let res = request
             .get(items)
             .add_query_param("repo_id", other.id)

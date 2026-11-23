@@ -1,9 +1,11 @@
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, HashSet},
+};
 
 pub use super::_entities::watchlist_items::{ActiveModel, Column, Entity, Model};
 use chrono::{DateTime, Utc};
 use loco_rs::prelude::*;
-use sea_orm::sea_query::{CaseStatement, Expr};
 use serde::{Deserialize, Serialize};
 
 use super::{errors, repos, Checked};
@@ -15,8 +17,9 @@ pub type WatchlistItems = Entity;
 /// again at every tick.
 const CHECK_EVERY: chrono::Duration = chrono::Duration::minutes(10);
 
-/// How much you care about an item: you do, it matters more, or it can't wait.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How much you care about an item: you do, it matters more, or it can't wait. In that order:
+/// a later one is more pressing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Priority {
     /// What an item gets when nobody says.
     Medium,
@@ -46,20 +49,11 @@ impl Priority {
             .into_iter()
             .find(|priority| priority.as_str() == name)
     }
-
-    /// How pressing an item is, as a number for a query to sort by: more is more. The column
-    /// holds the name, and the names don't sort that way.
-    fn rank() -> Expr {
-        let mut rank = CaseStatement::new();
-        for (at, priority) in (0_i32..).zip(Self::ALL) {
-            rank = rank.case(Column::Priority.eq(priority.as_str()), at);
-        }
-        rank.into()
-    }
 }
 
-/// What an item is: an issue, or a PR/MR. Its URL says which.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What an item is: an issue, or a PR/MR. Its URL says which. In a list, the issues come
+/// first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Category {
     Issues,
     Requests,
@@ -110,6 +104,8 @@ pub struct Forge {
     pub endpoint: String,
     /// A short name for it, such as `rgnets/rxg!4521`.
     pub label: String,
+    /// Its number in its project: 4521.
+    pub number: u64,
     /// Its project's own URL, such as `https://git.example.com/group/project`, which says
     /// which repo the item is in (see `repos::project_url`).
     pub project: String,
@@ -149,8 +145,9 @@ impl Forge {
             return None;
         }
         let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
-        fn number(text: &str) -> Option<&str> {
-            (!text.is_empty() && text.chars().all(|c| c.is_ascii_digit())).then_some(text)
+        fn number(text: &str) -> Option<u64> {
+            let digits = !text.is_empty() && text.chars().all(|c| c.is_ascii_digit());
+            text.parse().ok().filter(|_| digits)
         }
 
         if host == "github.com" {
@@ -170,6 +167,7 @@ impl Forge {
                 tool: "gh",
                 endpoint: format!("repos/{owner}/{repo}/issues/{number}"),
                 label: format!("{owner}/{repo}#{number}"),
+                number,
                 project: format!("https://{host}/{owner}/{repo}"),
                 category,
                 host,
@@ -195,6 +193,7 @@ impl Forge {
             tool: "glab",
             endpoint: format!("projects/{}/{kind}/{number}", project.join("%2F")),
             label: format!("{}{mark}{number}", project.join("/")),
+            number,
             project: format!("https://{host}/{}", project.join("/")),
             category,
             host,
@@ -343,8 +342,9 @@ impl ActiveModelBehavior for ActiveModel {
 }
 
 impl Model {
-    /// The watchlist, or the part of it that `filter` names. Repo by repo, and in each, the
-    /// requested items first, then the most pressing ones.
+    /// The watchlist, or the part of it that `filter` names, as a reader wants it: the most
+    /// pressing items first, and of those the requested ones. Then repo by repo, and in each,
+    /// the issues before the PRs/MRs, by their numbers.
     ///
     /// # Errors
     /// When the query fails.
@@ -356,18 +356,27 @@ impl Model {
         if let Some(category) = filter.category {
             items = items.filter(Column::Category.eq(category.as_str()));
         }
-        let items = items
-            .order_by_asc(repos::Column::Path)
-            .order_by_desc(Column::Requested)
-            .order_by_desc(Priority::rank())
-            .order_by_asc(Column::Id)
-            .all(db)
-            .await?;
         // Every item has a repo: the database sees to it.
-        Ok(items
+        let mut listed: Vec<Listed> = items
+            .all(db)
+            .await?
             .into_iter()
             .filter_map(|(item, repo)| Some((item, repo?)))
-            .collect())
+            .collect();
+        // Not the query's work: only the URL has the number, and the names of the priorities
+        // don't sort by how pressing they are.
+        listed.sort_by_cached_key(|(item, repo)| {
+            let forge = Forge::parse(&item.url);
+            (
+                Reverse(Priority::parse(&item.priority)),
+                Reverse(item.requested),
+                repo.path.clone(),
+                forge.as_ref().map(|forge| forge.category),
+                forge.map(|forge| forge.number),
+                item.id,
+            )
+        });
+        Ok(listed)
     }
 
     /// The items that a run in repo `repo_id` gets: the repo's, of `category` or of both. The
@@ -386,14 +395,18 @@ impl Model {
         if let Some(category) = category {
             items = items.filter(Column::Category.eq(category.as_str()));
         }
-        let items = items
-            .order_by_desc(Column::Requested)
-            .order_by_desc(Priority::rank())
-            .order_by_asc(Column::Id);
-        Ok(match max_items {
-            0 => items.all(db).await?,
-            max_items => items.limit(max_items).all(db).await?,
-        })
+        let mut items = items.all(db).await?;
+        items.sort_by_key(|item| {
+            (
+                Reverse(item.requested),
+                Reverse(Priority::parse(&item.priority)),
+                item.id,
+            )
+        });
+        if max_items > 0 {
+            items.truncate(usize::try_from(max_items).unwrap_or(usize::MAX));
+        }
+        Ok(items)
     }
 
     /// # Errors
@@ -602,7 +615,9 @@ impl Model {
 impl ActiveModel {
     fn set(&mut self, params: &Params) {
         self.priority = Set(params.priority().to_string());
-        self.note = Set(params.note.trim().to_string());
+        // One line: a prompt has a line for each item, and the page's text box takes more.
+        let note: Vec<&str> = params.note.split_whitespace().collect();
+        self.note = Set(note.join(" "));
         self.requested = Set(params.requested);
     }
 

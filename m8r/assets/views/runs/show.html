@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Run {{ run.id }}: {{ run.name }} in <span class="mono">{{ run.repo }}</span></h1>
 <p><span class="status {{ run.status }}">{{ run.status }}</span>
-  <span class="muted">· created at {{ run.created_at }}{% if run.started_at %} · started at {{ run.started_at }}{% endif %}{% if run.finished_at %} · finished at {{ run.finished_at }}{% endif %}</span></p>
+  <span class="muted">· created at {{ run.created_at }}{% if run.started_at %} · started at {{ run.started_at }}{% endif %}{% if run.finished_at %} · finished at {{ run.finished_at }}{% if run.duration %} ({{ run.duration }}){% endif %}{% endif %}</span></p>
 
 {% if not shared %}
 <details class="share">

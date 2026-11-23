@@ -5,7 +5,7 @@ pub mod markdown;
 
 use std::{sync::LazyLock, time::Duration};
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, FixedOffset, Local};
 use loco_rs::prelude::*;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -17,6 +17,10 @@ use crate::{
 
 /// The scheduler ticks every minute. After this long with no tick, it isn't running.
 const TICK_LATE: Duration = Duration::from_secs(150);
+
+/// A tick starts a run within a minute. One that waited this long waited for another
+/// schedule's runs to end, so the list says when it was created too.
+const LONG_WAIT: chrono::Duration = chrono::Duration::minutes(2);
 
 /// The stylesheet, for a page that carries its own styles.
 const STYLES: &str = include_str!("../../assets/static/m8r.css");
@@ -38,6 +42,67 @@ pub fn time(at: &DateTimeWithTimeZone) -> String {
 
 fn time_or_blank(at: Option<&DateTimeWithTimeZone>) -> String {
     at.map(time).unwrap_or_default()
+}
+
+/// How long something took, in words: "45 s", "14 min", "1 h 5 min".
+#[must_use]
+pub fn duration(took: chrono::Duration) -> String {
+    let seconds = took.num_seconds().max(0);
+    match (seconds / 3600, seconds % 3600 / 60) {
+        (0, 0) => format!("{seconds} s"),
+        (0, minutes) => format!("{minutes} min"),
+        (hours, 0) => format!("{hours} h"),
+        (hours, minutes) => format!("{hours} h {minutes} min"),
+    }
+}
+
+/// A run's three times, as one cell of the list has room for them.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RunTimes {
+    /// When it ran: "2026-11-23 09:00 – 09:14". The day shows once, unless the run ended on
+    /// another day. Until it has run, the last thing that's known of it: "started at …",
+    /// "created at …".
+    pub times: String,
+    /// How long its command ran: "14 min". Blank until it ends.
+    pub duration: String,
+    /// When it was created, if it then waited long (see `LONG_WAIT`). Blank if not.
+    pub waited_since: String,
+}
+
+/// A run's times for the list, as the clocks of `created`, `started` and `finished` read.
+#[must_use]
+pub fn run_times(
+    created: DateTime<FixedOffset>,
+    started: Option<DateTime<FixedOffset>>,
+    finished: Option<DateTime<FixedOffset>>,
+) -> RunTimes {
+    let whole = |at: DateTime<FixedOffset>| at.format("%Y-%m-%d %H:%M").to_string();
+    // `at`, with its day only if that isn't the day of `shown`, which the reader has.
+    let after = |shown: DateTime<FixedOffset>, at: DateTime<FixedOffset>| {
+        if at.date_naive() == shown.date_naive() {
+            return at.format("%H:%M").to_string();
+        }
+        whole(at)
+    };
+    let (times, took) = match (started, finished) {
+        (Some(started), Some(finished)) => (
+            format!("{} – {}", whole(started), after(started, finished)),
+            Some(finished - started),
+        ),
+        (Some(started), None) => (format!("started at {}", whole(started)), None),
+        // It failed before it could start.
+        (None, Some(finished)) => (format!("finished at {}", whole(finished)), None),
+        (None, None) => (format!("created at {}", whole(created)), None),
+    };
+    let waited_since = started
+        .or(finished)
+        .filter(|first| *first - created >= LONG_WAIT)
+        .map(|first| after(first, created));
+    RunTimes {
+        times,
+        duration: took.map(duration).unwrap_or_default(),
+        waited_since: waited_since.unwrap_or_default(),
+    }
 }
 
 /// What m8r sees whenever someone looks at a page: whether the scheduler ticks, and whether
@@ -131,6 +196,13 @@ pub fn error(error: &errors::Model) -> Value {
 
 #[must_use]
 pub fn run(run: &runs::Model) -> Value {
+    // On the server's clock, like every time on the pages.
+    let local = |at: &DateTimeWithTimeZone| at.with_timezone(&Local).fixed_offset();
+    let at = run_times(
+        local(&run.created_at),
+        run.started_at.as_ref().map(local),
+        run.finished_at.as_ref().map(local),
+    );
     json!({
         "id": run.id,
         "name": run.name,
@@ -140,6 +212,10 @@ pub fn run(run: &runs::Model) -> Value {
         "created_at": time(&run.created_at),
         "started_at": time_or_blank(run.started_at.as_ref()),
         "finished_at": time_or_blank(run.finished_at.as_ref()),
+        // The three of them for the list, which has one cell for them.
+        "times": at.times,
+        "duration": at.duration,
+        "waited_since": at.waited_since,
         "prompt": run.prompt,
         "output": run.output,
         "error": run.error,
@@ -158,14 +234,14 @@ pub fn repo(repo: &repos::Model, (items, schedules): (u64, u64)) -> Value {
     })
 }
 
+/// A watchlist item. Its URL names its repo's project, so the page shows no repo beside it.
 #[must_use]
-pub fn watchlist_item((item, repo): &watchlist_items::Listed) -> Value {
+pub fn watchlist_item((item, _): &watchlist_items::Listed) -> Value {
     json!({
         "id": item.id,
         "url": item.url,
         "label": item.label(),
         "title": item.title,
-        "repo": repo.path,
         "category": item.category,
         "priority": item.priority,
         "note": item.note,

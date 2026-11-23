@@ -38,10 +38,10 @@
 </nav>
 
 <table>
-  <tr><th>Repo</th><th>Priority</th><th>URL</th><th>Title</th><th>Requested</th><th>Note</th><th></th></tr>
+  <tr><th>URL</th><th>Priority</th><th>Title</th><th>Requested</th><th class="rest">Note</th><th></th></tr>
   {% for item in items %}
   <tr>
-    <td class="mono">{{ item.repo }}</td>
+    <td class="nowrap"><a href="{{ item.url }}">{{ item.label }}</a><br><small>{{ item.category }}</small></td>
     <td>
       <select name="priority" form="item-{{ item.id }}" aria-label="Priority">
         {% for priority in priorities %}
@@ -49,17 +49,16 @@
         {% endfor %}
       </select>
     </td>
-    <td class="nowrap"><a href="{{ item.url }}">{{ item.label }}</a><br><small>{{ item.category }}</small></td>
-    <td>{% if item.title %}{{ item.title }}{% else %}<span class="muted">not checked yet</span>{% endif %}</td>
+    <td class="nowrap">{% if item.title %}<span title="{{ item.title }}">{{ item.title | truncate(length=24) }}</span>{% else %}<span class="muted">not checked yet</span>{% endif %}</td>
     <td><label class="check"><input type="checkbox" name="requested" value="true" form="item-{{ item.id }}"{% if item.requested %} checked{% endif %}> requested</label></td>
-    <td><input type="text" name="note" value="{{ item.note }}" form="item-{{ item.id }}" aria-label="Note"></td>
+    <td><textarea name="note" rows="2" form="item-{{ item.id }}" aria-label="Note">{{ item.note }}</textarea></td>
     <td class="actions">
       <form id="item-{{ item.id }}" method="post" action="/watchlist/{{ item.id }}"><button>Save</button></form>
       <form method="post" action="/watchlist/{{ item.id }}/remove"><button class="danger">Remove</button></form>
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="7" class="muted">Nothing here.</td></tr>
+  <tr><td colspan="6" class="muted">Nothing here.</td></tr>
   {% endfor %}
 </table>
 {% endblock content %}

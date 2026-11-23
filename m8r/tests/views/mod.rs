@@ -1,6 +1,7 @@
 //! What the pages show.
 
-use m8r::views::markdown::render;
+use chrono::{DateTime, FixedOffset};
+use m8r::views::{duration, markdown::render, run_times, RunTimes};
 
 #[test]
 fn what_a_run_printed_shows_as_markdown() {
@@ -185,5 +186,113 @@ fn a_picture_is_a_link_so_the_page_loads_nothing_from_elsewhere() {
         "<p><a href=\"https://evil.example/x.png?leak=1\">chart</a> \
          <a href=\"https://e.example/x.png\">https://e.example/x.png</a> \
          x <a href=\"https://ci.example/run\">Build</a></p>\n"
+    );
+}
+
+/// A moment on a clock that's six hours behind UTC, as a run's row has it.
+fn at(time: &str) -> DateTime<FixedOffset> {
+    DateTime::parse_from_rfc3339(&format!("{time}-06:00")).unwrap()
+}
+
+/// What the list shows of a run's times: when it ran, for how long, and when it was created
+/// if it waited long.
+fn shown(created: &str, started: Option<&str>, finished: Option<&str>) -> (String, String, String) {
+    let RunTimes {
+        times,
+        duration,
+        waited_since,
+    } = run_times(at(created), started.map(at), finished.map(at));
+    (times, duration, waited_since)
+}
+
+fn all(times: &str, duration: &str, waited_since: &str) -> (String, String, String) {
+    (
+        times.to_string(),
+        duration.to_string(),
+        waited_since.to_string(),
+    )
+}
+
+#[test]
+fn a_duration_is_in_the_units_that_say_it() {
+    for (seconds, words) in [
+        (0, "0 s"),
+        (59, "59 s"),
+        (60, "1 min"),
+        (899, "14 min"),
+        (3600, "1 h"),
+        (3900, "1 h 5 min"),
+        (7199, "1 h 59 min"),
+        // Two clocks that disagree can't make a run end before it starts.
+        (-5, "0 s"),
+    ] {
+        assert_eq!(duration(chrono::Duration::seconds(seconds)), words);
+    }
+}
+
+#[test]
+fn a_runs_times_are_one_line_with_the_day_once() {
+    // It waits: all that's known is when it was created.
+    assert_eq!(
+        shown("2026-11-23T09:00:10", None, None),
+        all("created at 2026-11-23 09:00", "", "")
+    );
+    // It runs. A tick started it within a minute, so when it was created says nothing more.
+    assert_eq!(
+        shown("2026-11-23T09:00:10", Some("2026-11-23T09:01:00"), None),
+        all("started at 2026-11-23 09:01", "", "")
+    );
+    // It's over: when it ran, with the day once, and how long that took.
+    assert_eq!(
+        shown(
+            "2026-11-23T09:00:10",
+            Some("2026-11-23T09:01:00"),
+            Some("2026-11-23T09:15:30")
+        ),
+        all("2026-11-23 09:01 – 09:15", "14 min", "")
+    );
+    // It ended on another day, so that day shows too.
+    assert_eq!(
+        shown(
+            "2026-11-23T23:50:00",
+            Some("2026-11-23T23:50:05"),
+            Some("2026-11-24T00:55:05")
+        ),
+        all("2026-11-23 23:50 – 2026-11-24 00:55", "1 h 5 min", "")
+    );
+}
+
+#[test]
+fn a_run_that_waited_long_says_when_it_was_created() {
+    // Two minutes is long: another schedule's runs were in the way.
+    assert_eq!(
+        shown(
+            "2026-11-23T08:40:00",
+            Some("2026-11-23T09:01:00"),
+            Some("2026-11-23T09:15:00")
+        ),
+        all("2026-11-23 09:01 – 09:15", "14 min", "08:40")
+    );
+    assert_eq!(
+        shown("2026-11-23T08:58:59", Some("2026-11-23T09:01:00"), None),
+        all("started at 2026-11-23 09:01", "", "08:58")
+    );
+    assert_eq!(
+        shown("2026-11-23T08:59:01", Some("2026-11-23T09:01:00"), None).2,
+        ""
+    );
+    // Its day shows only if that isn't the day that the run started on.
+    assert_eq!(
+        shown("2026-11-22T23:58:00", Some("2026-11-23T00:30:00"), None).2,
+        "2026-11-22 23:58"
+    );
+    // A run that fails before it starts has no time that it ran for.
+    assert_eq!(
+        shown("2026-11-23T09:00:00", None, Some("2026-11-23T09:00:20")),
+        all("finished at 2026-11-23 09:00", "", "")
+    );
+    assert_eq!(
+        shown("2026-11-23T08:00:00", None, Some("2026-11-23T09:00:20")),
+        all("finished at 2026-11-23 09:00", "", "08:00")
     );
 }

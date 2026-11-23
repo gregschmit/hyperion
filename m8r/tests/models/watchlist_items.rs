@@ -74,6 +74,7 @@ fn reads_github_urls() {
     assert_eq!(issue.host, "github.com");
     assert_eq!(issue.endpoint, "repos/gregschmit/hyperion/issues/12");
     assert_eq!(issue.label, "gregschmit/hyperion#12");
+    assert_eq!(issue.number, 12);
     // The URL says which repo the item is in, and what it is.
     assert_eq!(issue.project, "https://github.com/gregschmit/hyperion");
     assert_eq!(issue.category, Category::Issues);
@@ -220,12 +221,13 @@ async fn refuses_an_item_that_it_cannot_keep() {
 
 #[tokio::test]
 #[serial]
-async fn the_list_goes_by_repo_and_the_requested_items_come_first() {
+async fn the_list_has_the_most_pressing_items_first() {
     let boot = boot_test::<App>().await.unwrap();
     let db = &boot.app_context.db;
     let one = support::repo(db, "/clones/a", "https://github.com/o/r").await;
     let two = support::repo(db, "/clones/b", "https://git.example.com/g/p").await;
     watch(db, "https://git.example.com/g/p/-/issues/9").await;
+    watch(db, "https://github.com/o/r/issues/10").await;
     watch(db, "https://github.com/o/r/pull/1").await;
     watch(db, "https://github.com/o/r/issues/2").await;
     let high = params("https://github.com/o/r/issues/3", "high");
@@ -242,15 +244,16 @@ async fn the_list_goes_by_repo_and_the_requested_items_come_first() {
         listed.iter().map(|(item, _)| item.label()).collect()
     };
 
-    // Repo by repo. In a repo: what someone asked for, then what's urgent, then what's high,
-    // then the rest.
+    // What's urgent, then what's high, then the rest. Of the rest, first what someone asked
+    // for. Then repo by repo, and in each, the issues before the PRs/MRs, by their numbers:
+    // 2 is before 10, whichever was added first.
     let all = watchlist_items::Model::list(db, Filter::default()).await;
     let all = all.unwrap();
     assert_eq!(all[0].1.id, one.id);
-    assert_eq!(all[5].1.id, two.id);
+    assert_eq!(all[6].1.id, two.id);
     assert_eq!(
         labels(all),
-        ["o/r#4", "o/r#5", "o/r#3", "o/r#1", "o/r#2", "g/p#9"]
+        ["o/r#5", "o/r#3", "o/r#4", "o/r#2", "o/r#10", "o/r#1", "g/p#9"]
     );
 
     // A list can be a category's, a repo's, or both.

@@ -81,6 +81,11 @@ nav.tabs form { margin-left: auto; }
 form.row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.75rem 0; }
 form.row input[type="text"], form.row input[type="url"] { flex: 1 1 14rem; min-width: 0; }
 td input[type="text"], input.wide { width: 100%; }
+/* A text box in a table holds words, not code: it reads as the page does, and it's wide
+   enough to read, whatever its column gets. */
+td textarea { display: block; min-width: 14rem; font: inherit; resize: vertical; }
+/* The column that gets the room that the others leave. */
+th.rest { width: 100%; }
 
 .status { font-weight: 600; }
 .status.done { color: var(--good); }

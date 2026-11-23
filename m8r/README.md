@@ -192,7 +192,10 @@ a prompt that doesn't compile, and shows Tera's error.
 ### The watchlist
 
 The watchlist is the issues and PRs/MRs that you follow, each by its URL. The page shows all
-of it, or a category's or a repo's part.
+of it, or a category's or a repo's part. The most pressing items are at the top: urgent, high,
+then medium. In each of those, the requested items come first. Then the list goes repo by
+repo, with a repo's issues before its PRs/MRs, by their numbers. The API and the MCP tools
+list the items in the same order.
 
 - **The URL says where and what.** An item is in the repo whose project its URL names, and
   it's an issue or a pull/merge request. You say neither. m8r takes an item only for a repo
@@ -202,6 +205,8 @@ of it, or a category's or a repo's part.
 - **Requested.** Check it when someone asks you for an item: for a PR/MR, a review. A run gets
   the requested items first, so a schedule that takes only some items takes those. The agent
   that does what was asked unchecks it.
+- **The note** says why you follow the item. It's one line, as a prompt has a line for each
+  item: m8r makes one line of a note that has more.
 - **m8r asks the forge** for each item's title and state every ten minutes: `gh` answers for
   github.com, and `glab` for any other host. An item whose issue or PR/MR closed or merged
   leaves the list by itself.
@@ -244,6 +249,10 @@ A run:
   does. The commands in `m8r_prompt` use both.
 - **What a run prints is its report.** m8r keeps that, and no files. `m8r_prompt` tells the
   agent to put the link to what it made online, such as a comment or a PR/MR, in its answer.
+- **The list says when, and for how long:** `2026-11-23 06:00 – 06:14 (14 min)`, with the day
+  once unless the run ended on another day. It says when a run was created only if the run
+  then waited two minutes or more: a tick starts a run within a minute, so that one waited
+  for another schedule's runs.
 - **The history keeps what ran:** a run's page shows its schedule's name, its command, the
   prompt it got, and what the command printed. That shows as markdown of GitHub's kind
   (tables, task lists, footnotes, notes such as `> [!WARNING]`, and a bare web address as a
