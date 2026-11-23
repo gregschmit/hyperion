@@ -3,6 +3,9 @@
 use chrono::{DateTime, FixedOffset};
 use m8r::views::{duration, markdown::render, run_times, RunTimes};
 
+/// What a link to a web address has after the address: it opens in a new window.
+const NEW: &str = " target=\"_blank\" rel=\"noopener noreferrer\"";
+
 #[test]
 fn what_a_run_printed_shows_as_markdown() {
     let page = render(
@@ -39,15 +42,17 @@ fn a_table_is_in_a_box_that_scrolls_and_its_words_are_each_in_a_box_that_stays_w
         ),
         // A word is what's between two spaces: in a link, in code, and when it came in parts,
         // as one with HTML in it does. Outside a table, a line breaks where the browser likes.
-        "<div class=\"scroll\"><table><thead><tr>\
-         <th><span class=\"word\">MR</span></th><th><span class=\"word\">Why</span></th>\
-         </tr></thead><tbody>\n<tr>\
-         <td><a href=\"https://e.example/12\"><span class=\"word\">!12</span></a></td>\
-         <td><span class=\"word\">DOM-only</span> \
-         <code><span class=\"word\">pull</span> <span class=\"word\">--ff-only</span></code> \
-         <span class=\"word\">a&lt;b&gt;c</span></td>\
-         </tr>\n</tbody></table>\n</div>\n\
-         <p>text-safe</p>\n"
+        format!(
+            "<div class=\"scroll\"><table><thead><tr>\
+             <th><span class=\"word\">MR</span></th><th><span class=\"word\">Why</span></th>\
+             </tr></thead><tbody>\n<tr>\
+             <td><a href=\"https://e.example/12\"{NEW}><span class=\"word\">!12</span></a></td>\
+             <td><span class=\"word\">DOM-only</span> \
+             <code><span class=\"word\">pull</span> <span class=\"word\">--ff-only</span></code> \
+             <span class=\"word\">a&lt;b&gt;c</span></td>\
+             </tr>\n</tbody></table>\n</div>\n\
+             <p>text-safe</p>\n"
+        )
     );
 }
 
@@ -60,11 +65,13 @@ fn a_bare_web_address_is_a_link_to_itself() {
             "See https://example.com/a_b?c=1&d=2. (Or http://e.example/x_(y)), and \
              [https://e.example/z]; not xhttp://no.example, https:// or https://<host>/."
         ),
-        "<p>See <a href=\"https://example.com/a_b?c=1&amp;d=2\">\
-         https://example.com/a_b?c=1&amp;d=2</a>. \
-         (Or <a href=\"http://e.example/x_(y)\">http://e.example/x_(y)</a>), and \
-         [<a href=\"https://e.example/z\">https://e.example/z</a>]; \
-         not xhttp://no.example, https:// or https://&lt;host&gt;/.</p>\n"
+        format!(
+            "<p>See <a href=\"https://example.com/a_b?c=1&amp;d=2\"{NEW}>\
+             https://example.com/a_b?c=1&amp;d=2</a>. \
+             (Or <a href=\"http://e.example/x_(y)\"{NEW}>http://e.example/x_(y)</a>), and \
+             [<a href=\"https://e.example/z\"{NEW}>https://e.example/z</a>]; \
+             not xhttp://no.example, https:// or https://&lt;host&gt;/.</p>\n"
+        )
     );
     // Not where it's a link's text, and not in code.
     assert_eq!(
@@ -72,22 +79,26 @@ fn a_bare_web_address_is_a_link_to_itself() {
             "[https://a.example](https://b.example) <https://c.example> `https://d.example`\n\n\
              ```\nhttps://e.example\n```\n"
         ),
-        "<p><a href=\"https://b.example\">https://a.example</a> \
-         <a href=\"https://c.example\">https://c.example</a> \
-         <code>https://d.example</code></p>\n\
-         <pre><code>https://e.example\n</code></pre>\n"
+        format!(
+            "<p><a href=\"https://b.example\"{NEW}>https://a.example</a> \
+             <a href=\"https://c.example\"{NEW}>https://c.example</a> \
+             <code>https://d.example</code></p>\n\
+             <pre><code>https://e.example\n</code></pre>\n"
+        )
     );
     // In HTML, which shows as text, and in a table's cell, where it's a word.
     assert_eq!(
         render("<a href=\"https://f.example/?q=1\">f</a>"),
-        "<p>&lt;a href=\"<a href=\"https://f.example/?q=1\">https://f.example/?q=1</a>\"&gt;\
-         f&lt;/a&gt;</p>\n"
+        format!(
+            "<p>&lt;a href=\"<a href=\"https://f.example/?q=1\"{NEW}>https://f.example/?q=1</a>\
+             \"&gt;f&lt;/a&gt;</p>\n"
+        )
     );
     assert!(
-        render("| a |\n|---|\n| at https://g.example/a-b |").contains(
-            "<td><span class=\"word\">at</span> <a href=\"https://g.example/a-b\">\
+        render("| a |\n|---|\n| at https://g.example/a-b |").contains(&format!(
+            "<td><span class=\"word\">at</span> <a href=\"https://g.example/a-b\"{NEW}>\
              <span class=\"word\">https://g.example/a-b</span></a></td>"
-        ),
+        )),
         "{}",
         render("| a |\n|---|\n| at https://g.example/a-b |")
     );
@@ -111,17 +122,22 @@ fn a_footnote_has_a_number_and_a_name_that_nothing_else_on_the_page_has() {
             "A claim.[^1] One more.[^output-raw] None: [^none].\n\n\
              [^1]: See https://example.com/source.\n\n[^output-raw]: Because."
         ),
-        "<p>A claim.<sup class=\"footnote-reference\"><a href=\"#footnote-1\">1</a></sup> \
-         One more.<sup class=\"footnote-reference\"><a href=\"#footnote-output-raw\">2</a></sup> \
-         None: [^none].</p>\n\
-         <div class=\"footnote-definition\" id=\"footnote-1\">\
-         <sup class=\"footnote-definition-label\">1</sup>\n\
-         <p>See <a href=\"https://example.com/source\">https://example.com/source</a>.</p>\n\
-         </div>\n\
-         <div class=\"footnote-definition\" id=\"footnote-output-raw\">\
-         <sup class=\"footnote-definition-label\">2</sup>\n\
-         <p>Because.</p>\n\
-         </div>\n"
+        // The link to a footnote stays in this window: it goes to a place on this page.
+        format!(
+            "<p>A claim.<sup class=\"footnote-reference\"><a href=\"#footnote-1\">1</a></sup> \
+             One more.<sup class=\"footnote-reference\">\
+             <a href=\"#footnote-output-raw\">2</a></sup> \
+             None: [^none].</p>\n\
+             <div class=\"footnote-definition\" id=\"footnote-1\">\
+             <sup class=\"footnote-definition-label\">1</sup>\n\
+             <p>See <a href=\"https://example.com/source\"{NEW}>https://example.com/source</a>.\
+             </p>\n\
+             </div>\n\
+             <div class=\"footnote-definition\" id=\"footnote-output-raw\">\
+             <sup class=\"footnote-definition-label\">2</sup>\n\
+             <p>Because.</p>\n\
+             </div>\n"
+        )
     );
 }
 
@@ -146,16 +162,19 @@ fn html_in_what_a_run_printed_is_text() {
 }
 
 #[test]
-fn a_link_goes_to_a_web_or_a_mail_address_or_it_is_text() {
+fn a_link_goes_to_a_web_address_in_a_new_window_or_to_a_mail_address_or_it_is_text() {
     assert_eq!(
         render(
             "[ok](https://example.com/a?b=1&c=2 \"T\") <https://example.com> <me@example.com> \
              [mail](mailto:a@b.c)"
         ),
-        "<p><a href=\"https://example.com/a?b=1&amp;c=2\" title=\"T\">ok</a> \
-         <a href=\"https://example.com\">https://example.com</a> \
-         <a href=\"mailto:me@example.com\">me@example.com</a> \
-         <a href=\"mailto:a@b.c\">mail</a></p>\n"
+        // A web address opens in a new window. A mail address opens no page.
+        format!(
+            "<p><a href=\"https://example.com/a?b=1&amp;c=2\" title=\"T\"{NEW}>ok</a> \
+             <a href=\"https://example.com\"{NEW}>https://example.com</a> \
+             <a href=\"mailto:me@example.com\">me@example.com</a> \
+             <a href=\"mailto:a@b.c\">mail</a></p>\n"
+        )
     );
     // Nothing that a browser would run, and no path on m8r itself: only the words stay.
     assert_eq!(
@@ -168,7 +187,11 @@ fn a_link_goes_to_a_web_or_a_mail_address_or_it_is_text() {
     // A quote in an address can't end the attribute that holds it.
     assert_eq!(
         render("[x](https://e.example/\"onmouseover=\"alert(1))"),
-        "<p><a href=\"https://e.example/%22onmouseover=%22alert(1)\">x</a></p>\n"
+        format!("<p><a href=\"https://e.example/%22onmouseover=%22alert(1)\"{NEW}>x</a></p>\n")
+    );
+    assert_eq!(
+        render("[x](HTTPS://e.example \"a\\\"b>\")"),
+        format!("<p><a href=\"HTTPS://e.example\" title=\"a&quot;b&gt;\"{NEW}>x</a></p>\n")
     );
 }
 
@@ -183,9 +206,11 @@ fn a_picture_is_a_link_so_the_page_loads_nothing_from_elsewhere() {
         page,
         // Its description is the link's text, or where it goes if it has none. One that goes
         // nowhere safe is its description alone, and one inside a link is that link's text.
-        "<p><a href=\"https://evil.example/x.png?leak=1\">chart</a> \
-         <a href=\"https://e.example/x.png\">https://e.example/x.png</a> \
-         x <a href=\"https://ci.example/run\">Build</a></p>\n"
+        format!(
+            "<p><a href=\"https://evil.example/x.png?leak=1\"{NEW}>chart</a> \
+             <a href=\"https://e.example/x.png\"{NEW}>https://e.example/x.png</a> \
+             x <a href=\"https://ci.example/run\"{NEW}>Build</a></p>\n"
+        )
     );
 }
 

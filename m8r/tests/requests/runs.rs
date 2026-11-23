@@ -155,7 +155,8 @@ async fn the_runs_page_lists_the_queue_and_the_history() {
         assert!(
             page.contains(&format!(
                 "<div class=\"markdown\"><h1>Done</h1>\n\
-                 <p>See <a href=\"{COMMENT}\">my comment</a>.</p>\n\
+                 <p>See <a href=\"{COMMENT}\" target=\"_blank\" rel=\"noopener noreferrer\">\
+                 my comment</a>.</p>\n\
                  <pre><code>&lt;script&gt;alert(1)&lt;/script&gt;</code></pre>\n</div>"
             )),
             "{page}"
@@ -243,7 +244,8 @@ async fn a_share_link_opens_its_runs_page_and_nothing_else() {
         assert!(
             page.contains(&format!(
                 "<h1>Review</h1>\n<p>Looks <strong>good</strong>. \
-                 See <a href=\"{COMMENT}\">my comment</a>.</p>"
+                 See <a href=\"{COMMENT}\" target=\"_blank\" rel=\"noopener noreferrer\">\
+                 my comment</a>.</p>"
             )),
             "{page}"
         );

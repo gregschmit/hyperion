@@ -3,7 +3,8 @@
 //! An agent wrote the text, maybe after it read a hostile issue, and the page opens inside the
 //! viewer's session. So the HTML in the text shows as text, a link goes to a web or a mail
 //! address and nowhere else, and a picture is a link. Nothing in it runs, and the page loads
-//! nothing from another site, so nobody learns that it was read.
+//! nothing from another site, so nobody learns that it was read. A link to a web address
+//! opens in a new window, which gets nothing of this one.
 //!
 //! The markdown is GitHub's kind: tables, task lists, struck text, footnotes, notes such as
 //! `> [!WARNING]`, and a bare web address as a link.
@@ -11,6 +12,10 @@
 use pulldown_cmark::{
     html, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd, TextMergeStream,
 };
+
+/// What the start of a link to a web address ends with. `noreferrer` keeps where the reader
+/// came from, from the site that the link goes to.
+const NEW_WINDOW: &str = " target=\"_blank\" rel=\"noopener noreferrer\">";
 
 /// A link or a picture that's open, from its start to its end.
 struct Open<'a> {
@@ -100,7 +105,8 @@ pub fn render(text: &str) -> String {
     });
     let mut page = String::new();
     // An address or a word that came in parts is one text again, for `links` and `tables`.
-    html::push_html(&mut page, tables(links(TextMergeStream::new(events))));
+    let events = tables(links(TextMergeStream::new(events)));
+    html::push_html(&mut page, new_windows(events));
     page
 }
 
@@ -237,6 +243,23 @@ fn words<'a>(text: &str) -> Vec<Event<'a>> {
     events
 }
 
+/// `events`, with each link to a web address as one that opens in a new window. The run's
+/// page stays open that way, and one of a run in progress keeps up with the run. A mail
+/// address opens no page, so its link stays as it is.
+fn new_windows<'a>(events: impl Iterator<Item = Event<'a>>) -> impl Iterator<Item = Event<'a>> {
+    events.map(|event| match event {
+        Event::Start(Tag::Link { ref dest_url, .. }) if is_web(dest_url) => {
+            // pulldown-cmark writes the start, so the address is escaped as in any link.
+            let mut start = String::new();
+            html::push_html(&mut start, std::iter::once(event));
+            // Its `>`, which `NEW_WINDOW` has.
+            start.pop();
+            Event::Html(format!("{start}{NEW_WINDOW}").into())
+        }
+        other => other,
+    })
+}
+
 /// The name on the page of the footnote that the text calls `name`. With this start, it can't
 /// be the name of something else there.
 fn footnote<'a>(name: &str) -> CowStr<'a> {
@@ -255,8 +278,15 @@ fn started(kept: bool, link: Tag) -> Vec<Event> {
 /// Whether a link may go to `destination`: a web address or a mail address. Not a path on
 /// this site, and not something that a browser would run.
 fn is_safe(destination: &str) -> bool {
-    let destination = destination.trim().to_ascii_lowercase();
-    ["http://", "https://", "mailto:"]
-        .iter()
-        .any(|start| destination.starts_with(start))
+    is_web(destination) || starts(destination, "mailto:")
+}
+
+/// Whether `destination` is a web address.
+fn is_web(destination: &str) -> bool {
+    starts(destination, "http://") || starts(destination, "https://")
+}
+
+/// Whether `destination` starts with `start`, as a browser reads it.
+fn starts(destination: &str, start: &str) -> bool {
+    destination.trim().to_ascii_lowercase().starts_with(start)
 }
