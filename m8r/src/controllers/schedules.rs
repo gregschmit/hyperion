@@ -1,9 +1,11 @@
 #![allow(clippy::missing_errors_doc)]
+use axum::Extension;
 use loco_rs::prelude::*;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
+    initializers::access::Caller,
     models::{
         repos, runs,
         schedules::{self, Items, Params},
@@ -59,6 +61,7 @@ impl Sent {
 pub async fn index(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
+    Extension(caller): Extension<Caller>,
 ) -> Result<Response> {
     let rows: Vec<_> = schedules::Model::list(&ctx.db)
         .await?
@@ -66,7 +69,7 @@ pub async fn index(
         .map(views::schedule)
         .collect();
     let data = json!({ "schedules": rows });
-    views::page(&v, &ctx, "schedules/index.html", "schedules", data).await
+    views::page(&v, &ctx, &caller, "schedules/index.html", "schedules", data).await
 }
 
 /// The form for a new schedule (no `id`) or a saved one, with the prompt compiled as the
@@ -74,6 +77,7 @@ pub async fn index(
 async fn form(
     v: &TeraView,
     ctx: &AppContext,
+    caller: &Caller,
     id: Option<i64>,
     form: &Params,
     problem: Option<String>,
@@ -121,31 +125,33 @@ async fn form(
         "has_problem": problem.is_some(),
         "problem": problem.unwrap_or_default(),
     });
-    views::page(v, ctx, "schedules/form.html", "schedules", data).await
+    views::page(v, ctx, caller, "schedules/form.html", "schedules", data).await
 }
 
 #[debug_handler]
 pub async fn new(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
+    Extension(caller): Extension<Caller>,
 ) -> Result<Response> {
     let agent = Settings::from_context(&ctx)?.agent;
-    form(&v, &ctx, None, &Params::starter(&agent), None).await
+    form(&v, &ctx, &caller, None, &Params::starter(&agent), None).await
 }
 
 #[debug_handler]
 pub async fn create(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
+    Extension(caller): Extension<Caller>,
     axum_extra::extract::Form(sent): axum_extra::extract::Form<Sent>,
 ) -> Result<Response> {
     let (params, problem) = sent.params();
     if problem.is_some() {
-        return form(&v, &ctx, None, &params, problem).await;
+        return form(&v, &ctx, &caller, None, &params, problem).await;
     }
     match schedules::Model::create(&ctx.db, &params).await? {
         Ok(_) => format::redirect("/schedules"),
-        Err(problem) => form(&v, &ctx, None, &params, Some(problem)).await,
+        Err(problem) => form(&v, &ctx, &caller, None, &params, Some(problem)).await,
     }
 }
 
@@ -153,28 +159,30 @@ pub async fn create(
 pub async fn edit(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<i64>,
 ) -> Result<Response> {
     let schedule = schedules::Model::find(&ctx.db, id).await?;
     let params = Params::changed(&schedule, schedules::Changes::default());
-    form(&v, &ctx, Some(id), &params, None).await
+    form(&v, &ctx, &caller, Some(id), &params, None).await
 }
 
 #[debug_handler]
 pub async fn update(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<i64>,
     axum_extra::extract::Form(sent): axum_extra::extract::Form<Sent>,
 ) -> Result<Response> {
     let (schedule, _) = schedules::Model::find(&ctx.db, id).await?;
     let (params, problem) = sent.params();
     if problem.is_some() {
-        return form(&v, &ctx, Some(id), &params, problem).await;
+        return form(&v, &ctx, &caller, Some(id), &params, problem).await;
     }
     match schedule.revised(&ctx.db, &params).await? {
         Ok(_) => format::redirect(&format!("/schedules/{id}")),
-        Err(problem) => form(&v, &ctx, Some(id), &params, Some(problem)).await,
+        Err(problem) => form(&v, &ctx, &caller, Some(id), &params, Some(problem)).await,
     }
 }
 

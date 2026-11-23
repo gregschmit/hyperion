@@ -1,6 +1,6 @@
-//! The JSON API, under `/api`. A token lets a caller in, and its scope says which resources
-//! the caller can use. The access guard checks both (see `initializers::access`), so nothing
-//! here does.
+//! The JSON API, under `/api`. A session or a token lets a caller in, as it does to the pages,
+//! and a token's scope says which resources its holder can use. The access guard checks both
+//! (see `initializers::access`), so nothing here does.
 
 use loco_rs::prelude::*;
 use serde_json::Value;

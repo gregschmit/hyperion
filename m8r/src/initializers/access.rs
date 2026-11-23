@@ -1,16 +1,28 @@
-//! Nothing answers without a session or a token.
+//! Nothing answers without a session, a token or a share link, and one guard decides for every
+//! path: a page, the API, a static file.
 //!
-//! The pages want a session, and the only way to get one is an access link. A link carries a
-//! short signed token that says when it stops working. Opening it starts a session (Loco's
-//! signed cookie, which the server stops accepting after `auth.session.max_age`), and
-//! redirects to the same page without the token.
+//! Who asks is one of three:
 //!
-//! One page opens with no session: a run's, for whoever holds its share link. That link's token
-//! is good for the one run, to read it, until the token says. It opens nothing else.
+//! - The holder of a session, who covers everything. The only way to get a session is an access
+//!   link. A link carries a short signed token that says when it stops working. Opening it
+//!   starts a session (Loco's signed cookie, which the server stops accepting after
+//!   `auth.session.max_age`), and redirects to the same address without the token.
+//! - The holder of a token, in an `Authorization: Bearer` header, who covers the token's
+//!   scope. A token is one that `task token` made, or a run's own, which works while the run
+//!   does.
+//! - The holder of a run's share link, who reads that run until the link's token says, and
+//!   nothing else.
 //!
-//! The API (`/api`) and the MCP endpoint (`/mcp`) want a token in the `Authorization` header,
-//! and never take a session: another site can make a browser send a cookie, but not a header.
-//! A token is one that `task token` made, or a run's own, which works while the run does.
+//! What they can use is the same for a page and for the API. A path is part of a resource:
+//! `/schedules` and `/api/schedules` are both `schedules`. A scope names the resources that
+//! it covers.
+//!
+//! A browser sends a session's cookie with every request to m8r, whichever site's page makes
+//! the request. So on a session, a request that changes something must come from one of
+//! m8r's own pages. A token is in a header, which no other site can make a browser send.
+//!
+//! The MCP endpoint (`/mcp`) takes a token and nothing else: its clients aren't browsers. Its
+//! tools look at the token's scope themselves.
 
 use std::time::Duration;
 
@@ -52,30 +64,39 @@ pub const SHARE_LIMIT: Duration = Duration::from_secs(72 * 60 * 60);
 /// What a session's user is called. m8r has one user: whoever holds a link.
 const USER: &str = "m8r";
 
+/// What the holder of a session is called, where a token's holder is called by the token's
+/// name.
+const SESSION: &str = "session";
+
 /// What a run's token covers: the watchlist, which m8r's part of the prompt tells the agent
 /// to keep.
 const RUN_SCOPE: &str = "watchlist_items";
 
-/// Who makes a request to the API or the MCP endpoint: the holder of a token.
+/// Who makes a request. The guard puts it in the request, for what answers.
 #[derive(Debug, Clone)]
-pub struct Caller {
-    /// The token's name, or `run <id>`.
-    pub name: String,
-    /// What the token covers (see `tokens::covers`).
-    pub scope: String,
+pub enum Caller {
+    /// Someone who covers a scope (see `tokens::covers`): the holder of a session, called
+    /// `session`, or of a token, called by the token's name, or `run <id>` for a run's own.
+    Holder { name: String, scope: String },
+    /// The holder of this run's share link, who reads the run: its page shows no way to the
+    /// rest of m8r.
+    Guest { run_id: i64 },
 }
 
 impl Caller {
     #[must_use]
     pub fn covers(&self, resource: &str) -> bool {
-        tokens::covers(&self.scope, resource)
+        match self {
+            Self::Holder { scope, .. } => tokens::covers(scope, resource),
+            Self::Guest { .. } => false,
+        }
+    }
+
+    #[must_use]
+    pub fn is_guest(&self) -> bool {
+        matches!(self, Self::Guest { .. })
     }
 }
-
-/// Who asks for a run's page with its share link: the guard marks the request, so that the
-/// page shows the run and no way to the rest of m8r.
-#[derive(Debug, Clone, Copy)]
-pub struct Guest;
 
 pub struct AccessInitializer;
 
@@ -224,7 +245,7 @@ pub fn link(ctx: &AppContext, seconds: u64, once: bool) -> Result<String> {
 }
 
 /// Make a share link for run `run_id`, and say when it stops working. For `seconds`, it opens
-/// that run's page with no session, to read, and nothing else.
+/// that run with no session, to read, and nothing else.
 ///
 /// # Errors
 /// When the JWT settings, which hold m8r's secret, are missing.
@@ -258,130 +279,269 @@ pub fn run_token(ctx: &AppContext, run_id: i64, seconds: u64) -> Result<String> 
         .map_err(|err| Error::string(&err.to_string()))
 }
 
-/// What a path wants from whoever asks for it.
-enum Door<'a> {
-    /// A session.
-    Pages,
-    /// A token that covers this resource: `/api/<resource>/…`.
-    Api(&'a str),
-    /// Any token. The endpoint's tools look at its scope themselves.
-    Mcp,
+/// How a request got in.
+enum Entry {
+    /// Someone m8r knows. `cookie`: a session's cookie says who, and a browser sends that by
+    /// itself.
+    Caller { caller: Caller, cookie: bool },
+    /// An access link, which started a session. The answer sends the browser to the same
+    /// address without the token.
+    SignedIn(Response),
 }
 
-fn door(path: &str) -> Door<'_> {
-    if path == "/mcp" || path.starts_with("/mcp/") {
-        return Door::Mcp;
-    }
-    match path.strip_prefix("/api") {
-        Some("") => Door::Api(""),
-        Some(rest) if rest.starts_with('/') => {
-            Door::Api(rest[1..].split('/').next().unwrap_or_default())
+/// Why a request gets nothing.
+struct Refusal {
+    status: StatusCode,
+    why: String,
+    /// What to do about it, as HTML. Only a page says it.
+    how: &'static str,
+}
+
+impl Refusal {
+    fn new(status: StatusCode, why: impl Into<String>) -> Self {
+        Self {
+            status,
+            why: why.into(),
+            how: "",
         }
-        _ => Door::Pages,
+    }
+
+    /// For someone that m8r doesn't know.
+    fn unknown(why: impl Into<String>) -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, why)
+    }
+
+    /// For someone with no session, or with a link that starts none: how to get a session.
+    fn no_session(why: impl Into<String>) -> Self {
+        Self {
+            how: "<p>Make a link on the server, and open it here:</p><pre>m8r task link</pre>",
+            ..Self::unknown(why)
+        }
+    }
+
+    fn failed<E>(_: E) -> Self {
+        Self::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "m8r couldn't check the token.",
+        )
+    }
+
+    /// The answer: JSON in the shape of Loco's errors, or a page that stands alone, since the
+    /// stylesheet needs a session too.
+    fn answer(self, json: bool) -> Response {
+        let Self { status, why, how } = self;
+        if !json {
+            // The reason can hold a token's name, which is someone's own words.
+            let why = why
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            let page = format!(
+                "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
+                 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+                 <meta name=\"color-scheme\" content=\"light dark\"><title>m8r</title></head>\
+                 <body style=\"font-family: system-ui, sans-serif; max-width: 34rem; \
+                 margin: 4rem auto; padding: 0 1rem; line-height: 1.5\"><h1>m8r</h1>\
+                 <p>{why}</p>{how}</body></html>\n"
+            );
+            return no_store((status, Html(page))).into_response();
+        }
+        let error = match status {
+            StatusCode::UNAUTHORIZED => "unauthorized",
+            StatusCode::FORBIDDEN => "forbidden",
+            _ => "internal_server_error",
+        };
+        let body = Json(json!({ "error": error, "description": why }));
+        if status == StatusCode::UNAUTHORIZED {
+            return (status, [(header::WWW_AUTHENTICATE, "Bearer")], body).into_response();
+        }
+        (status, body).into_response()
     }
 }
 
 async fn guard(State(ctx): State<AppContext>, request: Request, next: Next) -> Response {
     let (mut parts, body) = request.into_parts();
-    let resource = match door(parts.uri.path()) {
-        Door::Pages => None,
-        Door::Api(resource) => Some(Some(resource.to_string())),
-        Door::Mcp => Some(None),
+    let path = parts.uri.path().to_string();
+    let mcp = path == "/mcp" || path.starts_with("/mcp/");
+    // The API and the MCP endpoint answer in JSON. Anything else is for a reader.
+    let json = mcp || path == "/api" || path.starts_with("/api/");
+
+    let entry = if mcp {
+        with_token(&ctx, &parts).await
+    } else {
+        entry(&ctx, &parts, json).await
     };
-    if let Some(resource) = resource {
-        let caller = match caller(&ctx, &parts).await {
-            Ok(caller) => caller,
-            Err((status, why)) => return refuse_token(status, why),
-        };
-        if resource.is_some_and(|resource| !caller.covers(&resource)) {
-            let why = format!("The token {} doesn't cover this.", caller.name);
-            return refuse_token(StatusCode::FORBIDDEN, &why);
+    let (caller, cookie) = match entry {
+        Ok(Entry::Caller { caller, cookie }) => (caller, cookie),
+        Ok(Entry::SignedIn(redirect)) => return redirect,
+        Err(refusal) => return refusal.answer(json),
+    };
+    if cookie && changes(&parts.method) && !from_m8r(&parts) {
+        let why = "On a session, a request that changes something must come from one of m8r's \
+                   own pages.";
+        return Refusal::new(StatusCode::FORBIDDEN, why).answer(json);
+    }
+    let covered = match &caller {
+        // The MCP endpoint's tools look at the scope themselves.
+        Caller::Holder { .. } if mcp => true,
+        Caller::Holder { scope, .. } => {
+            resource(&path).is_none_or(|resource| tokens::covers(scope, resource))
         }
-        parts.extensions.insert(caller);
-        return next.run(Request::from_parts(parts, body)).await;
+        // The link's token was read for the address that the request asks for.
+        Caller::Guest { .. } => true,
+    };
+    if let (false, Caller::Holder { name, .. }) = (covered, &caller) {
+        let why = format!("The token {name} doesn't cover this.");
+        return Refusal::new(StatusCode::FORBIDDEN, why).answer(json);
     }
 
-    let Ok(session) = Session::from_parts(&parts, &ctx).await else {
-        return refuse("m8r couldn't read your session.");
+    let guest = caller.is_guest();
+    parts.extensions.insert(caller);
+    let answer = next.run(Request::from_parts(parts, body)).await;
+    if guest {
+        return for_guest(answer);
+    }
+    answer
+}
+
+/// The resource that a path is part of, which its caller must cover. A page and the API name
+/// it the same way: the path's first part, or the one after `/api`. None: a static file,
+/// which is for whoever gets in.
+fn resource(path: &str) -> Option<&str> {
+    let path = path.strip_prefix('/').unwrap_or(path);
+    let (first, rest) = path.split_once('/').unwrap_or((path, ""));
+    match first {
+        "static" => None,
+        "api" => Some(rest.split('/').next().unwrap_or_default()),
+        // The home page lists the runs.
+        "" => Some("runs"),
+        "watchlist" => Some("watchlist_items"),
+        page => Some(page),
+    }
+}
+
+/// The run that a path is of, if a share link opens the path: the run's page, and the run in
+/// the API.
+fn shared_run(path: &str) -> Option<i64> {
+    let path = path.strip_prefix("/api").unwrap_or(path);
+    path.strip_prefix("/runs/")?.parse().ok()
+}
+
+/// Whether a request with this method changes something.
+fn changes(method: &Method) -> bool {
+    ![Method::GET, Method::HEAD, Method::OPTIONS].contains(method)
+}
+
+/// Whether the request comes from one of m8r's own pages, as the browser says. A browser
+/// says how the page's site compares to the request's (`Sec-Fetch-Site`). An old one, or one
+/// that doesn't trust the address, says only where the page is (`Origin`): that must be
+/// where the request goes (`Host`).
+fn from_m8r(parts: &Parts) -> bool {
+    let said = |name: &str| parts.headers.get(name).and_then(|said| said.to_str().ok());
+    if let Some(site) = said("sec-fetch-site") {
+        return site == "same-origin";
+    }
+    let (Some(origin), Some(host)) = (said("origin"), said("host")) else {
+        return false;
     };
+    origin
+        .split_once("://")
+        .is_some_and(|(_, place)| place == host)
+}
+
+/// How a request gets in to a page, the API or a static file, or why it doesn't.
+async fn entry(ctx: &AppContext, parts: &Parts, json: bool) -> std::result::Result<Entry, Refusal> {
+    if bearer(parts).is_some() {
+        return with_token(ctx, parts).await;
+    }
+    let session = Session::from_parts(parts, ctx)
+        .await
+        .map_err(|_| Refusal::no_session("m8r couldn't read your session."))?;
 
     if parts.method == Method::GET {
-        if let Some(token) = query_token(&parts) {
-            // A share link's token opens its run's page, session or none.
-            match shared(&ctx, &parts, &token) {
-                Some(share) if share.works() => {
-                    parts.extensions.insert(Guest);
-                    return for_guest(next.run(Request::from_parts(parts, body)).await);
+        if let Some(token) = query_token(parts) {
+            // A share link's token opens its run, session or none.
+            match shared(ctx, parts, &token) {
+                Some((run_id, share)) if share.works() => {
+                    let caller = Caller::Guest { run_id };
+                    return Ok(Entry::Caller {
+                        caller,
+                        cookie: false,
+                    });
                 }
                 Some(_) => {
-                    return turn_away("That link to a run has expired. Ask for a new one.", "");
+                    let why = "That link to a run has expired. Ask for a new one.";
+                    return Err(Refusal::unknown(why));
                 }
                 None => {}
             }
-            return match redeem(&ctx, &token).await {
-                Ok(()) => {
-                    let session = session.renew().set_user_id(USER);
-                    (session, no_store(Redirect::to(&without_token(&parts)))).into_response()
-                }
-                Err(why) => refuse(&why),
-            };
+            redeem(ctx, &token).await.map_err(Refusal::no_session)?;
+            let session = session.renew().set_user_id(USER);
+            let redirect = no_store(Redirect::to(&without_token(parts)));
+            return Ok(Entry::SignedIn((session, redirect).into_response()));
         }
     }
 
     if session.user_id().is_none() {
-        return refuse("You need an access link to get in.");
+        // A page's reader needs a link. The API's caller is more likely to have a token.
+        return Err(if json {
+            Refusal::unknown("You need a session, or a token: \"Authorization: Bearer <token>\".")
+        } else {
+            Refusal::no_session("You need an access link to get in.")
+        });
     }
-    next.run(Request::from_parts(parts, body)).await
+    let caller = Caller::Holder {
+        name: SESSION.to_string(),
+        scope: tokens::ALL.to_string(),
+    };
+    Ok(Entry::Caller {
+        caller,
+        cookie: true,
+    })
 }
 
-/// Who holds the request's token, or the status and the reason that turn the request away.
-async fn caller(
-    ctx: &AppContext,
-    parts: &Parts,
-) -> std::result::Result<Caller, (StatusCode, &'static str)> {
-    let unauthorized = |why| (StatusCode::UNAUTHORIZED, why);
-    fn failed<E>(_: E) -> (StatusCode, &'static str) {
-        let why = "m8r couldn't check the token.";
-        (StatusCode::INTERNAL_SERVER_ERROR, why)
-    }
+/// The holder of the token in the request's header, or why the request gets nothing.
+async fn with_token(ctx: &AppContext, parts: &Parts) -> std::result::Result<Entry, Refusal> {
     let Some(token) = bearer(parts) else {
-        return Err(unauthorized(
-            "Send a token: \"Authorization: Bearer <token>\".",
-        ));
+        let why = "Send a token: \"Authorization: Bearer <token>\".";
+        return Err(Refusal::unknown(why));
+    };
+    let holder = |name: String, scope: &str| {
+        let caller = Caller::Holder {
+            name,
+            scope: scope.to_string(),
+        };
+        Entry::Caller {
+            caller,
+            cookie: false,
+        }
     };
 
     if token.starts_with(tokens::PREFIX) {
-        let Some(row) = tokens::Model::of(&ctx.db, token).await.map_err(failed)? else {
-            return Err(unauthorized("That token isn't m8r's, or it was revoked."));
-        };
-        return Ok(Caller {
-            name: row.name,
-            scope: row.scope,
-        });
+        let row = tokens::Model::of(&ctx.db, token)
+            .await
+            .map_err(Refusal::failed)?
+            .ok_or_else(|| Refusal::unknown("That token isn't m8r's, or it was revoked."))?;
+        return Ok(holder(row.name, &row.scope));
     }
 
     // A run's own token: a JWT that names the run.
-    let secret = &ctx.config.get_jwt_config().map_err(failed)?.secret;
+    let secret = &ctx.config.get_jwt_config().map_err(Refusal::failed)?.secret;
     let claims = JWT::new(secret)
         .validate(token)
         .ok()
         .map(|data| data.claims);
     let run_id = claims
         .filter(|claims| claims.claims.get("use").and_then(Value::as_str) == Some("run"))
-        .and_then(|claims| claims.claims.get("run").and_then(Value::as_i64));
-    let Some(run_id) = run_id else {
-        return Err(unauthorized("That token isn't m8r's, or it expired."));
-    };
+        .and_then(|claims| claims.claims.get("run").and_then(Value::as_i64))
+        .ok_or_else(|| Refusal::unknown("That token isn't m8r's, or it expired."))?;
     let running = runs::Model::is_running(&ctx.db, run_id)
         .await
-        .map_err(failed)?;
+        .map_err(Refusal::failed)?;
     if !running {
-        return Err(unauthorized("That run is over, and so is its token."));
+        return Err(Refusal::unknown("That run is over, and so is its token."));
     }
-    Ok(Caller {
-        name: format!("run {run_id}"),
-        scope: RUN_SCOPE.to_string(),
-    })
+    Ok(holder(format!("run {run_id}"), RUN_SCOPE))
 }
 
 /// The token of an `Authorization: Bearer <token>` header.
@@ -389,20 +549,6 @@ fn bearer(parts: &Parts) -> Option<&str> {
     let value = parts.headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let (scheme, token) = value.split_once(' ')?;
     (scheme.eq_ignore_ascii_case("bearer") && !token.trim().is_empty()).then_some(token.trim())
-}
-
-/// The answer to an API or MCP request that m8r turns away, in the shape of Loco's errors.
-fn refuse_token(status: StatusCode, why: &str) -> Response {
-    let error = match status {
-        StatusCode::UNAUTHORIZED => "unauthorized",
-        StatusCode::FORBIDDEN => "forbidden",
-        _ => "internal_server_error",
-    };
-    let body = Json(json!({ "error": error, "description": why }));
-    if status == StatusCode::UNAUTHORIZED {
-        return (status, [(header::WWW_AUTHENTICATE, "Bearer")], body).into_response();
-    }
-    (status, body).into_response()
 }
 
 /// Check an access link's token. A single-use token is used up here.
@@ -426,15 +572,15 @@ async fn redeem(ctx: &AppContext, token: &str) -> std::result::Result<(), String
     Ok(())
 }
 
-/// What the share link's token of the run whose page the request asks for says, if the
-/// request's token is that. None: it may be an access link's token.
-fn shared(ctx: &AppContext, parts: &Parts, token: &str) -> Option<Share> {
-    let run_id = parts.uri.path().strip_prefix("/runs/")?.parse().ok()?;
+/// The run that the request asks for and what its share link's token says, if the request's
+/// token is that. None: it may be an access link's token.
+fn shared(ctx: &AppContext, parts: &Parts, token: &str) -> Option<(i64, Share)> {
+    let run_id = shared_run(parts.uri.path())?;
     let secret = &ctx.config.get_jwt_config().ok()?.secret;
-    Share::read(secret, run_id, token)
+    Some((run_id, Share::read(secret, run_id, token)?))
 }
 
-/// A guest's page is kept nowhere, and a link on it tells the next site nothing of this
+/// What a guest gets is kept nowhere, and a link on it tells the next site nothing of this
 /// address, which holds the token.
 fn for_guest(page: Response) -> Response {
     let headers = [
@@ -471,23 +617,4 @@ fn without_token(parts: &Parts) -> String {
 
 fn no_store(response: impl IntoResponse) -> impl IntoResponse {
     ([(header::CACHE_CONTROL, "no-store")], response)
-}
-
-/// The page for a request with no session, which says how to get one.
-fn refuse(why: &str) -> Response {
-    let how = "<p>Make a link on the server, and open it here:</p><pre>m8r task link</pre>";
-    turn_away(why, how)
-}
-
-/// The page for a request that gets nothing: why, and what to do, as HTML. It stands alone:
-/// the stylesheet needs a session too.
-fn turn_away(why: &str, how: &str) -> Response {
-    let page = format!(
-        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <meta name=\"color-scheme\" content=\"light dark\"><title>m8r</title></head>\
-         <body style=\"font-family: system-ui, sans-serif; max-width: 34rem; margin: 4rem auto; \
-         padding: 0 1rem; line-height: 1.5\"><h1>m8r</h1><p>{why}</p>{how}</body></html>\n"
-    );
-    no_store((StatusCode::UNAUTHORIZED, Html(page))).into_response()
 }

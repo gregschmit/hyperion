@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    initializers::access::Caller,
     models::{errors, repos, runs, schedules, watchlist_items},
     settings::Settings,
 };
@@ -133,23 +134,26 @@ pub async fn look(ctx: &AppContext) -> Result<()> {
     Ok(errors::Model::check_setup(&ctx.db).await?)
 }
 
-/// Render a page. Every page also shows the errors that are open, so `data` gets them.
+/// Render a page. Every page also shows the errors that are open, so `data` gets them, for a
+/// caller who covers the errors: they tell of every part of m8r.
 ///
 /// # Errors
 /// When a query or the template fails.
 pub async fn page(
     v: &TeraView,
     ctx: &AppContext,
+    caller: &Caller,
     key: &str,
     section: &str,
     mut data: Value,
 ) -> Result<Response> {
     look(ctx).await?;
-    let open: Vec<Value> = errors::Model::open(&ctx.db)
-        .await?
-        .iter()
-        .map(error)
-        .collect();
+    let open: Vec<Value> = if caller.covers(errors::RESOURCE) {
+        let open = errors::Model::open(&ctx.db).await?;
+        open.iter().map(error).collect()
+    } else {
+        Vec::new()
+    };
     data["shared"] = json!(false);
     data["stylesheet"] = json!(*STYLESHEET);
     data["section"] = json!(section);

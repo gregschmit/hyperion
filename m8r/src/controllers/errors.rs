@@ -1,8 +1,9 @@
 #![allow(clippy::missing_errors_doc)]
+use axum::Extension;
 use loco_rs::prelude::*;
 use serde_json::json;
 
-use crate::{models::errors, views};
+use crate::{initializers::access::Caller, models::errors, views};
 
 /// How many cleared errors the page lists.
 const CLEARED: u64 = 200;
@@ -12,6 +13,7 @@ const CLEARED: u64 = 200;
 pub async fn index(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
+    Extension(caller): Extension<Caller>,
 ) -> Result<Response> {
     // Look first, so that the list has what this look raises and clears.
     views::look(&ctx).await?;
@@ -21,7 +23,7 @@ pub async fn index(
         .map(views::error)
         .collect();
     let data = json!({ "errors": listed });
-    views::page(&v, &ctx, "errors/index.html", "errors", data).await
+    views::page(&v, &ctx, &caller, "errors/index.html", "errors", data).await
 }
 
 pub fn routes() -> Routes {

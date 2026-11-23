@@ -1,9 +1,11 @@
 #![allow(clippy::missing_errors_doc)]
+use axum::Extension;
 use loco_rs::prelude::*;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
+    initializers::access::Caller,
     models::{
         repos,
         watchlist_items::{self, Category, Filter, Params, Priority},
@@ -47,6 +49,7 @@ fn encoded(text: &str) -> String {
 async fn page(
     v: &TeraView,
     ctx: &AppContext,
+    caller: &Caller,
     shown: &Shown,
     form: &Params,
     problem: Option<String>,
@@ -92,7 +95,7 @@ async fn page(
         "has_problem": problem.is_some(),
         "problem": problem.unwrap_or_default(),
     });
-    views::page(v, ctx, "watchlist/index.html", "watchlist", data).await
+    views::page(v, ctx, caller, "watchlist/index.html", "watchlist", data).await
 }
 
 /// The watchlist: the issues and PRs/MRs that you follow, each in one of m8r's repos.
@@ -100,20 +103,22 @@ async fn page(
 pub async fn index(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
+    Extension(caller): Extension<Caller>,
     Query(shown): Query<Shown>,
 ) -> Result<Response> {
-    page(&v, &ctx, &shown, &Params::default(), None).await
+    page(&v, &ctx, &caller, &shown, &Params::default(), None).await
 }
 
 #[debug_handler]
 pub async fn add(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
+    Extension(caller): Extension<Caller>,
     Form(params): Form<Params>,
 ) -> Result<Response> {
     match watchlist_items::Model::create(&ctx.db, &params).await? {
         Ok(_) => format::redirect("/watchlist"),
-        Err(problem) => page(&v, &ctx, &Shown::default(), &params, Some(problem)).await,
+        Err(problem) => page(&v, &ctx, &caller, &Shown::default(), &params, Some(problem)).await,
     }
 }
 
@@ -121,6 +126,7 @@ pub async fn add(
 pub async fn update(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<i64>,
     Form(params): Form<Params>,
 ) -> Result<Response> {
@@ -130,7 +136,7 @@ pub async fn update(
         Ok(_) => format::redirect("/watchlist"),
         Err(problem) => {
             let form = Params::default();
-            page(&v, &ctx, &Shown::default(), &form, Some(problem)).await
+            page(&v, &ctx, &caller, &Shown::default(), &form, Some(problem)).await
         }
     }
 }

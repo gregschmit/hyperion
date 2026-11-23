@@ -612,9 +612,14 @@ async fn the_pages_say_when_the_scheduler_does_not_tick() {
     let ctx = sandbox.context(&boot.app_context, "cat");
     let engine = TeraView::build().unwrap();
     let page = |ctx: AppContext, engine: TeraView| async move {
+        let caller = m8r::initializers::access::Caller::Holder {
+            name: "session".to_string(),
+            scope: "all".to_string(),
+        };
         let res = views::page(
             &engine,
             &ctx,
+            &caller,
             "runs/index.html",
             "runs",
             serde_json::json!({ "runs": [], "setup": false }),

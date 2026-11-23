@@ -290,6 +290,7 @@ esac
 "#;
 
 /// Run a request test with a session: the server keeps the cookie that the access link gave.
+/// Its requests come from m8r's own pages, as a browser says of a form on one of them.
 pub async fn signed_in<F, Fut>(callback: F)
 where
     F: FnOnce(TestServer, AppContext) -> Fut,
@@ -297,8 +298,9 @@ where
 {
     use loco_rs::testing::request::{request_with_config, RequestConfigBuilder};
     let config = RequestConfigBuilder::new().save_cookies(true).build();
-    request_with_config::<m8r::app::App, _, _>(config, |request, ctx| async move {
+    request_with_config::<m8r::app::App, _, _>(config, |mut request, ctx| async move {
         sign_in(&request, &ctx).await;
+        request.add_header("sec-fetch-site", "same-origin");
         callback(request, ctx).await;
     })
     .await;

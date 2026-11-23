@@ -277,7 +277,17 @@ async fn a_share_link_opens_its_runs_page_and_nothing_else() {
             let res = request.get(&format!("{path}?token={held}")).await;
             assert_eq!(res.status_code(), 401, "{path}");
         }
-        // Not the API, and a guest changes nothing.
+        // It reads the same run in the API, which a page's script asks. No other run there,
+        // and not the list.
+        let res = request.get(&format!("/api/runs/1?token={held}")).await;
+        assert_eq!(res.status_code(), 200);
+        assert_eq!(res.header("cache-control"), "no-store");
+        assert_eq!(res.json::<serde_json::Value>()["name"], "review");
+        for path in ["/api/runs/2", "/api/runs", "/api"] {
+            let res = request.get(&format!("{path}?token={held}")).await;
+            assert_eq!(res.status_code(), 401, "{path}");
+        }
+        // The token is for a link, and not for a header. And a guest changes nothing.
         let res = request.get("/api/runs/1").authorization_bearer(&held).await;
         assert_eq!(res.status_code(), 401);
         assert_eq!(request.post(&link).await.status_code(), 401);

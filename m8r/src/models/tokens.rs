@@ -6,8 +6,8 @@ use super::Checked;
 
 pub type Tokens = Entity;
 
-/// What a token can cover. Each is a part of the API, `/api/<resource>`, and a set of the MCP
-/// endpoint's tools.
+/// What a token can cover. Each is a part of the API, `/api/<resource>`, the pages of the
+/// same thing, and a set of the MCP endpoint's tools.
 pub const RESOURCES: [&str; 4] = ["watchlist_items", "repos", "schedules", "runs"];
 
 /// The scope that covers every resource.

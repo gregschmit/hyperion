@@ -10,6 +10,10 @@ use super::schedules;
 
 pub type Errors = Entity;
 
+/// The errors as a resource (see `tokens::covers`). No scope names it: the errors tell of
+/// every part of m8r, so only a scope that covers everything covers them.
+pub const RESOURCE: &str = "errors";
+
 /// There's no schedule. `check_setup` raises it and clears it.
 pub const SCHEDULES: &str = "schedules";
 /// The scheduler doesn't tick. A page raises it, and a tick clears it.

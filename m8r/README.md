@@ -50,8 +50,8 @@ Everything runs as one user, `m8r`.
   what you say about it: your priority, your note, and whether someone asked you for it. The
   link says which repo it's in, and whether it's an issue or a PR/MR. m8r asks the forge for
   the rest.
-- **One way in for each kind of caller.** A person gets a session, and a program gets a token.
-  A share link shows one run to someone who has neither.
+- **One way in.** A person gets a session, and a program gets a token. Either opens the pages
+  and the API by the same rules. A share link shows one run to someone who has neither.
 - **Errors clear themselves.** What's wrong is in one list, on every page. Nobody dismisses an
   error: what raises one clears it too, when its cause is gone.
 - **Idle until it has a schedule.** m8r installs up, like any other service. It runs nothing
@@ -302,24 +302,35 @@ Nobody clears an error by hand. Whatever raises one clears it too:
 
 ### Access
 
-Nothing answers without a session or a token.
+Nothing answers without a session, a token or a share link. One guard decides for every path,
+and the rules are the same for a page and for the API.
 
 - **An access link** starts a session: `m8r task link` prints one. It works any number of
   times for 8 hours. `hours:72` changes that, and `once:true` makes a link that works one time.
-  A session lasts 8 hours and can do everything in the pages.
+  A session lasts 8 hours and covers everything: the pages, and the API.
+- **A token** is for a program (see below). It covers its scope: the API's part of each
+  resource that the scope names, and that resource's pages too. `/schedules` and
+  `/api/schedules` are both `schedules`. Only `all` covers the errors, which tell of every
+  part of m8r: a page shows them to no other token.
 - **A share link** makes a guest of whoever opens it, for one run and for 72 hours: "Share"
   on the run's page makes one. A guest reads what that page shows: the run's command, the
-  prompt it got and what it printed. The link starts no session, so only the link itself
-  opens the page. A guest gets no other run and nothing else of m8r, and changes nothing.
+  prompt it got and what it printed, also as the API has them. The link starts no session,
+  so only the link itself opens the run. A guest gets no other run and nothing else of m8r,
+  and changes nothing.
+- **A change on a session must come from m8r's own pages.** A browser sends a session's
+  cookie with every request to m8r, whichever site's page makes the request. So m8r looks at
+  where a request comes from, as the browser says it (`Sec-Fetch-Site`, or `Origin`), before
+  a session changes anything. A token needs none of this: it's in a header, which no other
+  site can make a browser send. With `curl` and a session's cookie, send
+  `-H 'Sec-Fetch-Site: same-origin'`.
 - **No revoking.** A link is a signed token that m8r doesn't store, so it can't end one. To end
   every link and session, delete the line in `m8r/.env`, run `install`, and restart the units.
-- **A token** is for a program (see below). A session opens no part of the API, and a token
-  opens no page.
 
 ## The API and Duet
 
-Programs use m8r through its API (`/api`) or its MCP endpoint (`/mcp`). Each wants a token in
-the `Authorization` header.
+Programs use m8r through its API (`/api`) or its MCP endpoint (`/mcp`), with a token in the
+`Authorization` header. A page's script uses the API too, with the page's session. The MCP
+endpoint takes a token and nothing else.
 
 ```sh
 m8r task token name:duet scope:watchlist_items,repos,runs   # prints the token, this one time
@@ -444,6 +455,9 @@ wrote. Expect a prompt injection someday.
 - **A session is the keys.** Whoever holds a live link or session can change the prompts and
   the schedules' commands, and so run anything as `m8r`. So can a token whose scope has
   `schedules`. Keep links short-lived, and give a token the least that its holder needs.
+- **Another site can't use your session.** Its cookie is `SameSite=Lax`, and m8r also refuses
+  a change on a session unless the request comes from one of m8r's own pages. The second
+  rule covers the other hosts of `schmit.net`, which a browser counts as the same site.
 - **The watchlist is text from outside.** An agent or Duet can write an item's note, and the
   note goes into the next prompts. A token for `watchlist_items` can do that and no more.
 - **So is what a run printed.** An agent wrote it, maybe after it read a hostile issue. Its
@@ -453,8 +467,8 @@ wrote. Expect a prompt injection someday.
 - **A share link shows its run to whoever holds it,** for 72 hours. The prompt on the run's
   page has the watchlist items that the run got, with your notes. The link opens nothing
   else, and changes nothing.
-- **The site is public,** with no IP limits, and every request needs a session or a token. Keep
-  Loco, rmcp and their dependencies current.
+- **The site is public,** with no IP limits, and every request needs a session, a token or a
+  share link. Keep Loco, rmcp and their dependencies current.
 
 Know these too, before you rely on it:
 

@@ -1,8 +1,10 @@
 #![allow(clippy::missing_errors_doc)]
+use axum::Extension;
 use loco_rs::prelude::*;
 use serde_json::json;
 
 use crate::{
+    initializers::access::Caller,
     models::{
         repos::{Model, Params},
         Checked,
@@ -16,6 +18,7 @@ use crate::{
 async fn page(
     v: &TeraView,
     ctx: &AppContext,
+    caller: &Caller,
     form: &Params,
     problem: Option<String>,
 ) -> Result<Response> {
@@ -30,14 +33,19 @@ async fn page(
         "has_problem": problem.is_some(),
         "problem": problem.unwrap_or_default(),
     });
-    views::page(v, ctx, "repos/index.html", "repos", data).await
+    views::page(v, ctx, caller, "repos/index.html", "repos", data).await
 }
 
 /// Back to the repos, which say what's wrong if something is.
-async fn back<T>(v: &TeraView, ctx: &AppContext, checked: Checked<T>) -> Result<Response> {
+async fn back<T>(
+    v: &TeraView,
+    ctx: &AppContext,
+    caller: &Caller,
+    checked: Checked<T>,
+) -> Result<Response> {
     match checked {
         Ok(_) => format::redirect("/repos"),
-        Err(problem) => page(v, ctx, &Params::default(), Some(problem)).await,
+        Err(problem) => page(v, ctx, caller, &Params::default(), Some(problem)).await,
     }
 }
 
@@ -46,20 +54,22 @@ async fn back<T>(v: &TeraView, ctx: &AppContext, checked: Checked<T>) -> Result<
 pub async fn index(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
+    Extension(caller): Extension<Caller>,
 ) -> Result<Response> {
-    page(&v, &ctx, &Params::default(), None).await
+    page(&v, &ctx, &caller, &Params::default(), None).await
 }
 
 #[debug_handler]
 pub async fn add(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
+    Extension(caller): Extension<Caller>,
     Form(params): Form<Params>,
 ) -> Result<Response> {
     let shell = Settings::from_context(&ctx)?.shell;
     match Model::create(&ctx.db, &shell, &params).await? {
         Ok(_) => format::redirect("/repos"),
-        Err(problem) => page(&v, &ctx, &params, Some(problem)).await,
+        Err(problem) => page(&v, &ctx, &caller, &params, Some(problem)).await,
     }
 }
 
@@ -67,22 +77,30 @@ pub async fn add(
 pub async fn update(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<i64>,
     Form(params): Form<Params>,
 ) -> Result<Response> {
     let shell = Settings::from_context(&ctx)?.shell;
     let repo = Model::find(&ctx.db, id).await?;
-    back(&v, &ctx, repo.revised(&ctx.db, &shell, &params).await?).await
+    back(
+        &v,
+        &ctx,
+        &caller,
+        repo.revised(&ctx.db, &shell, &params).await?,
+    )
+    .await
 }
 
 #[debug_handler]
 pub async fn remove(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<i64>,
 ) -> Result<Response> {
     let repo = Model::find(&ctx.db, id).await?;
-    back(&v, &ctx, repo.removed(&ctx.db).await?).await
+    back(&v, &ctx, &caller, repo.removed(&ctx.db).await?).await
 }
 
 pub fn routes() -> Routes {

@@ -163,7 +163,7 @@ async fn a_session_can_change_things() {
     .await;
 }
 
-/// What the API and the MCP endpoint say to a request that they turn away.
+/// What a request that m8r turns away is told, where the answer is JSON.
 fn refusal(res: &axum_test::TestResponse) -> (u16, String) {
     let body: serde_json::Value = res.json();
     let why = body["description"].as_str().unwrap_or_default().to_string();
@@ -172,44 +172,131 @@ fn refusal(res: &axum_test::TestResponse) -> (u16, String) {
 
 #[tokio::test]
 #[serial]
-async fn the_api_and_the_mcp_endpoint_want_a_token_and_never_take_a_session() {
+async fn on_a_session_a_change_must_come_from_one_of_m8rs_own_pages() {
+    request_with_config::<App, _, _>(keeps_cookies(), |request, ctx| async move {
+        crate::support::sign_in(&request, &ctx).await;
+        crate::support::repo(&ctx.db, "~/git/o/r", "https://github.com/o/r").await;
+        let item = [("url", "https://github.com/o/r/issues/1")];
+        let from_elsewhere = "On a session, a request that changes something must come from \
+                              one of m8r's own pages.";
+
+        // A browser says how the page's site compares to m8r. Another site's page, and the
+        // page of another host of the same site, can send the session's cookie along.
+        for site in ["cross-site", "same-site", "none"] {
+            let res = request
+                .post("/watchlist")
+                .add_header("sec-fetch-site", site)
+                .form(&item)
+                .await;
+            assert_eq!(res.status_code(), 403, "{site}");
+            assert!(res.text().contains(from_elsewhere), "{site}");
+            // The API has the same rule, and says so in JSON.
+            let res = request
+                .post("/api/watchlist_items")
+                .add_header("sec-fetch-site", site)
+                .json(&serde_json::json!({ "url": item[0].1 }))
+                .await;
+            assert_eq!(refusal(&res), (403, from_elsewhere.to_string()), "{site}");
+        }
+        // A browser that doesn't say that says where the page is: not here, or here.
+        for (origin, status) in [
+            ("https://evil.example", 403),
+            ("https://unifi.schmit.net", 403),
+            ("http://m8r.schmit.net.evil.example", 403),
+            ("https://m8r.schmit.net", 303),
+        ] {
+            let res = request
+                .post("/watchlist")
+                .add_header("host", "m8r.schmit.net")
+                .add_header("origin", origin)
+                .form(&item)
+                .await;
+            assert_eq!(res.status_code(), status, "{origin}");
+        }
+        // What says neither is no page of m8r's.
+        let res = request.post("/watchlist").form(&item).await;
+        assert_eq!(res.status_code(), 403);
+        let res = request.delete("/api/watchlist_items/1").await;
+        assert_eq!(res.status_code(), 403);
+        // From m8r's own page, it goes through. And a look changes nothing, so it needs none
+        // of this.
+        let res = request
+            .delete("/api/watchlist_items/1")
+            .add_header("sec-fetch-site", "same-origin")
+            .await;
+        assert_eq!(res.status_code(), 200);
+        for path in ["/watchlist", "/api/watchlist_items"] {
+            let res = request
+                .get(path)
+                .add_header("sec-fetch-site", "cross-site")
+                .await;
+            assert_eq!(res.status_code(), 200, "{path}");
+        }
+
+        // A token is in a header, which no other site's page can send. So its holder needs
+        // none of this either.
+        let token = token(&ctx, "mac", "all").await;
+        let res = request
+            .post("/api/watchlist_items")
+            .authorization_bearer(&token)
+            .add_header("sec-fetch-site", "cross-site")
+            .json(&serde_json::json!({ "url": item[0].1 }))
+            .await;
+        assert_eq!(res.status_code(), 200);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_session_opens_the_api_as_it_opens_the_pages() {
     signed_in(|request, ctx| async move {
-        // The session that opens the pages opens neither.
-        assert_eq!(request.get("/watchlist").await.status_code(), 200);
+        crate::support::repo(&ctx.db, "~/git/o/r", "https://github.com/o/r").await;
         for path in [
             "/api/watchlist_items",
+            "/api/repos",
+            "/api/schedules",
             "/api/runs",
-            "/api",
-            "/api/nope",
-            "/mcp",
         ] {
+            assert_eq!(request.get(path).await.status_code(), 200, "{path}");
+        }
+        // It changes things there too, as a page's script would.
+        let res = request
+            .post("/api/watchlist_items")
+            .json(&serde_json::json!({ "url": "https://github.com/o/r/issues/1" }))
+            .await;
+        assert_eq!(res.status_code(), 200);
+        assert_eq!(res.json::<serde_json::Value>()["id"], 1);
+        // What isn't there is no more there for a session.
+        assert_eq!(request.get("/api/nope").await.status_code(), 404);
+        assert_eq!(request.get("/api").await.status_code(), 404);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn the_api_says_in_json_that_it_wants_a_session_or_a_token() {
+    request::<App, _, _>(|request, _ctx| async move {
+        for path in ["/api/watchlist_items", "/api/runs", "/api", "/api/nope"] {
             let res = request.get(path).await;
             assert_eq!(
                 refusal(&res),
                 (
                     401,
-                    "Send a token: \"Authorization: Bearer <token>\".".to_string()
+                    "You need a session, or a token: \"Authorization: Bearer <token>\"."
+                        .to_string()
                 ),
                 "{path}"
             );
             assert_eq!(res.header("www-authenticate"), "Bearer", "{path}");
         }
-        let res = request.post("/mcp").json(&serde_json::json!({})).await;
-        assert_eq!(res.status_code(), 401);
         let res = request.delete("/api/watchlist_items/1").await;
         assert_eq!(res.status_code(), 401);
-
-        let token = token(&ctx, "mac", "all").await;
-        let res = request
-            .get("/api/watchlist_items")
-            .authorization_bearer(&token)
-            .await;
-        assert_eq!(res.status_code(), 200);
-        assert_eq!(res.text(), "[]");
         // Only "Bearer" carries a token.
         let res = request
             .get("/api/watchlist_items")
-            .add_header("authorization", format!("Basic {token}"))
+            .add_header("authorization", "Basic m8r_nope")
             .await;
         assert_eq!(res.status_code(), 401);
     })
@@ -218,14 +305,109 @@ async fn the_api_and_the_mcp_endpoint_want_a_token_and_never_take_a_session() {
 
 #[tokio::test]
 #[serial]
-async fn a_token_opens_no_page() {
-    request::<App, _, _>(|request, ctx| async move {
+async fn the_mcp_endpoint_wants_a_token_and_never_takes_a_session() {
+    signed_in(|request, ctx| async move {
+        let want = "Send a token: \"Authorization: Bearer <token>\".";
+        let res = request.get("/mcp").await;
+        assert_eq!(refusal(&res), (401, want.to_string()));
+        assert_eq!(res.header("www-authenticate"), "Bearer");
+        let res = request.post("/mcp").json(&serde_json::json!({})).await;
+        assert_eq!(refusal(&res), (401, want.to_string()));
+
+        // With a token, the endpoint answers: here, that it wants a message it can read.
         let token = token(&ctx, "mac", "all").await;
-        for path in ["/", "/watchlist", "/schedules/new", "/static/m8r.css"] {
-            let res = request.get(path).authorization_bearer(&token).await;
-            assert_eq!(res.status_code(), 401, "{path}");
-            assert!(res.text().contains("m8r task link"), "{path}");
+        let res = request
+            .post("/mcp")
+            .authorization_bearer(&token)
+            .json(&serde_json::json!({}))
+            .await;
+        assert_ne!(res.status_code(), 401);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_token_opens_the_pages_of_what_it_covers() {
+    request::<App, _, _>(|request, ctx| async move {
+        m8r::models::errors::Model::raise(&ctx.db, "gh", "m8r finds no such command.", None)
+            .await
+            .unwrap();
+        let mac = token(&ctx, "mac", "all").await;
+        let reader = token(&ctx, "reader", "runs").await;
+        let duet = token(&ctx, "duet", "watchlist_items").await;
+        let get = |path: &'static str, token: String| {
+            let request = &request;
+            async move { request.get(path).authorization_bearer(token).await }
+        };
+
+        // A page is part of the same resource as the API's part of that name.
+        for (path, covered_by_reader, covered_by_duet) in [
+            ("/", true, false),
+            ("/runs", true, false),
+            ("/watchlist", false, true),
+            ("/schedules", false, false),
+            ("/schedules/new", false, false),
+            ("/repos", false, false),
+            ("/errors", false, false),
+        ] {
+            let expected = |covered: bool| if covered { 200 } else { 403 };
+            let res = get(path, reader.clone()).await;
+            assert_eq!(
+                res.status_code(),
+                expected(covered_by_reader),
+                "{path} reader"
+            );
+            let res = get(path, duet.clone()).await;
+            assert_eq!(res.status_code(), expected(covered_by_duet), "{path} duet");
+            assert_eq!(get(path, mac.clone()).await.status_code(), 200, "{path}");
         }
+        // A page says so as a page does.
+        let res = get("/schedules", duet.clone()).await;
+        assert!(
+            res.text()
+                .contains("<p>The token duet doesn't cover this.</p>"),
+            "{}",
+            res.text()
+        );
+        // The stylesheet is for whoever gets in, and what isn't there isn't.
+        assert_eq!(
+            get("/static/m8r.css", duet.clone()).await.status_code(),
+            200
+        );
+        assert_eq!(get("/nope", duet.clone()).await.status_code(), 403);
+        assert_eq!(get("/nope", mac.clone()).await.status_code(), 404);
+
+        // The errors tell of every part of m8r, so a page shows them only to a caller who
+        // covers everything.
+        let shown = "m8r finds no such command";
+        assert!(get("/runs", mac.clone()).await.text().contains(shown));
+        let page = get("/runs", reader.clone()).await.text();
+        assert!(
+            !page.contains(shown) && !page.contains("class=\"alert\""),
+            "{page}"
+        );
+
+        // A token changes what it covers on a page too, and needs no page of m8r's for it.
+        crate::support::repo(&ctx.db, "~/git/o/r", "https://github.com/o/r").await;
+        let item = [("url", "https://github.com/o/r/issues/1")];
+        let res = request
+            .post("/watchlist")
+            .authorization_bearer(&duet)
+            .form(&item)
+            .await;
+        assert_eq!(res.status_code(), 303);
+        let res = request
+            .post("/watchlist")
+            .authorization_bearer(&reader)
+            .form(&item)
+            .await;
+        assert_eq!(res.status_code(), 403);
+
+        // A token that isn't m8r's opens no page, and the page says why.
+        let res = get("/runs", "m8r_nope".to_string()).await;
+        assert_eq!(res.status_code(), 401);
+        assert!(res.text().contains("or it was revoked."), "{}", res.text());
     })
     .await;
 }
