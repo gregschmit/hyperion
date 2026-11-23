@@ -169,7 +169,6 @@ async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Resul
     )
     .await;
     let output = read_start(&printed);
-    let _ = fs::remove_file(&printed);
 
     let problem = match end {
         Ok(end) => end.problem(limit),
@@ -183,6 +182,8 @@ async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Resul
     run.into_active_model()
         .finished(&ctx.db, status, output, problem.unwrap_or_default())
         .await?;
+    // Only now: until the run's row has the report, the file is all there is of it.
+    let _ = fs::remove_file(&printed);
     Ok(())
 }
 
