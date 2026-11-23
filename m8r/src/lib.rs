@@ -4,6 +4,7 @@ pub mod initializers;
 pub mod models;
 pub mod prompts;
 pub mod settings;
+pub mod stream;
 pub mod tasks;
 pub mod tools;
 pub mod views;

@@ -37,7 +37,9 @@
   <input type="checkbox" id="enabled" name="enabled" value="true"{% if form.enabled %} checked{% endif %}>
 
   <label for="command">Command <small>the exact line that a run starts, in its repo, through the
-    login shell of m8r's user</small></label>
+    login shell of m8r's user. With <code>--output-format stream-json --verbose</code>,
+    <code>claude -p</code> prints its steps as it takes them, and the run's page shows them
+    as they come.</small></label>
   <input type="text" id="command" name="command" class="wide mono" value="{{ form.command }}" placeholder="claude -p &quot;Update the changelog.&quot;" required>
 
   <label for="prompt">Prompt <small>what the command gets on stdin. It's a template: m8r puts

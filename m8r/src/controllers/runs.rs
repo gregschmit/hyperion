@@ -1,11 +1,14 @@
 #![allow(clippy::missing_errors_doc)]
 use axum::Extension;
 use loco_rs::prelude::*;
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{json, Value};
 
 use crate::{
     initializers::access::{self, Guest},
     models::{runs, schedules},
+    settings::Settings,
+    stream::Printed,
     views,
 };
 
@@ -26,6 +29,33 @@ pub async fn index(
     views::page(&v, &ctx, "runs/index.html", "runs", data).await
 }
 
+/// What a run's page is asked for: what its address says after the `?`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Shown {
+    /// `output`: only the part of the page that has what the run printed. The page's script
+    /// asks for it again and again while the run is in progress. Anything else: the page.
+    pub part: String,
+}
+
+/// What a run printed, for its page. A run that's over has its report in its row. For one in
+/// progress, it's what its command has printed so far: an agent's steps, or text.
+fn printed(ctx: &AppContext, run: &runs::Model) -> Result<Value> {
+    if run.is_over() {
+        let html = views::markdown::render(&run.output);
+        return Ok(json!({ "live": false, "output_html": html }));
+    }
+    let file = Settings::from_context(ctx)?.output_file(run.id);
+    let (steps_html, text) = match Printed::read_file(&file) {
+        Some(Printed::Stream(stream)) => {
+            (views::markdown::render(&stream.markdown()), String::new())
+        }
+        Some(Printed::Text(text)) => (String::new(), text),
+        None => (String::new(), String::new()),
+    };
+    Ok(json!({ "live": true, "steps_html": steps_html, "text": text }))
+}
+
 /// One run: its command, what it printed, and the prompt it got. A guest, who holds the run's
 /// share link, gets the same and nothing more of m8r. Anyone else gets a share link to hand
 /// on.
@@ -34,13 +64,18 @@ pub async fn show(
     ViewEngine(v): ViewEngine<TeraView>,
     State(ctx): State<AppContext>,
     Path(id): Path<i64>,
+    Query(shown): Query<Shown>,
     guest: Option<Extension<Guest>>,
 ) -> Result<Response> {
     let run = runs::Model::find(&ctx.db, id).await?;
     let mut data = json!({
         "run": views::run(&run),
-        "output_html": views::markdown::render(&run.output),
+        "printed": printed(&ctx, &run)?,
     });
+    if shown.part == "output" {
+        data["shared"] = json!(guest.is_some());
+        return format::render().view(&v, "runs/output.html", data);
+    }
     if guest.is_some() {
         return views::guest_page(&v, "runs/show.html", data);
     }

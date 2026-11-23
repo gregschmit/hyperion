@@ -5,10 +5,14 @@ use loco_rs::{
 use m8r::{
     app::App,
     models::runs::{self, Status},
+    settings::Settings,
 };
 use serial_test::serial;
 
-use crate::support::{queue, share_path, signed_in, start, token, unchecked};
+use crate::{
+    stream::STREAM,
+    support::{queue, share_path, signed_in, start, token, unchecked},
+};
 
 /// Where the review's comment is, which the run's report has a link to.
 const COMMENT: &str = "https://git.example.com/g/p/-/merge_requests/1#note_5";
@@ -96,6 +100,7 @@ async fn the_runs_page_lists_the_queue_and_the_history() {
         );
         let page = request.get("/runs/1").await.text();
         assert!(page.contains("<code>m8r task output id:1</code>"), "{page}");
+        assert!(page.contains("Nothing yet."), "{page}");
 
         // It ends, and the list says how.
         run.into_active_model()
@@ -336,6 +341,109 @@ async fn a_guest_sees_a_run_that_is_not_over_as_far_as_it_is() {
         // A command on the server is no use to a guest.
         assert!(page.contains("Nothing yet."), "{page}");
         assert!(!page.contains("m8r task output"), "{page}");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_runs_page_shows_what_the_run_prints_as_it_comes() {
+    signed_in(|request, ctx| async move {
+        let db = &ctx.db;
+        let run = queue(db, "review", "/home/m8r/git/rxg", "claude -p").await;
+        let run = start(db, run, "The prompt.").await;
+        // Where the run's command prints while the run is in progress.
+        let printed = Settings::from_context(&ctx).unwrap().output_file(run.id);
+        std::fs::create_dir_all(printed.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&printed);
+
+        // The page has the part that changes, and a script that asks for that part again.
+        let page = request.get("/runs/1").await.text();
+        assert!(page.contains(r#"<div id="output" data-live>"#), "{page}");
+        assert!(
+            page.contains("address.searchParams.set('part', 'output');"),
+            "{page}"
+        );
+        let part = || async { request.get("/runs/1?part=output").await.text() };
+        let nothing = part().await;
+        assert!(
+            nothing
+                .trim_start()
+                .starts_with(r#"<div id="output" data-live>"#),
+            "{nothing}"
+        );
+        assert!(nothing.contains("Nothing yet."), "{nothing}");
+        // Only that part: no page around it.
+        assert!(
+            !nothing.contains("<html") && !nothing.contains("<h2>"),
+            "{nothing}"
+        );
+
+        // Text shows as it is.
+        std::fs::write(&printed, "step 1 <b>\nstep 2\n").unwrap();
+        let text = part().await;
+        assert!(
+            text.contains("<pre class=\"live\">step 1 &lt;b&gt;\nstep 2\n</pre>"),
+            "{text}"
+        );
+
+        // A stream shows as the agent's steps so far: what it said, and the tools that it
+        // used, each in a line.
+        let lines: Vec<&str> = STREAM.lines().collect();
+        std::fs::write(&printed, lines[..5].join("\n")).unwrap();
+        let steps = part().await;
+        assert!(
+            steps.contains(
+                "<div class=\"markdown live\"><p>I'll read the MR first.</p>\n<ul>\n\
+                 <li><strong>Bash</strong> <code>command: glab mr view 12 --comments, \
+                 description: Read MR 12</code></li>\n\
+                 <li><strong>Agent</strong> <code>description: Review MR 12, prompt: Review \
+                 it.</code></li>\n</ul>\n</div>"
+            ),
+            "{steps}"
+        );
+        assert!(
+            !steps.contains("toolu_1") && !steps.contains("Let me look."),
+            "{steps}"
+        );
+
+        // A guest, who holds the run's share link, watches the same way, and gets no more.
+        let link = share_path(&ctx, run.id, 60);
+        let res = request.get(&format!("{link}&part=output")).await;
+        assert_eq!(res.status_code(), 200);
+        assert_eq!(res.header("cache-control"), "no-store");
+        let shared = res.text();
+        assert!(shared.contains("<strong>Agent</strong>"), "{shared}");
+        let shared = request.get(&link).await.text();
+        assert!(
+            shared.contains("searchParams.set('part', 'output')"),
+            "{shared}"
+        );
+        assert!(shared.contains("<strong>Agent</strong>"), "{shared}");
+        assert!(!shared.contains("m8r task output"), "{shared}");
+        std::fs::remove_file(&printed).unwrap();
+        let waiting = request.get(&link).await.text();
+        assert!(waiting.contains("Nothing yet."), "{waiting}");
+        assert!(!waiting.contains("m8r task output"), "{waiting}");
+
+        // The run ends. The part says so, so the script loads the page, which has the
+        // report and no more script for it.
+        run.into_active_model()
+            .finished(db, Status::Done, "# Review".to_string(), String::new())
+            .await
+            .unwrap();
+        let over = part().await;
+        assert!(
+            over.trim_start().starts_with(r#"<div id="output">"#),
+            "{over}"
+        );
+        assert!(over.contains("<h1>Review</h1>"), "{over}");
+        let page = request.get("/runs/1").await.text();
+        assert!(!page.contains("searchParams"), "{page}");
+        assert!(
+            page.contains(r#"<div class="markdown"><h1>Review</h1>"#),
+            "{page}"
+        );
     })
     .await;
 }

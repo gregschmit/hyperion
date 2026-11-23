@@ -6,10 +6,7 @@ use std::{
 
 use loco_rs::prelude::*;
 
-use crate::{
-    models::runs::{self, Status},
-    settings::Settings,
-};
+use crate::{models::runs, settings::Settings};
 
 /// How long `follow` waits before it looks for more.
 const PAUSE: Duration = Duration::from_millis(500);
@@ -45,7 +42,8 @@ impl Task for Output {
 
 /// Write what run `id` printed to `out`, and give the run back when it's over. While a run is
 /// in progress, its command prints to a file (see `tasks::tick`), and this writes what comes
-/// there. A run that's over has what it printed in its row.
+/// there. A run that's over has its report in its row: what it printed, or the answer of an
+/// agent that printed a stream (see `stream`).
 ///
 /// # Errors
 /// When there's no such run, or when a query or `out` fails.
@@ -59,7 +57,7 @@ pub async fn follow(ctx: &AppContext, id: i64, out: &mut impl Write) -> Result<r
             }
             found => found?,
         };
-        let over = [Status::Done.as_str(), Status::Failed.as_str()].contains(&run.status.as_str());
+        let over = run.is_over();
         if file.is_none() && !over {
             // Not there for a run that waits, or one that starts just now.
             file = File::open(&path).ok();

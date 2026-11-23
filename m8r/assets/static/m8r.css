@@ -126,6 +126,10 @@ details.share p { margin: 0.5rem 0 0.25rem; }
 .tabbed > input:nth-of-type(1):checked ~ div:nth-of-type(1),
 .tabbed > input:nth-of-type(2):checked ~ div:nth-of-type(2) { display: block; }
 
+/* What a run prints while it's in progress: a box that's no taller than the page, which the
+   page's script keeps at its end. */
+.live { max-height: 50vh; overflow-y: auto; }
+
 /* What a run printed, as markdown. */
 .markdown {
   margin: 0.5rem 0 1rem;

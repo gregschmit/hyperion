@@ -37,22 +37,36 @@
 <pre>{{ run.command }}</pre>
 
 <h2>Output</h2>
-{% if run.output %}
-<div class="tabbed">
-  <input type="radio" name="output" id="output-markdown" checked>
-  <label for="output-markdown">Markdown</label>
-  <input type="radio" name="output" id="output-raw">
-  <label for="output-raw">Raw</label>
-  <div class="markdown">{{ output_html | safe }}</div>
-  <div><pre>{{ run.output }}</pre></div>
-</div>
-{% elif run.finished_at %}
-<p class="muted">Nothing.</p>
-{% elif shared %}
-<p class="muted">Nothing yet.</p>
-{% else %}
-<p class="muted">What the command prints shows here when the run ends. To read it now, as it
-  comes: <code>m8r task output id:{{ run.id }}</code></p>
+{% include "runs/output.html" %}
+{% if printed.live %}
+<script>
+  {
+    // While the run is in progress, show what it prints as it comes. The box keeps its end
+    // in view, unless you scrolled up in it. When the run is over, the page has more to
+    // say, so load it again.
+    const address = new URL(location.href);
+    address.searchParams.set('part', 'output');
+    const box = () => document.querySelector('#output .live');
+    const toEnd = (box) => { if (box) box.scrollTop = box.scrollHeight; };
+    const refresh = async () => {
+      const shown = box();
+      const atEnd = !shown || shown.scrollHeight - shown.scrollTop - shown.clientHeight < 40;
+      try {
+        const answer = await fetch(address, { cache: 'no-store' });
+        if (answer.ok) {
+          document.getElementById('output').outerHTML = await answer.text();
+          if (!document.querySelector('#output[data-live]')) return location.reload();
+          if (atEnd) toEnd(box());
+        }
+      } catch {
+        // The next try may go better.
+      }
+      setTimeout(refresh, 3000);
+    };
+    toEnd(box());
+    setTimeout(refresh, 3000);
+  }
+</script>
 {% endif %}
 
 <h2>Prompt</h2>

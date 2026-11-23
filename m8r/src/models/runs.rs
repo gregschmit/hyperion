@@ -26,6 +26,14 @@ impl Status {
     }
 }
 
+impl Model {
+    /// Whether the run has ended, well or not.
+    #[must_use]
+    pub fn is_over(&self) -> bool {
+        [Status::Done.as_str(), Status::Failed.as_str()].contains(&self.status.as_str())
+    }
+}
+
 #[async_trait::async_trait]
 impl ActiveModelBehavior for ActiveModel {
     async fn before_save<C>(self, _db: &C, insert: bool) -> std::result::Result<Self, DbErr>

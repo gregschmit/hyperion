@@ -8,8 +8,11 @@ use m8r::{
 };
 use serial_test::serial;
 
-use crate::support::{
-    self, queue_all, queue_one, schedule, schedule_params, start, watch, Sandbox, GH, REQUESTS,
+use crate::{
+    stream::{STEPS, STREAM},
+    support::{
+        self, queue_all, queue_one, schedule, schedule_params, start, watch, Sandbox, GH, REQUESTS,
+    },
 };
 
 async fn tick(ctx: &AppContext) {
@@ -260,6 +263,44 @@ async fn a_runs_agent_keeps_the_watchlist_with_the_commands_of_m8rs_prompt() {
         .await
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&status.stdout), "401");
+}
+
+#[tokio::test]
+#[serial]
+async fn the_report_of_an_agent_that_prints_a_stream_is_its_answer() {
+    let boot = boot_test::<App>().await.unwrap();
+    let sandbox = Sandbox::new("tick-stream");
+    // An agent that prints its steps as it takes them, as `claude -p --output-format
+    // stream-json --verbose` does. With an argument, it's killed before its answer.
+    let lines: Vec<&str> = STREAM.lines().collect();
+    let (steps, answer) = (lines[..7].join("\n"), lines[7]);
+    sandbox.tool(
+        "streamer",
+        &format!(
+            "cat > /dev/null\ncat <<'STEPS'\n{steps}\nSTEPS\n[ -n \"$1\" ] && exit 3\n\
+             cat <<'ANSWER'\n{answer}\nANSWER"
+        ),
+    );
+    let ctx = sandbox.context(&boot.app_context, "streamer");
+    let run = queue(&ctx, &sandbox, "Review it.").await;
+
+    tick(&ctx).await;
+
+    let run = runs::Model::find(&ctx.db, run.id).await.unwrap();
+    assert_eq!(run.status, "done", "{}", run.error);
+    // Not the lines of JSON: what `claude -p` prints alone.
+    assert_eq!(run.output, "## Review\n\nLooks **good**.");
+
+    // One that ends with no answer leaves the steps that it got to.
+    let ctx = sandbox.context(&boot.app_context, "streamer cut");
+    let run = queue(&ctx, &sandbox, "Review it.").await;
+    tick(&ctx).await;
+    let run = runs::Model::find(&ctx.db, run.id).await.unwrap();
+    assert_eq!(
+        (run.status.as_str(), run.error.as_str()),
+        ("failed", "the command exited with status 3")
+    );
+    assert_eq!(run.output, STEPS);
 }
 
 #[tokio::test]

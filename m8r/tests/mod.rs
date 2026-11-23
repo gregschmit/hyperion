@@ -2,6 +2,7 @@ mod migrations;
 mod models;
 mod prompts;
 mod requests;
+mod stream;
 mod support;
 mod tasks;
 mod tools;

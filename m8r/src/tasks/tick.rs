@@ -14,6 +14,7 @@ use crate::{
     models::{errors, repos, runs, schedules, watchlist_items, Checked},
     prompts,
     settings::{self, Settings},
+    stream::Printed,
     tools,
 };
 
@@ -168,7 +169,11 @@ async fn execute(ctx: AppContext, settings: Settings, run: runs::Model) -> Resul
         &env,
     )
     .await;
-    let output = read_start(&printed);
+    let output = match Printed::read_file(&printed) {
+        // The report of an agent that printed a stream is its answer, and not lines of JSON.
+        Some(Printed::Stream(stream)) => stream.report(),
+        _ => read_start(&printed),
+    };
 
     let problem = match end {
         Ok(end) => end.problem(limit),

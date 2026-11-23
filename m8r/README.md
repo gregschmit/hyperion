@@ -251,6 +251,12 @@ A run:
   does. The commands in `m8r_prompt` use both.
 - **What a run prints is its report.** m8r keeps that, and no files. `m8r_prompt` tells the
   agent to put the link to what it made online, such as a comment or a PR/MR, in its answer.
+- **A stream is read.** With `--output-format stream-json --verbose` in a schedule's command,
+  `claude -p` prints a stream: a line of JSON for each thing that the agent says and does, as
+  it does it, and at the end its answer. m8r knows that stream by its first line. The run's
+  report is then the answer, as `claude -p` prints it alone, and not the lines of JSON. A run
+  that ends with no answer, such as one that m8r killed, leaves the steps that it got to. Any
+  other output is text, as before: m8r reads no other tool's stream.
 - **The list says when, and for how long:** `2026-11-23 06:00 – 06:14 (14 min)`, with the day
   once unless the run ended on another day. It says when a run was created only if the run
   then waited two minutes or more: a tick starts a run within a minute, so that one waited
@@ -263,11 +269,14 @@ A run:
   session out of the list that `claude --resume` shows, so take the id from the name of the
   session's file in `~/.claude/projects/`.
 - **A run in progress can be watched.** What its command prints goes to a file as it comes,
-  and into the run's row when the run ends. `m8r task runs` lists the runs that aren't over,
-  and `m8r task output id:12` prints what run 12 has printed and goes on until the run ends.
-  It shows only what the command prints: `claude -p` prints its answer, when it's done. With
-  `--output-format stream-json --verbose` in the schedule's command, it prints each step as
-  a line of JSON.
+  and into the run's row when the run ends. The run's page shows it as it comes, and asks
+  for it again every few seconds: text as it is, and a stream as the agent's steps, which are
+  what it said and each tool that it used, in one line. Not what a tool gave it, and not the
+  steps of the agents that it started. A share link shows the same. In a terminal,
+  `m8r task runs` lists the runs that aren't over, and `m8r task output id:12` prints what run
+  12 has printed, as it was printed, and goes on until the run ends. The page and the
+  terminal show only what the command prints: `claude -p` prints its answer, when it's done,
+  unless its command asks for a stream.
 - **A run can be shared.** "Share" on a run's page shows a link to that page, and copies it.
   For 72 hours, the link opens the page to anyone who has it (see [Access](#access)).
 
@@ -511,8 +520,9 @@ One stand-in agent runs the commands of `m8r_prompt` against the API on loopback
   footnote's name, so that it can't be the name of something else on the page. In a table, a
   line breaks between words and never inside one, and a table that's too wide for the page
   that way scrolls sideways.
-- **The pages** are Tera templates and plain forms, with no frontend build, and two small
-  scripts: one gives the errors their turns, and one copies a run's share link. A page asks
+- **The pages** are Tera templates and plain forms, with no frontend build, and three small
+  scripts: one gives the errors their turns, one copies a run's share link, and one shows
+  what a run prints as it comes. A page asks
   for the stylesheet at an address that changes when the stylesheet does, so a browser never
   uses an old one for a new page.
 - **A name is the column's.** What a page calls a field is the name of its column, and so is
