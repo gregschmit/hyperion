@@ -1,8 +1,10 @@
 # The rXg's network: VLAN 10 on lan, where the rXg (10.255.0.1) is the gateway and DHCP server. The
 # router joins it at 10.255.0.2, so the LAN reaches it directly, with no NAT (see nftables.conf).
-# For replies to come back this way too, devices there need a route to the LAN (172.31.0.0/24) via
-# 10.255.0.2: from the rXg's DHCP (option 121, along with their default route), or else from a
-# static route on the rXg.
+# For replies to come back this way too, each device there needs its own route to the LAN
+# (172.31.0.0/24) via 10.255.0.2: from the rXg's DHCP (option 121, along with their default
+# route), or from a static route on the device itself. A route on the rXg is not enough: replies
+# then go back through the rXg, whose firewall sees only one side of each TCP connection and drops
+# it after about the first 50 KB. (The rXg still needs that route for its own connections.)
 [Match]
 Name=rxg
 
