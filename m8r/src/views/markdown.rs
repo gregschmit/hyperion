@@ -7,7 +7,9 @@
 //! opens in a new window, which gets nothing of this one.
 //!
 //! The markdown is GitHub's kind: tables, task lists, struck text, footnotes, notes such as
-//! `> [!WARNING]`, and a bare web address as a link.
+//! `> [!WARNING]`, and a bare web address as a link. One thing in it is HTML, as on GitHub: a
+//! part that folds, which is `<details>` with a `<summary>`. Those tags get to the page as
+//! m8r writes them, with nothing of the text in them (see `folds`).
 
 use pulldown_cmark::{
     html, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd, TextMergeStream,
@@ -35,13 +37,7 @@ pub fn render(text: &str) -> String {
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_GFM;
     let mut open: Vec<Open> = Vec::new();
-    let events = Parser::new_ext(text, options).flat_map(|event| match event {
-        Event::Html(html) | Event::InlineHtml(html) => vec![Event::Text(html)],
-        // A block of HTML keeps its lines, as code does.
-        Event::Start(Tag::HtmlBlock) => {
-            vec![Event::Start(Tag::CodeBlock(CodeBlockKind::Indented))]
-        }
-        Event::End(TagEnd::HtmlBlock) => vec![Event::End(TagEnd::CodeBlock)],
+    let events = folds(Parser::new_ext(text, options)).flat_map(|event| match event {
         Event::Start(Tag::Link {
             link_type,
             dest_url,
@@ -108,6 +104,236 @@ pub fn render(text: &str) -> String {
     let events = tables(links(TextMergeStream::new(events)));
     html::push_html(&mut page, new_windows(events));
     page
+}
+
+/// How far from its `<` a tag of a fold ends, at most. The longest is `<details open>`.
+const TAG_BYTES: usize = 24;
+
+/// A tag of a part that folds.
+#[derive(Clone, Copy)]
+enum FoldTag {
+    /// `<details>`, or `<details open>`.
+    Details {
+        open: bool,
+    },
+    DetailsEnd,
+    Summary,
+    SummaryEnd,
+}
+
+/// What a fold has of its first line, which opens and closes it.
+#[derive(PartialEq, Eq)]
+enum Summary {
+    None,
+    Open,
+    Closed,
+}
+
+/// A fold that's open.
+struct Fold {
+    /// How many parts of the text were open around its start. It ends there, and no deeper.
+    level: usize,
+    summary: Summary,
+}
+
+/// The folds that are open, and where the text is.
+#[derive(Default)]
+struct Folds {
+    /// How many parts of the text are open: quotes, lists and so on.
+    level: usize,
+    open: Vec<Fold>,
+}
+
+impl Folds {
+    /// What `tag` puts on the page. None when the tag has no place here: an end with no
+    /// start in this part of the text, or a second first line.
+    fn take(&mut self, tag: FoldTag) -> Option<String> {
+        let level = self.level;
+        let here = self.open.last_mut().filter(|fold| fold.level == level);
+        match (tag, here) {
+            (FoldTag::Details { open }, _) => {
+                self.open.push(Fold {
+                    level,
+                    summary: Summary::None,
+                });
+                let start = if open { "<details open>" } else { "<details>" };
+                Some(format!("{start}\n"))
+            }
+            (FoldTag::DetailsEnd, Some(_)) => Some(self.end()),
+            (FoldTag::Summary, Some(fold)) if fold.summary == Summary::None => {
+                fold.summary = Summary::Open;
+                Some("<summary>".to_string())
+            }
+            (FoldTag::SummaryEnd, Some(fold)) if fold.summary == Summary::Open => {
+                fold.summary = Summary::Closed;
+                Some("</summary>\n".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    /// What ends the last fold, with its first line if that's still open.
+    fn end(&mut self) -> String {
+        let summary = self.open.pop().map(|fold| fold.summary);
+        if summary == Some(Summary::Open) {
+            return "</summary>\n</details>\n".to_string();
+        }
+        "</details>\n".to_string()
+    }
+
+    /// What ends the folds that started in the part of the text that ends now: a fold that
+    /// the text leaves open ends with the part that it's in.
+    fn part_ended<'a>(&mut self) -> Vec<Event<'a>> {
+        let mut events = Vec::new();
+        while self
+            .open
+            .last()
+            .is_some_and(|fold| fold.level >= self.level)
+        {
+            events.push(Event::Html(self.end().into()));
+        }
+        self.level = self.level.saturating_sub(1);
+        events
+    }
+
+    /// A block of HTML, as the page shows it. With no tag of a fold that has a place here,
+    /// that's the block as text, with its lines, as code has them.
+    fn block<'a>(&mut self, html: &str) -> Vec<Event<'a>> {
+        let mut events = Vec::new();
+        let mut kept = false;
+        // What's between the tags, which is text.
+        let mut text = String::new();
+        let mut rest = html;
+        // Only a block that starts with such a tag can have one: in a comment or a script,
+        // `<details>` is a part of that.
+        let mut at = fold_tag(html.trim_start()).and(rest.find('<'));
+        while let Some(start) = at {
+            text.push_str(&rest[..start]);
+            rest = &rest[start..];
+            // The text before a tag is in what was open before it.
+            let first_line = self.in_first_line();
+            let tag = fold_tag(rest).and_then(|(tag, len)| Some((self.take(tag)?, len)));
+            let len = match tag {
+                Some((tag, len)) => {
+                    lines(&mut events, &text, first_line);
+                    text.clear();
+                    events.push(Event::Html(tag.into()));
+                    kept = true;
+                    len
+                }
+                None => {
+                    text.push('<');
+                    1
+                }
+            };
+            rest = &rest[len..];
+            at = rest.find('<');
+        }
+        if !kept {
+            return vec![
+                Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)),
+                Event::Text(html.to_string().into()),
+                Event::End(TagEnd::CodeBlock),
+            ];
+        }
+        text.push_str(rest);
+        lines(&mut events, &text, self.in_first_line());
+        events
+    }
+
+    /// Whether the text is in a fold's first line now.
+    fn in_first_line(&self) -> bool {
+        let fold = self.open.last();
+        fold.is_some_and(|fold| fold.summary == Summary::Open)
+    }
+}
+
+/// The tag of a fold that `html` starts with, and how long it is. Only the tag as it is, or
+/// `<details open>`: one that says more is text, as all other HTML is.
+fn fold_tag(html: &str) -> Option<(FoldTag, usize)> {
+    let inside = html.strip_prefix('<')?;
+    // Not far, so a text that's full of `<` is read once.
+    let end = inside
+        .bytes()
+        .take(TAG_BYTES)
+        .position(|byte| byte == b'>')?;
+    let tag = match inside[..end].trim_end().to_ascii_lowercase().as_str() {
+        "details" => FoldTag::Details { open: false },
+        "/details" => FoldTag::DetailsEnd,
+        "summary" => FoldTag::Summary,
+        "/summary" => FoldTag::SummaryEnd,
+        other => {
+            let (name, says) = other.split_once(char::is_whitespace)?;
+            if name != "details" || says.trim_start() != "open" {
+                return None;
+            }
+            FoldTag::Details { open: true }
+        }
+    };
+    // The `<` and the `>` too.
+    Some((tag, end + 2))
+}
+
+/// Add `text` to `events`, with its lines as lines. Nothing, if it's only space. It's a
+/// paragraph, but not in a fold's first line, which is one line beside the fold's mark.
+fn lines<'a>(events: &mut Vec<Event<'a>>, text: &str, first_line: bool) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    if !first_line {
+        events.push(Event::Start(Tag::Paragraph));
+    }
+    for (at, line) in text.lines().enumerate() {
+        if at > 0 {
+            events.push(Event::HardBreak);
+        }
+        events.push(Event::Text(line.trim_end().to_string().into()));
+    }
+    if !first_line {
+        events.push(Event::End(TagEnd::Paragraph));
+    }
+}
+
+/// `events`, with the HTML in them as text, but for the parts that fold. This is the only
+/// place where HTML that the text has gets to the page, and all that gets there is five tags
+/// that m8r writes: `<details>`, `<details open>`, `<summary>` and the ends of the two. They
+/// run nothing and load nothing.
+///
+/// A tag counts where GitHub's markdown reads it as a block: at the start of a line. A fold
+/// ends in the part of the text where it started (a quote, an item of a list), or with that
+/// part, or with the text. So the page's HTML is whole, whatever the text has.
+fn folds<'a>(events: impl Iterator<Item = Event<'a>>) -> impl Iterator<Item = Event<'a>> {
+    let mut folds = Folds::default();
+    // The block of HTML that's open, as far as it came.
+    let mut block: Option<String> = None;
+    // After the last event comes None: the text's end, which ends the folds that are open.
+    let events = events.map(Some).chain(std::iter::once(None));
+    events.flat_map(move |event| match event {
+        None => folds.part_ended(),
+        Some(Event::Start(Tag::HtmlBlock)) => {
+            block = Some(String::new());
+            Vec::new()
+        }
+        Some(Event::Html(html) | Event::InlineHtml(html)) => match &mut block {
+            Some(block) => {
+                block.push_str(&html);
+                Vec::new()
+            }
+            None => vec![Event::Text(html)],
+        },
+        Some(Event::End(TagEnd::HtmlBlock)) => folds.block(&block.take().unwrap_or_default()),
+        Some(event @ Event::Start(_)) => {
+            folds.level += 1;
+            vec![event]
+        }
+        Some(event @ Event::End(_)) => {
+            let mut events = folds.part_ended();
+            events.push(event);
+            events
+        }
+        Some(other) => vec![other],
+    })
 }
 
 /// `events`, with each web address that's bare in the text as a link to itself, as on GitHub.

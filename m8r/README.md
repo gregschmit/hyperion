@@ -271,7 +271,9 @@ A run:
   prompt it got, and what the command printed. That shows as markdown of GitHub's kind
   (tables, task lists, footnotes, notes such as `> [!WARNING]`, and a bare web address as a
   link), and a tab away as it was printed, to copy. A link in it opens in a new window, so
-  the run's page stays open. To look closer, become `m8r`, go to the clone, and resume the
+  the run's page stays open. A part of it can fold, as on GitHub: `<details>` with a
+  `<summary>`, each at the start of a line. Its first line shows, and a click opens the
+  rest. `<details open>` starts open. To look closer, become `m8r`, go to the clone, and resume the
   agent's session: `claude --resume <id>`. Claude Code leaves a `-p` session out of the list
   that `claude --resume` shows, so take the id from the name of the session's file in
   `~/.claude/projects/`.
@@ -283,8 +285,8 @@ A run:
   says, and a line for each tool that it uses. "Markdown" is the same as the agent's steps,
   which m8r renders: what it said, and each tool that it used, in one line. Not what a tool
   gave it, and not the steps of the agents that it started. The page adds to what it shows
-  and never loads again, so it stays where you scrolled to. When the run ends, its report
-  takes the steps' place. A share link shows the same. In a terminal, `m8r task runs` lists
+  and never loads again, so it stays where you scrolled to. A part that folds is open while
+  the agent writes its step. When the run ends, its report takes the steps' place. A share link shows the same. In a terminal, `m8r task runs` lists
   the runs that aren't over, and `m8r task output id:12` prints what run 12 has printed, as
   it was printed, and goes on until the run ends. The page and the terminal show only what
   the command prints: `claude -p` prints its answer, when it's done, unless its command
@@ -477,7 +479,9 @@ wrote. Expect a prompt injection someday.
   note goes into the next prompts. A token for `watchlist_items` can do that and no more.
 - **So is what a run printed.** An agent wrote it, maybe after it read a hostile issue. Its
   page shows it as markdown, with the HTML in it as text and each picture as a link, so
-  nothing in it runs, and the page loads nothing from another site. Duet reads it too, if its
+  nothing in it runs, and the page loads nothing from another site. The one HTML that counts
+  is a part that folds, and m8r writes its tags itself: `<details>`, `<details open>` and
+  `<summary>`, with nothing of the text in them. Duet reads it too, if its
   token covers `runs`.
 - **A share link shows its run to whoever holds it,** for 72 hours. The prompt on the run's
   page has the watchlist items that the run got, with your notes. The link opens nothing
@@ -545,7 +549,9 @@ One stand-in agent runs the commands of `m8r_prompt` against the API on loopback
   are young: `Cargo.lock` pins the versions that the tests ran with.
 - **pulldown-cmark** reads the markdown that a run printed, for its page. Before that's made
   into HTML, m8r makes text of the HTML in it and of the links that aren't web or mail
-  addresses, and links of its pictures (see `views::markdown`). m8r also makes a link of each
+  addresses, and links of its pictures (see `views::markdown`). Of the HTML, only the tags
+  of a part that folds get to the page, and m8r ends each part that the text leaves open, so
+  the page's HTML is whole. m8r also makes a link of each
   bare web address, which pulldown-cmark leaves as text, makes each link to a web address
   open in a new window, and puts `footnote-` before a footnote's name, so that it can't be
   the name of something else on the page. In a table, a line breaks between words and never

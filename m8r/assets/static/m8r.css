@@ -179,3 +179,11 @@ details.share p { margin: 0.5rem 0 0.25rem; }
 .markdown .footnote-definition > :not(sup) { grid-column: 2; margin: 0 0 0.25rem; }
 .markdown .footnote-definition:target { color: var(--text); }
 .markdown li > input { margin-right: 0.35rem; }
+/* A part that folds: `<details>`. Its first line opens and closes it, and a line at its left
+   says how far it goes while it's open. The room for that line is always there, so the first
+   line stays where it is. */
+.markdown details { margin: 0.75rem 0; padding-left: 0.9rem; border-left: 3px solid transparent; }
+.markdown details[open] { border-left-color: var(--line); }
+.markdown summary { font-weight: 600; cursor: pointer; }
+.markdown summary > * { display: inline; }
+.markdown details[open] > summary { margin-bottom: 0.5rem; }

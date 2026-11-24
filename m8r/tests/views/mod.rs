@@ -153,12 +153,123 @@ fn html_in_what_a_run_printed_is_text() {
         render("<script>\nalert(1)\n</script>\n\nAfter."),
         "<pre><code>&lt;script&gt;\nalert(1)\n&lt;/script&gt;\n</code></pre>\n<p>After.</p>\n"
     );
-    let page = render("<details><summary>More</summary>\n\nHidden *text*.\n\n</details>");
+    // A block of it that isn't a part that folds, though it names one.
+    assert_eq!(
+        render("<div>\n<details>\n</div>"),
+        "<pre><code>&lt;div&gt;\n&lt;details&gt;\n&lt;/div&gt;</code></pre>\n"
+    );
+    assert_eq!(
+        render("<!--\n<details>\n-->"),
+        "<pre><code>&lt;!--\n&lt;details&gt;\n--&gt;</code></pre>\n"
+    );
+}
+
+#[test]
+fn a_part_that_folds_is_details_with_a_summary_as_on_github() {
+    // Each tag is a block of its own, as a review has them.
+    assert_eq!(
+        render(
+            "Good.\n\n<details>\n\n<summary>Code Review: 1a2b3c</summary>\n\n\
+             ## Findings\n\n- *one*\n\n</details>\n\nAfter."
+        ),
+        "<p>Good.</p>\n\
+         <details>\n<summary>Code Review: 1a2b3c</summary>\n\
+         <h2>Findings</h2>\n<ul>\n<li><em>one</em></li>\n</ul>\n\
+         </details>\n\
+         <p>After.</p>\n"
+    );
+    // All in one block, which has no markdown. One that says `open` starts open, and the
+    // letters' case doesn't count.
+    assert_eq!(
+        render("<DETAILS open ><Summary>More</Summary >\none\ntwo\n</details>\nAfter."),
+        "<details open>\n<summary>More</summary>\n\
+         <p>one<br />\ntwo</p>\n</details>\n<p>After.</p>\n"
+    );
+    // The first line may be markdown, and a fold may be in a fold.
+    assert_eq!(
+        render(
+            "<details>\n\n<summary>\n\n### Out\n\n</summary>\n\n\
+             <details>\n<summary>In</summary>\n\nDeep.\n\n</details>\n\n</details>"
+        ),
+        "<details>\n<summary>\n<h3>Out</h3>\n</summary>\n\
+         <details>\n<summary>In</summary>\n<p>Deep.</p>\n</details>\n\
+         </details>\n"
+    );
+}
+
+#[test]
+fn only_the_tags_of_a_fold_get_to_the_page_and_nothing_that_the_text_put_in_them() {
+    // A tag that says more than `open` is text, and so is the end that then has no start.
+    let page = render(
+        "<details ontoggle=\"alert(1)\">\n<summary onclick=\"x()\">T</summary>\n\n\
+         body\n\n</details>",
+    );
     assert!(
         !page.contains("<details") && !page.contains("<summary"),
         "{page}"
     );
-    assert!(page.contains("<p>Hidden <em>text</em>.</p>"), "{page}");
+    assert!(
+        page.contains("&lt;details ontoggle=\"alert(1)\"&gt;"),
+        "{page}"
+    );
+    assert!(
+        page.contains("<pre><code>&lt;/details&gt;</code></pre>"),
+        "{page}"
+    );
+    // Other HTML in a fold is text.
+    assert_eq!(
+        render("<details>\n<summary><b>T</b> <script>alert(1)</script></summary>\n\nBody."),
+        "<details>\n\
+         <summary>&lt;b&gt;T&lt;/b&gt; &lt;script&gt;alert(1)&lt;/script&gt;</summary>\n\
+         <p>Body.</p>\n</details>\n"
+    );
+    // In a line, the tags are text: a fold starts a line.
+    assert_eq!(
+        render("A <details> b <summary>c</summary> </details>."),
+        "<p>A &lt;details&gt; b &lt;summary&gt;c&lt;/summary&gt; &lt;/details&gt;.</p>\n"
+    );
+    // A text that's full of `<` is read once.
+    let long = format!("<details>\n{}>", "<".repeat(200_000));
+    assert!(render(&long).starts_with("<details>\n<p>&lt;&lt;"));
+}
+
+#[test]
+fn the_pages_html_is_whole_whatever_the_folds_in_the_text_are() {
+    // A fold that the text leaves open ends with the text, and its first line with it.
+    assert_eq!(
+        render("<details>\n<summary>Never"),
+        "<details>\n<summary>Never</summary>\n</details>\n"
+    );
+    // One that starts in a quote ends with the quote. Its end after the quote is then text.
+    assert_eq!(
+        render("> <details>\n> <summary>Q</summary>\n>\n> In.\n\n</details>\n\nOut."),
+        "<blockquote>\n<details>\n<summary>Q</summary>\n<p>In.</p>\n</details>\n\
+         </blockquote>\n\
+         <pre><code>&lt;/details&gt;\n</code></pre>\n<p>Out.</p>\n"
+    );
+    // An end in a quote doesn't end a fold that started outside it.
+    assert_eq!(
+        render("<details>\n\n> </details>\n\nStill in."),
+        "<details>\n<blockquote>\n<pre><code>&lt;/details&gt;\n</code></pre>\n\
+         </blockquote>\n<p>Still in.</p>\n</details>\n"
+    );
+    // An end with no start, and a first line with no fold or after the first.
+    assert_eq!(
+        render("</details>\n\n<summary>S</summary>"),
+        "<pre><code>&lt;/details&gt;\n</code></pre>\n\
+         <pre><code>&lt;summary&gt;S&lt;/summary&gt;</code></pre>\n"
+    );
+    assert_eq!(
+        render("<details>\n<summary>A</summary>\n<summary>B</summary>\n</details>"),
+        "<details>\n<summary>A</summary>\n\
+         <p>&lt;summary&gt;B&lt;/summary&gt;</p>\n</details>\n"
+    );
+    // A fold in an item of a list stays in it.
+    let page = render("- item\n\n  <details>\n  <summary>I</summary>\n\n  in\n- next");
+    assert!(
+        page.contains("<details>\n<summary>I</summary>\n<p>in</p>\n</details>\n</li>"),
+        "{page}"
+    );
 }
 
 #[test]

@@ -114,6 +114,9 @@
       }
       step.className = `${tool ? 'tool' : 'said'}${open ? ' open' : ''}`;
       step.innerHTML = html;
+      // What the agent writes in a part that folds shows as it comes. The part folds when
+      // the step is whole.
+      if (open) for (const fold of step.querySelectorAll('details')) fold.open = true;
     }));
 
     // The page has more to say of a run that started, and of one that's over. So get the

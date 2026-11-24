@@ -261,7 +261,7 @@ async fn a_share_link_opens_its_runs_page_and_nothing_else() {
         );
         assert!(!page.contains("class=\"alert\""), "{page}");
         assert!(!page.contains("m8r finds no such command"), "{page}");
-        assert!(!page.contains("<details"), "{page}");
+        assert!(!page.contains(r#"<details class="share""#), "{page}");
 
         // The token fits that run's page. It opens no other run, no other page and no
         // stylesheet.
